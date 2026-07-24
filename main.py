@@ -3,11 +3,18 @@ import sys
 
 
 def _find_app_dir():
-    this_dir = Path(__file__).resolve().parent
-    paths = [
-        this_dir / '.pipeline_mirror' / 'pipeline' / 'mazehub',
-        this_dir / 'pipeline' / 'mazehub',
-    ]
+    if getattr(sys, 'frozen', False):
+        exe_dir = Path(sys.executable).resolve().parent
+        paths = [
+            exe_dir / 'pipeline' / 'mazehub',
+            exe_dir,
+        ]
+    else:
+        this_dir = Path(__file__).resolve().parent
+        paths = [
+            this_dir / '.pipeline_mirror' / 'pipeline' / 'mazehub',
+            this_dir / 'pipeline' / 'mazehub',
+        ]
     for p in paths:
         if p.exists():
             return p
@@ -20,8 +27,9 @@ def main():
         print("ERROR: pipeline app directory not found.")
         sys.exit(1)
 
-    this_dir = Path(__file__).resolve().parent
-    sys.path.insert(0, str(this_dir))
+    if not getattr(sys, 'frozen', False):
+        this_dir = Path(__file__).resolve().parent
+        sys.path.insert(0, str(this_dir))
     sys.path.insert(0, str(app_dir))
 
     try:

@@ -19,8 +19,18 @@ APP_FILE_EXTENSIONS = {
 }
 
 
+def _app_dir():
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
 def find_project_root():
-    this_dir = Path(__file__).resolve().parent
+    env_root = os.environ.get('MAZE_PROJECT_ROOT')
+    if env_root:
+        return Path(env_root)
+
+    this_dir = _app_dir()
 
     if this_dir.name == 'mazehub' and this_dir.parent.name == 'pipeline':
         return this_dir.parent.parent
@@ -152,8 +162,7 @@ def build_context_env(context, project_root):
 
 
 def load_apps_config():
-    script_dir = Path(__file__).resolve().parent
-    config_path = script_dir / 'apps.json'
+    config_path = _app_dir() / 'apps.json'
     if config_path.exists():
         with open(config_path) as f:
             return json.load(f)

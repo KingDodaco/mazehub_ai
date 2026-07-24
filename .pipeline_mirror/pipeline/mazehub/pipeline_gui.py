@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from pipeline_app import (
     find_project_root, setup_environment, load_apps_config,
     read_shot_meta, write_shot_meta, APP_FILE_EXTENSIONS,
-    build_context_env,
+    build_context_env, _app_dir,
 )
 
 
@@ -956,11 +956,67 @@ class AssetExplorerPage(QWidget):
             window.show_status(msg, ok)
 
 
+CONTEXT_ENV_KEYS = [
+    'MAZE_CONTEXT_TYPE', 'MAZE_CONTEXT_NAME', 'MAZE_CONTEXT_PATH',
+    'PIPELINE_DIR', 'START_FRAME', 'END_FRAME', 'FRAME_RATE',
+    'HOUDINI_JOB', 'JOB', 'MAYA_PROJECT',
+]
+
+ENV_DESCRIPTIONS = {
+    'MAZE_PROJECT_ROOT': 'Root directory of the project',
+    'MAZE_PROJECT': 'Project folder name',
+    'MAZE_PIPELINE': 'Pipeline tools directory',
+    'MAZE_ASSETS': 'Asset storage directory',
+    'MAZE_SEQUENCES': 'Shot sequences directory',
+    'MAZE_ONSET': 'On-set data directory',
+    'MAZE_IO': 'Import/export directory',
+    'MAZE_DEVELOPMENT': 'Development workspace',
+    'MAZE_RND': 'Research and development directory',
+    'MAZE_MISC': 'Miscellaneous files directory',
+    'MAZE_CONTEXT_TYPE': 'Context type (shot or asset)',
+    'MAZE_CONTEXT_NAME': 'Current shot or asset name',
+    'MAZE_CONTEXT_PATH': 'Full path to the context directory',
+    'PIPELINE_DIR': 'Pipeline root directory',
+    'START_FRAME': 'Shot start frame',
+    'END_FRAME': 'Shot end frame',
+    'FRAME_RATE': 'Shot frame rate',
+    'HOUDINI_JOB': 'Houdini job directory',
+    'JOB': 'Generic job directory (Houdini)',
+    'MAYA_PROJECT': 'Maya project directory',
+}
+
+
 class EnvVarsPage(QWidget):
     def __init__(self, env_vars, parent=None):
         super().__init__(parent)
         self.env_vars = env_vars
         self._build()
+
+    def _refresh(self):
+        base_vars = sorted(self.env_vars.items())
+        self._fill_table(self.base_table, base_vars)
+
+        ctx_pairs = [(k, os.environ.get(k, '') or '—') for k in CONTEXT_ENV_KEYS]
+        self._fill_table(self.ctx_table, ctx_pairs)
+
+    @staticmethod
+    def _fill_table(table, pairs):
+        table.setRowCount(len(pairs))
+        for i, (key, value) in enumerate(pairs):
+            table.setItem(i, 0, QTableWidgetItem(key))
+            table.setItem(i, 1, QTableWidgetItem(value))
+            table.setItem(i, 2, QTableWidgetItem(ENV_DESCRIPTIONS.get(key, '')))
+        table.resizeColumnsToContents()
+
+    def _make_table(self):
+        table = QTableWidget()
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(['Variable', 'Value', 'Description'])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setAlternatingRowColors(True)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        return table
 
     def _build(self):
         layout = QVBoxLayout(self)
@@ -974,29 +1030,25 @@ class EnvVarsPage(QWidget):
         layout.addWidget(title)
 
         note = QLabel(
-            'Each value references MAZE_PROJECT_ROOT as the base path. '
-            'Absolute paths are also set in the OS environment for tool compatibility.'
+            'Base paths use MAZE_PROJECT_ROOT references. '
+            'Context variables populate after launching an app with a context.'
         )
         note.setWordWrap(True)
         note.setObjectName('hint')
         layout.addWidget(note)
         layout.addSpacing(8)
 
-        self.table = QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(['Variable', 'Value'])
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setAlternatingRowColors(True)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(QLabel('Static Variables'))
+        self.base_table = self._make_table()
+        layout.addWidget(self.base_table)
 
-        self.table.setRowCount(len(self.env_vars))
-        for i, (key, value) in enumerate(sorted(self.env_vars.items())):
-            self.table.setItem(i, 0, QTableWidgetItem(key))
-            self.table.setItem(i, 1, QTableWidgetItem(value))
+        layout.addSpacing(12)
 
-        self.table.resizeColumnToContents(0)
-        layout.addWidget(self.table)
+        layout.addWidget(QLabel('Context Variables'))
+        self.ctx_table = self._make_table()
+        layout.addWidget(self.ctx_table)
+
+        self._refresh()
 
 
 class MainWindow(QMainWindow):
@@ -1111,7 +1163,7 @@ def _load_styles(app, styles_dir):
 def main():
     project_root = find_project_root()
     pipeline_dir = project_root / 'pipeline'
-    script_dir = Path(__file__).resolve().parent
+    app_dir = _app_dir()
 
     env_vars = setup_environment(project_root)
     apps_config = load_apps_config()
@@ -1121,7 +1173,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setFont(QFont('Segoe UI', 10))
-    _load_styles(app, script_dir)
+    _load_styles(app, app_dir)
 
     window = MainWindow(project_root, env_vars, apps_config, pipeline_dir)
     window.show()
