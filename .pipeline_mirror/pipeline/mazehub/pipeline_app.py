@@ -15,6 +15,7 @@ APP_FILE_EXTENSIONS = {
     'SubstancePainter': ['.spp'],
     'Zbrush': ['.ztl', '.zbp'],
     'Photoshop': ['.psd', '.psb'],
+    'USD': ['.usd', '.usda', '.usdc'],
 }
 
 
@@ -114,6 +115,7 @@ APP_CONTEXT_ENV = {
     'SubstancePainter': {},
     'Zbrush': {},
     'Photoshop': {},
+    'USD': {},
 }
 
 

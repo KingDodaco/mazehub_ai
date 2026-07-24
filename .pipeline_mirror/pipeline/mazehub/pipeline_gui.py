@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QComboBox, QTableWidget,
     QTableWidgetItem, QStackedWidget, QTextEdit, QFrame,
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
-    QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog,
+    QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog, QTabWidget,
 )
 
 from pipeline_app import (
@@ -26,6 +26,7 @@ SIDEBAR_ITEMS = [
     ('Launch Apps', 'Launch VFX applications'),
     ('Shot Explorer', 'Browse existing shots and create new ones'),
     ('Asset Explorer', 'Browse existing assets and create new ones'),
+    ('USD Preview', 'Inspect USD file scene graph, attributes, and primvars'),
     ('Env Vars', 'View environment variables'),
 ]
 
@@ -990,6 +991,180 @@ class EnvVarsPage(QWidget):
         layout.addWidget(self.table)
 
 
+class USDPreviewPage(QWidget):
+    def __init__(self, project_root, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        title = QLabel('USD Preview')
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        layout.addSpacing(8)
+
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel('File:'))
+        self.file_combo = QComboBox()
+        self.file_combo.setMinimumWidth(300)
+        self.file_combo.currentIndexChanged.connect(self._load_selected)
+        toolbar.addWidget(self.file_combo)
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.clicked.connect(self._scan_files)
+        toolbar.addWidget(self.refresh_btn)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+        layout.addSpacing(8)
+
+        splitter = QSplitter(Qt.Horizontal)
+
+        self.scene_tree = QTreeWidget()
+        self.scene_tree.setHeaderLabels(['Prim', 'Type', 'Decl'])
+        self.scene_tree.setColumnWidth(0, 200)
+        self.scene_tree.setAlternatingRowColors(True)
+        self.scene_tree.itemSelectionChanged.connect(self._on_prim_selected)
+        splitter.addWidget(self.scene_tree)
+
+        detail_widget = QWidget()
+        detail_layout = QVBoxLayout(detail_widget)
+        detail_layout.setContentsMargins(8, 0, 0, 0)
+
+        self.detail_tabs = QTabWidget()
+        self.attr_table = QTableWidget()
+        self.attr_table.setColumnCount(2)
+        self.attr_table.setHorizontalHeaderLabels(['Attribute', 'Value'])
+        self.attr_table.setAlternatingRowColors(True)
+        self.attr_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.attr_table.horizontalHeader().setStretchLastSection(True)
+        self.detail_tabs.addTab(self.attr_table, 'Attributes')
+
+        self.primvar_table = QTableWidget()
+        self.primvar_table.setColumnCount(3)
+        self.primvar_table.setHorizontalHeaderLabels(['Primvar', 'Value', 'Metadata'])
+        self.primvar_table.setAlternatingRowColors(True)
+        self.primvar_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.primvar_table.horizontalHeader().setStretchLastSection(True)
+        self.detail_tabs.addTab(self.primvar_table, 'Primvars')
+
+        self.meta_table = QTableWidget()
+        self.meta_table.setColumnCount(2)
+        self.meta_table.setHorizontalHeaderLabels(['Key', 'Value'])
+        self.meta_table.setAlternatingRowColors(True)
+        self.meta_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.meta_table.horizontalHeader().setStretchLastSection(True)
+        self.detail_tabs.addTab(self.meta_table, 'Metadata')
+
+        detail_layout.addWidget(self.detail_tabs)
+        splitter.addWidget(detail_widget)
+
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, 1)
+
+        self._current_data = None
+        self._scan_files()
+
+    def _scan_files(self):
+        self.file_combo.blockSignals(True)
+        self.file_combo.clear()
+
+        from pipeline_app import APP_FILE_EXTENSIONS
+        usd_exts = APP_FILE_EXTENSIONS.get('USD', ['.usd', '.usda', '.usdc'])
+
+        files = []
+        for ext in usd_exts:
+            for fp in sorted(self.project_root.rglob(f'*{ext}')):
+                parts = fp.relative_to(self.project_root).parts
+                if any(p.startswith('.') or p == '__pycache__' or p == '.venv' for p in parts):
+                    continue
+                files.append(fp)
+
+        files.sort(key=lambda p: str(p))
+        for fp in files:
+            label = str(fp.relative_to(self.project_root))
+            self.file_combo.addItem(label, fp)
+
+        self.file_combo.blockSignals(False)
+
+        if self.file_combo.count() > 0:
+            self._load_selected()
+        else:
+            self.scene_tree.clear()
+            self.attr_table.setRowCount(0)
+            self.primvar_table.setRowCount(0)
+            self.meta_table.setRowCount(0)
+
+    def _load_selected(self):
+        self.scene_tree.clear()
+        self.attr_table.setRowCount(0)
+        self.primvar_table.setRowCount(0)
+        self.meta_table.setRowCount(0)
+
+        if self.file_combo.count() == 0:
+            return
+
+        fp = self.file_combo.currentData()
+        if not fp or not fp.exists():
+            return
+
+        from usd_parser import parse_usd_file
+        self._current_data = parse_usd_file(str(fp))
+
+        self._populate_top_metadata(self._current_data['metadata'])
+        for prim in self._current_data['prims']:
+            self._add_prim_to_tree(None, prim)
+
+        self.scene_tree.expandAll()
+
+    def _populate_top_metadata(self, meta):
+        self.meta_table.setRowCount(len(meta))
+        for i, (k, v) in enumerate(sorted(meta.items())):
+            self.meta_table.setItem(i, 0, QTableWidgetItem(k))
+            self.meta_table.setItem(i, 1, QTableWidgetItem(v))
+
+    def _add_prim_to_tree(self, parent_item, prim):
+        item = QTreeWidgetItem(parent_item or self.scene_tree,
+                               [prim['name'], prim['type'], prim['decl']])
+        item.setData(0, Qt.UserRole, prim)
+        for child in prim.get('children', []):
+            self._add_prim_to_tree(item, child)
+
+    def _on_prim_selected(self):
+        items = self.scene_tree.selectedItems()
+        if not items:
+            self.attr_table.setRowCount(0)
+            self.primvar_table.setRowCount(0)
+            return
+
+        prim = items[0].data(0, Qt.UserRole)
+        if not prim:
+            return
+
+        attrs = prim.get('attributes', [])
+        self.attr_table.setRowCount(len(attrs))
+        for i, a in enumerate(attrs):
+            self.attr_table.setItem(i, 0, QTableWidgetItem(a['name']))
+            self.attr_table.setItem(i, 1, QTableWidgetItem(a['value']))
+
+        pvs = prim.get('primvars', [])
+        self.primvar_table.setRowCount(len(pvs))
+        for i, pv in enumerate(pvs):
+            self.primvar_table.setItem(i, 0, QTableWidgetItem(pv['name']))
+            self.primvar_table.setItem(i, 1, QTableWidgetItem(pv['value']))
+            meta_str = ', '.join(f'{k}={v}' for k, v in pv.get('metadata', {}).items())
+            self.primvar_table.setItem(i, 2, QTableWidgetItem(meta_str))
+
+        self.attr_table.resizeColumnsToContents()
+        self.primvar_table.resizeColumnsToContents()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, project_root, env_vars, apps_config, pipeline_dir):
         super().__init__()
@@ -1037,12 +1212,13 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
 
         page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
-                        AssetExplorerPage, EnvVarsPage]
+                        AssetExplorerPage, USDPreviewPage, EnvVarsPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
             (self.apps_config, self.pipeline_dir, self.project_root),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.apps_config, self.pipeline_dir),
+            (self.project_root,),
             (self.env_vars,),
         ]
 
