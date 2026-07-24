@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from pipeline_app import (
     find_project_root, setup_environment, load_apps_config,
     read_shot_meta, write_shot_meta, APP_FILE_EXTENSIONS,
+    build_context_env,
 )
 
 
@@ -41,10 +42,12 @@ class SidebarButton(QPushButton):
 class AppLauncherThread(QThread):
     finished = Signal(str, bool)
 
-    def __init__(self, config, pipeline_dir):
+    def __init__(self, config, pipeline_dir, project_root=None, context=None):
         super().__init__()
         self.config = config
         self.pipeline_dir = pipeline_dir
+        self.project_root = project_root
+        self.context = context
 
     def run(self):
         try:
@@ -52,12 +55,19 @@ class AppLauncherThread(QThread):
             if not exec_path.exists():
                 self.finished.emit(f'Executable not found: {exec_path}', False)
                 return
+
+            launch_env = os.environ.copy()
+            if self.context and self.project_root:
+                ctx = dict(self.context, app_name=self.config.get('_key', ''))
+                ctx_env = build_context_env(ctx, self.project_root)
+                launch_env.update(ctx_env)
+
             if platform.system() == 'Windows':
-                subprocess.Popen([str(exec_path)], shell=True)
+                subprocess.Popen([str(exec_path)], shell=True, env=launch_env)
             elif platform.system() == 'Darwin':
-                subprocess.Popen(['open', str(exec_path)])
+                subprocess.Popen(['open', str(exec_path)], env=launch_env)
             else:
-                subprocess.Popen(['xdg-open', str(exec_path)])
+                subprocess.Popen([str(exec_path)], shell=True, env=launch_env)
             self.finished.emit(f'Launched {self.config["display_name"]}', True)
         except Exception as e:
             self.finished.emit(f'Failed: {e}', False)
@@ -66,21 +76,30 @@ class AppLauncherThread(QThread):
 class FileOpenThread(QThread):
     finished = Signal(str, bool)
 
-    def __init__(self, app_config, pipeline_dir, file_path):
+    def __init__(self, app_config, pipeline_dir, file_path, project_root=None, context=None):
         super().__init__()
         self.config = app_config
         self.pipeline_dir = pipeline_dir
         self.file_path = file_path
+        self.project_root = project_root
+        self.context = context
 
     def run(self):
         try:
             exec_path = self.pipeline_dir / self.config['subdir'] / self.config['executable']
+
+            launch_env = os.environ.copy()
+            if self.context and self.project_root:
+                ctx = dict(self.context, app_name=self.config.get('_key', ''))
+                ctx_env = build_context_env(ctx, self.project_root)
+                launch_env.update(ctx_env)
+
             if platform.system() == 'Windows':
-                subprocess.Popen([str(exec_path), str(self.file_path)], shell=True)
+                subprocess.Popen([str(exec_path), str(self.file_path)], shell=True, env=launch_env)
             elif platform.system() == 'Darwin':
-                subprocess.Popen(['open', str(self.file_path)])
+                subprocess.Popen(['open', str(self.file_path)], env=launch_env)
             else:
-                subprocess.Popen([str(exec_path), str(self.file_path)], shell=True)
+                subprocess.Popen([str(exec_path), str(self.file_path)], shell=True, env=launch_env)
             self.finished.emit(f'Opened {self.file_path.name} with {self.config["display_name"]}', True)
         except Exception as e:
             self.finished.emit(f'Failed: {e}', False)
@@ -99,6 +118,7 @@ class FileBrowserPanel(QWidget):
         self.apps_config = apps_config
         self.pipeline_dir = pipeline_dir
         self._current_path = None
+        self._current_context = None
         self._file_map = {}
         self._build()
 
@@ -137,12 +157,14 @@ class FileBrowserPanel(QWidget):
             lambda: self.open_btn.setEnabled(bool(self.tree.selectedItems()))
         )
 
-    def set_directory(self, path):
+    def set_directory(self, path, context=None):
         self._current_path = Path(path) if path else None
+        self._current_context = context
         self._refresh()
 
     def clear(self):
         self._current_path = None
+        self._current_context = None
         self.path_label.setText('Select a shot or asset to browse files')
         self.file_count_label.setText('')
         self.tree.clear()
@@ -207,7 +229,11 @@ class FileBrowserPanel(QWidget):
                     if hasattr(window, 'show_status'):
                         window.show_status(f'No config for {app_name}', False)
                     return
-                self.thread = FileOpenThread(cfg, self.pipeline_dir, fp)
+                cfg['_key'] = app_name
+                self.thread = FileOpenThread(
+                    cfg, self.pipeline_dir, fp,
+                    project_root=self.project_root, context=self._current_context,
+                )
                 self.thread.finished.connect(lambda msg, ok: self._result(msg, ok))
                 self.thread.start()
                 return
@@ -457,10 +483,12 @@ class DashboardPage(QWidget):
 
 
 class LaunchAppsPage(QWidget):
-    def __init__(self, apps_config, pipeline_dir, parent=None):
+    def __init__(self, apps_config, pipeline_dir, project_root, parent=None):
         super().__init__(parent)
         self.apps_config = apps_config
         self.pipeline_dir = pipeline_dir
+        self.project_root = project_root
+        self._context = None
         self._build()
 
     def _build(self):
@@ -475,6 +503,41 @@ class LaunchAppsPage(QWidget):
         layout.addWidget(title)
         layout.addSpacing(8)
 
+        ctx_group = QGroupBox('Context (optional)')
+        ctx_layout = QVBoxLayout(ctx_group)
+
+        ctx_row = QHBoxLayout()
+        ctx_row.addWidget(QLabel('Context:'))
+        self.ctx_combo = QComboBox()
+        self.ctx_combo.addItems(['None', 'Shot', 'Asset'])
+        self.ctx_combo.currentTextChanged.connect(self._on_context_type_change)
+        ctx_row.addWidget(self.ctx_combo)
+
+        self.ctx_shot_combo = QComboBox()
+        self.ctx_shot_combo.setVisible(False)
+        self.ctx_shot_combo.currentTextChanged.connect(self._update_context)
+        ctx_row.addWidget(self.ctx_shot_combo)
+
+        self.ctx_cat_combo = QComboBox()
+        self.ctx_cat_combo.setVisible(False)
+        self.ctx_cat_combo.currentTextChanged.connect(self._on_category_change)
+        ctx_row.addWidget(self.ctx_cat_combo)
+
+        self.ctx_asset_combo = QComboBox()
+        self.ctx_asset_combo.setVisible(False)
+        self.ctx_asset_combo.currentTextChanged.connect(self._update_context)
+        ctx_row.addWidget(self.ctx_asset_combo)
+
+        ctx_row.addStretch()
+        ctx_layout.addLayout(ctx_row)
+
+        self.ctx_info = QLabel('')
+        self.ctx_info.setObjectName('hint')
+        ctx_layout.addWidget(self.ctx_info)
+
+        layout.addWidget(ctx_group)
+        layout.addSpacing(8)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -485,6 +548,7 @@ class LaunchAppsPage(QWidget):
 
         if self.apps_config:
             for name, cfg in self.apps_config.items():
+                cfg['_key'] = name
                 card = QFrame()
                 card.setFrameShape(QFrame.StyledPanel)
                 card_layout = QHBoxLayout(card)
@@ -514,10 +578,70 @@ class LaunchAppsPage(QWidget):
 
         container_layout.addStretch()
         scroll.setWidget(container)
-        layout.addWidget(scroll)
+        layout.addWidget(scroll, 1)
+
+        self._populate_contexts()
+
+    def _populate_contexts(self):
+        seq_dir = self.project_root / 'sequence'
+        if seq_dir.exists():
+            shots = sorted(d.name for d in seq_dir.iterdir() if d.is_dir() and not d.name.startswith('_'))
+        else:
+            shots = []
+        self.ctx_shot_combo.clear()
+        self.ctx_shot_combo.addItems(shots)
+
+        from make_folders import NEW_ASSET_CATEGORY_LIST
+        self.ctx_cat_combo.clear()
+        self.ctx_cat_combo.addItems(NEW_ASSET_CATEGORY_LIST)
+
+    def _on_context_type_change(self, text):
+        self.ctx_shot_combo.setVisible(text == 'Shot')
+        self.ctx_cat_combo.setVisible(text == 'Asset')
+        self.ctx_asset_combo.setVisible(text == 'Asset')
+        if text == 'Asset':
+            self._on_category_change(self.ctx_cat_combo.currentText())
+        self._update_context()
+
+    def _on_category_change(self, category):
+        self.ctx_asset_combo.clear()
+        asset_dir = self.project_root / 'asset' / category
+        if asset_dir.exists():
+            assets = sorted(d.name for d in asset_dir.iterdir() if d.is_dir() and not d.name.startswith('_'))
+            self.ctx_asset_combo.addItems(assets)
+        self._update_context()
+
+    def _update_context(self):
+        ctx_type = self.ctx_combo.currentText()
+        if ctx_type == 'None':
+            self._context = None
+            self.ctx_info.setText('No context — app launches without asset/shot working directory.')
+            return
+
+        if ctx_type == 'Shot':
+            name = self.ctx_shot_combo.currentText()
+            if not name:
+                self._context = None
+                self.ctx_info.setText('No shots available.')
+                return
+            path = self.project_root / 'sequence' / name
+        else:
+            cat = self.ctx_cat_combo.currentText()
+            name = self.ctx_asset_combo.currentText()
+            if not name:
+                self._context = None
+                self.ctx_info.setText('No assets available in this category.')
+                return
+            path = self.project_root / 'asset' / cat / name
+
+        self._context = {'type': ctx_type.lower(), 'name': name, 'path': path}
+        self.ctx_info.setText(f'Launch context: {ctx_type} — {name}  ({path})')
 
     def _launch(self, cfg):
-        self.thread = AppLauncherThread(cfg, self.pipeline_dir)
+        self.thread = AppLauncherThread(
+            cfg, self.pipeline_dir,
+            project_root=self.project_root, context=self._context,
+        )
         self.thread.finished.connect(lambda msg, ok: self._result(msg, ok))
         self.thread.start()
 
@@ -653,7 +777,8 @@ class ShotExplorerPage(QWidget):
             row = items[0].row()
             shot_name = self.table.item(row, 0).text()
             shot_path = self.project_root / 'sequence' / shot_name
-            self._file_panel.set_directory(shot_path)
+            ctx = {'type': 'shot', 'name': shot_name, 'path': shot_path}
+            self._file_panel.set_directory(shot_path, context=ctx)
             self.file_browser.setTitle(f'Files: {shot_name}')
             self.file_browser.setVisible(True)
         else:
@@ -782,7 +907,8 @@ class AssetExplorerPage(QWidget):
             asset_name = self.table.item(row, 0).text()
             cat = self.table.item(row, 1).text()
             asset_path = self.project_root / 'asset' / cat / asset_name
-            self._file_panel.set_directory(asset_path)
+            ctx = {'type': 'asset', 'name': asset_name, 'path': asset_path}
+            self._file_panel.set_directory(asset_path, context=ctx)
             self.file_browser.setTitle(f'Files: {asset_name}')
             self.file_browser.setVisible(True)
         else:
@@ -913,7 +1039,7 @@ class MainWindow(QMainWindow):
                         AssetExplorerPage, EnvVarsPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
-            (self.apps_config, self.pipeline_dir),
+            (self.apps_config, self.pipeline_dir, self.project_root),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.env_vars,),

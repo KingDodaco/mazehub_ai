@@ -79,6 +79,41 @@ def setup_environment(project_root):
     return env_vars
 
 
+APP_CONTEXT_ENV = {
+    'Houdini': {
+        'HOUDINI_JOB': '{context_path}',
+        'JOB': '{context_path}',
+    },
+    'Maya': {
+        'MAYA_PROJECT': '{context_path}',
+    },
+    'NukeX': {},
+    'Blender': {},
+    'Mari': {},
+    'SubstancePainter': {},
+    'Zbrush': {},
+    'Photoshop': {},
+}
+
+
+def build_context_env(context, project_root):
+    if not context:
+        return {}
+    env = {
+        'MAZE_CONTEXT_TYPE': context['type'],
+        'MAZE_CONTEXT_NAME': context['name'],
+        'MAZE_CONTEXT_PATH': str(context['path']),
+    }
+    app_env = APP_CONTEXT_ENV.get(context.get('app_name', ''), {})
+    for key, template in app_env.items():
+        resolved = template.format(
+            context_path=str(context['path']),
+            project_root=str(project_root),
+        )
+        env[key] = resolved
+    return env
+
+
 def load_apps_config():
     script_dir = Path(__file__).resolve().parent
     config_path = script_dir / 'apps.json'
