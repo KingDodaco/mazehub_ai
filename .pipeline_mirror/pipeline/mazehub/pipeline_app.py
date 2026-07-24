@@ -59,24 +59,45 @@ def write_shot_meta(shot_path, metadata):
         json.dump(clean, f, indent=2)
 
 
+def _env_ref(root_var):
+    if platform.system() == 'Windows':
+        return f'%{root_var}%'
+    return f'${root_var}'
+
+
+def _resolve_ref(value, project_root):
+    if platform.system() == 'Windows':
+        expanded = value.replace(f'%MAZE_PROJECT_ROOT%', str(project_root))
+    else:
+        expanded = value.replace(f'$MAZE_PROJECT_ROOT', str(project_root))
+    # Normalize path separators
+    expanded = expanded.replace('/', os.sep).replace('\\', os.sep)
+    return expanded
+
+
 def setup_environment(project_root):
     root = str(Path(project_root))
     ROOT_VAR = 'MAZE_PROJECT_ROOT'
-    env_vars = {
+    ref = _env_ref(ROOT_VAR)
+
+    ref_vars = {
         ROOT_VAR: root,
         'MAZE_PROJECT': Path(root).name,
-        'MAZE_PIPELINE': f'{ROOT_VAR}/pipeline',
-        'MAZE_ASSETS': f'{ROOT_VAR}/asset',
-        'MAZE_SEQUENCES': f'{ROOT_VAR}/sequence',
-        'MAZE_ONSET': f'{ROOT_VAR}/onset',
-        'MAZE_IO': f'{ROOT_VAR}/IO',
-        'MAZE_DEVELOPMENT': f'{ROOT_VAR}/development',
-        'MAZE_RND': f'{ROOT_VAR}/rnd',
-        'MAZE_MISC': f'{ROOT_VAR}/MISC',
+        'MAZE_PIPELINE': f'{ref}/pipeline',
+        'MAZE_ASSETS': f'{ref}/asset',
+        'MAZE_SEQUENCES': f'{ref}/sequence',
+        'MAZE_ONSET': f'{ref}/onset',
+        'MAZE_IO': f'{ref}/IO',
+        'MAZE_DEVELOPMENT': f'{ref}/development',
+        'MAZE_RND': f'{ref}/rnd',
+        'MAZE_MISC': f'{ref}/MISC',
     }
-    for key, value in env_vars.items():
-        os.environ[key] = value
-    return env_vars
+
+    for key, value in ref_vars.items():
+        resolved = _resolve_ref(value, project_root) if key != ROOT_VAR else value
+        os.environ[key] = resolved
+
+    return ref_vars
 
 
 APP_CONTEXT_ENV = {
