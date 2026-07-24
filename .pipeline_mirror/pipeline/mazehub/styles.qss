@@ -147,11 +147,33 @@ QScrollArea {
     border: none;
 }
 
-QFrame[frameShape="4"] {
+QScrollArea > QWidget > QWidget {
+    background-color: transparent;
+}
+
+QScrollArea QWidget#launchContainer,
+QWidget#launchContainer {
+    background-color: transparent;
+}
+
+QFrame[frameShape="6"] {
     background-color: #16213e;
     border: 1px solid #0f3460;
     border-radius: 8px;
     padding: 12px;
+}
+
+QTableCornerButton::section {
+    background-color: #0f3460;
+    border: none;
+}
+
+QHeaderView {
+    background-color: #0f3460;
+}
+
+QHeaderView::section:!first {
+    border-left: none;
 }
 
 #statCard {

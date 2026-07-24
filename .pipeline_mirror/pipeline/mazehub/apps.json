@@ -40,5 +40,11 @@
         "executable":"MAZE_Zbrush.bat",
         "subdir":"Zbrush",
         "appsanywhere": true
+    },
+    "Photoshop":{
+        "display_name":"Photoshop",
+        "executable":"MAZE_Photoshop.bat",
+        "subdir":"Photoshop",
+        "appsanywhere": true
     }
 }

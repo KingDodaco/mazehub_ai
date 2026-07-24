@@ -543,6 +543,7 @@ class LaunchAppsPage(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
 
         container = QWidget()
+        container.setObjectName('launchContainer')
         container_layout = QVBoxLayout(container)
         container_layout.setSpacing(12)
 

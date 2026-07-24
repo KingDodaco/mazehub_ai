@@ -99,15 +99,29 @@ APP_CONTEXT_ENV = {
 def build_context_env(context, project_root):
     if not context:
         return {}
+    ctx_path = Path(context['path'])
     env = {
         'MAZE_CONTEXT_TYPE': context['type'],
         'MAZE_CONTEXT_NAME': context['name'],
-        'MAZE_CONTEXT_PATH': str(context['path']),
+        'MAZE_CONTEXT_PATH': str(ctx_path),
+        'PIPELINE_DIR': str(Path(project_root) / 'pipeline'),
     }
+
+    if context['type'] == 'shot':
+        meta = read_shot_meta(ctx_path)
+        fr = meta.get('frame_range', '')
+        if fr and '-' in fr:
+            parts = fr.split('-')
+            env['START_FRAME'] = parts[0]
+            env['END_FRAME'] = parts[1]
+        fps = meta.get('frame_rate', '')
+        if fps:
+            env['FRAME_RATE'] = fps
+
     app_env = APP_CONTEXT_ENV.get(context.get('app_name', ''), {})
     for key, template in app_env.items():
         resolved = template.format(
-            context_path=str(context['path']),
+            context_path=str(ctx_path),
             project_root=str(project_root),
         )
         env[key] = resolved

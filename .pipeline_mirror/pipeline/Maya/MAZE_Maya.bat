@@ -1,30 +1,24 @@
 @echo off
-
 setlocal
 
+set "PIPELINE_DIR=%MAZE_PIPELINE%"
 set MAYA_SCRIPT_PATH=%PIPELINE_DIR%\Maya\scripts
 
-if "%1"=="-clean" (
-    echo running with clean environment variables
-) else (
-    if not "%ASSET%"=="" (
-        if not "%SHOT%"=="" (
-            echo ERROR: SHOT and ASSET are both set!
-            exit /b 1
-        ) else (
-            set "JOB=%ASSET%\maya"
-        )
-    ) else (
-        if not "%SHOT%"=="" (
-            set "JOB=%SHOT%\maya"
-        ) else (
-            echo ERROR: SHOT or ASSET are not set!
-            exit /b 1
-        )
-))
+if "%MAZE_CONTEXT_TYPE%"=="shot" (
+    set "JOB=%MAZE_CONTEXT_PATH%\maya"
+    set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
+) else if "%MAZE_CONTEXT_TYPE%"=="asset" (
+    set "JOB=%MAZE_CONTEXT_PATH%\maya"
+    set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
+)
+
+set "MAYA_PROJECT=%JOB%"
 
 set "JOB=%JOB:\=/%"
-echo "%JOB%"
+
+echo Launching Maya for %MAZE_CONTEXT_TYPE%: %MAZE_CONTEXT_NAME%
+echo Maya Project=%JOB%
+echo START_FRAME=%START_FRAME%  END_FRAME=%END_FRAME%  FRAME_RATE=%FRAME_RATE%
 
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
