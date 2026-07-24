@@ -14,6 +14,7 @@ APP_FILE_EXTENSIONS = {
     'Mari': ['.mri', '.mra', '.mfb'],
     'SubstancePainter': ['.spp'],
     'Zbrush': ['.ztl', '.zbp'],
+    'Photoshop': ['.psd', '.psb'],
 }
 
 
@@ -36,7 +37,6 @@ SHOT_META_FILENAME = '_metadata.json'
 DEFAULT_SHOT_META = {
     'frame_range': '',
     'frame_rate': '',
-    'resolution': '',
     'description': '',
 }
 

@@ -1,6 +1,5 @@
 {
   "frame_range": "1001-1240",
   "frame_rate": "24",
-  "resolution": "1920x1080",
-  "description": ""
+  "description": "This is a test description for a shot to test how well it can handle long texts"
 }

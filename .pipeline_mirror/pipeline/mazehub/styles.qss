@@ -193,3 +193,17 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     font-size: 11px;
     padding: 4px 0;
 }
+
+#dialogError {
+    color: #e94560;
+    font-size: 12px;
+    padding: 4px 0;
+}
+
+QDialog {
+    background-color: #1a1a2e;
+}
+
+QDialog QLabel {
+    color: #e0e0e8;
+}

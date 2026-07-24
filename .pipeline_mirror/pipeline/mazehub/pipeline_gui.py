@@ -11,12 +11,12 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QComboBox, QTableWidget,
     QTableWidgetItem, QStackedWidget, QTextEdit, QFrame,
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
-    QFormLayout, QGridLayout, QScrollArea, QSplitter,
+    QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog,
 )
 
 from pipeline_app import (
     find_project_root, setup_environment, load_apps_config,
-    find_project_files, read_shot_meta, write_shot_meta,
+    read_shot_meta, write_shot_meta, APP_FILE_EXTENSIONS,
 )
 
 
@@ -25,7 +25,6 @@ SIDEBAR_ITEMS = [
     ('Launch Apps', 'Launch VFX applications'),
     ('Shot Explorer', 'Browse existing shots and create new ones'),
     ('Asset Explorer', 'Browse existing assets and create new ones'),
-    ('Browse Files', 'Find and open project files'),
     ('Env Vars', 'View environment variables'),
 ]
 
@@ -85,6 +84,276 @@ class FileOpenThread(QThread):
             self.finished.emit(f'Opened {self.file_path.name} with {self.config["display_name"]}', True)
         except Exception as e:
             self.finished.emit(f'Failed: {e}', False)
+
+
+REVERSE_EXT_MAP = {}
+for _app, exts in APP_FILE_EXTENSIONS.items():
+    for ext in exts:
+        REVERSE_EXT_MAP[ext] = _app
+
+
+class FileBrowserPanel(QWidget):
+    def __init__(self, project_root, apps_config, pipeline_dir, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self.apps_config = apps_config
+        self.pipeline_dir = pipeline_dir
+        self._current_path = None
+        self._file_map = {}
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        header = QHBoxLayout()
+        self.path_label = QLabel('Select a shot or asset to browse files')
+        self.path_label.setObjectName('browserPath')
+        header.addWidget(self.path_label, 1)
+        self.file_count_label = QLabel('')
+        self.file_count_label.setObjectName('browserCount')
+        header.addWidget(self.file_count_label)
+        layout.addLayout(header)
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(['File', 'Application', 'Path'])
+        self.tree.setColumnWidth(0, 200)
+        self.tree.setColumnWidth(1, 130)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.itemDoubleClicked.connect(self._open_selected)
+        layout.addWidget(self.tree)
+
+        btn_row = QHBoxLayout()
+        self.open_btn = QPushButton('Open Selected')
+        self.open_btn.setMinimumHeight(32)
+        self.open_btn.setCursor(Qt.PointingHandCursor)
+        self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self._open_selected)
+        btn_row.addWidget(self.open_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self.tree.itemSelectionChanged.connect(
+            lambda: self.open_btn.setEnabled(bool(self.tree.selectedItems()))
+        )
+
+    def set_directory(self, path):
+        self._current_path = Path(path) if path else None
+        self._refresh()
+
+    def clear(self):
+        self._current_path = None
+        self.path_label.setText('Select a shot or asset to browse files')
+        self.file_count_label.setText('')
+        self.tree.clear()
+        self._file_map.clear()
+        self.open_btn.setEnabled(False)
+
+    def _refresh(self):
+        self.tree.clear()
+        self._file_map.clear()
+        self.open_btn.setEnabled(False)
+
+        if not self._current_path or not self._current_path.exists():
+            self.path_label.setText('Directory not found')
+            self.file_count_label.setText('')
+            return
+
+        self.path_label.setText(str(self._current_path.relative_to(self.project_root)))
+
+        groups = {}
+        for ext, app_name in sorted(REVERSE_EXT_MAP.items()):
+            for fp in sorted(self._current_path.rglob(f'*{ext}')):
+                parts = fp.relative_to(self._current_path).parts
+                if any(p.startswith('_') or p.startswith('.') for p in parts):
+                    continue
+                groups.setdefault(app_name, []).append(fp)
+
+        idx = 1
+        for app_name in sorted(groups):
+            cfg = self.apps_config.get(app_name, {})
+            display = cfg.get('display_name', app_name)
+            parent = QTreeWidgetItem([f'{display}', '', ''])
+            parent.setFlags(parent.flags() & ~Qt.ItemIsSelectable)
+            font = parent.font(0)
+            font.setBold(True)
+            parent.setFont(0, font)
+            self.tree.addTopLevelItem(parent)
+            for fp in groups[app_name]:
+                rel = fp.relative_to(self.project_root)
+                child = QTreeWidgetItem([fp.name, app_name, str(rel.parent)])
+                parent.addChild(child)
+                self._file_map[idx] = (app_name, fp, rel, child)
+                idx += 1
+            parent.setExpanded(True)
+
+        count = idx - 1
+        self.file_count_label.setText(f'{count} file{"s" if count != 1 else ""}')
+
+        if count == 0:
+            item = QTreeWidgetItem(['No project files found in this directory', '', ''])
+            self.tree.addTopLevelItem(item)
+
+    def _open_selected(self):
+        items = self.tree.selectedItems()
+        if not items:
+            return
+        item = items[0]
+        for idx, (app_name, fp, rel, tree_item) in self._file_map.items():
+            if tree_item is item:
+                cfg = self.apps_config.get(app_name)
+                if not cfg:
+                    window = self.window()
+                    if hasattr(window, 'show_status'):
+                        window.show_status(f'No config for {app_name}', False)
+                    return
+                self.thread = FileOpenThread(cfg, self.pipeline_dir, fp)
+                self.thread.finished.connect(lambda msg, ok: self._result(msg, ok))
+                self.thread.start()
+                return
+
+    def _result(self, msg, ok):
+        window = self.window()
+        if hasattr(window, 'show_status'):
+            window.show_status(msg, ok)
+
+
+class ShotDialog(QDialog):
+    def __init__(self, parent=None, shot_name='', frame_start='1001', frame_end='1240', frame_rate='24', description=''):
+        super().__init__(parent)
+        self.setWindowTitle('New Shot' if not shot_name else f'Edit Shot: {shot_name}')
+        self.setMinimumWidth(500)
+        self._result = None
+
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.name_edit = QLineEdit(shot_name)
+        self.name_edit.setPlaceholderText('e.g. SH010')
+        form.addRow('Shot Name:', self.name_edit)
+
+        range_row = QHBoxLayout()
+        self.fr_start = QLineEdit(str(frame_start))
+        self.fr_start.setPlaceholderText('Start')
+        range_row.addWidget(self.fr_start)
+        range_row.addWidget(QLabel('—'))
+        self.fr_end = QLineEdit(str(frame_end))
+        self.fr_end.setPlaceholderText('End')
+        range_row.addWidget(self.fr_end)
+        form.addRow('Frame Range:', range_row)
+
+        self.fps_edit = QLineEdit(str(frame_rate))
+        self.fps_edit.setPlaceholderText('e.g. 24')
+        form.addRow('Frame Rate:', self.fps_edit)
+
+        self.desc_edit = QLineEdit(description)
+        self.desc_edit.setPlaceholderText('e.g. Establishing wide shot')
+        form.addRow('Description:', self.desc_edit)
+        layout.addLayout(form)
+
+        self.error_label = QLabel('')
+        self.error_label.setObjectName('dialogError')
+        self.error_label.setVisible(False)
+        layout.addWidget(self.error_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        save_btn = QPushButton('Save' if shot_name else 'Create')
+        save_btn.setMinimumHeight(36)
+        save_btn.clicked.connect(self._accept)
+        btn_row.addWidget(save_btn)
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.setMinimumHeight(36)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+    def _accept(self):
+        name = self.name_edit.text().strip()
+        start = self.fr_start.text().strip()
+        end = self.fr_end.text().strip()
+        fps = self.fps_edit.text().strip()
+        errors = []
+        if not name:
+            errors.append('Shot Name')
+        if not start:
+            errors.append('Frame Start')
+        if not end:
+            errors.append('Frame End')
+        if not fps:
+            errors.append('Frame Rate')
+        if errors:
+            self.error_label.setText(f'Required: {", ".join(errors)}')
+            self.error_label.setVisible(True)
+            return
+        self._result = {
+            'name': name,
+            'frame_range': f'{start}-{end}',
+            'frame_rate': fps,
+            'description': self.desc_edit.text().strip(),
+        }
+        self.accept()
+
+    def result_data(self):
+        return self._result
+
+
+class AssetDialog(QDialog):
+    def __init__(self, parent=None, category='', asset_name=''):
+        super().__init__(parent)
+        self.setWindowTitle('New Asset' if not asset_name else f'Edit Asset: {asset_name}')
+        self.setMinimumWidth(400)
+        self._result = None
+
+        from make_folders import NEW_ASSET_CATEGORY_LIST
+
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.cat_combo = QComboBox()
+        self.cat_combo.addItems(NEW_ASSET_CATEGORY_LIST)
+        if category:
+            idx = self.cat_combo.findText(category)
+            if idx >= 0:
+                self.cat_combo.setCurrentIndex(idx)
+        form.addRow('Category:', self.cat_combo)
+
+        self.name_edit = QLineEdit(asset_name)
+        self.name_edit.setPlaceholderText('e.g. MainCharacter')
+        form.addRow('Asset Name:', self.name_edit)
+        layout.addLayout(form)
+
+        self.error_label = QLabel('')
+        self.error_label.setObjectName('dialogError')
+        self.error_label.setVisible(False)
+        layout.addWidget(self.error_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        save_btn = QPushButton('Save' if asset_name else 'Create')
+        save_btn.setMinimumHeight(36)
+        save_btn.clicked.connect(self._accept)
+        btn_row.addWidget(save_btn)
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.setMinimumHeight(36)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+    def _accept(self):
+        name = self.name_edit.text().strip()
+        if not name:
+            self.error_label.setText('Required: Asset Name')
+            self.error_label.setVisible(True)
+            return
+        self._result = {
+            'category': self.cat_combo.currentText(),
+            'name': name,
+        }
+        self.accept()
+
+    def result_data(self):
+        return self._result
 
 
 class DashboardPage(QWidget):
@@ -259,10 +528,11 @@ class LaunchAppsPage(QWidget):
 
 
 class ShotExplorerPage(QWidget):
-    def __init__(self, project_root, parent=None):
+    def __init__(self, project_root, apps_config, pipeline_dir, parent=None):
         super().__init__(parent)
         self.project_root = project_root
-        self._editing_shot = None
+        self.apps_config = apps_config
+        self.pipeline_dir = pipeline_dir
         self._build()
 
     def _build(self):
@@ -277,103 +547,118 @@ class ShotExplorerPage(QWidget):
         layout.addWidget(title)
         layout.addSpacing(8)
 
-        splitter = QSplitter(Qt.Vertical)
-
-        top_widget = QWidget()
-        top_layout = QVBoxLayout(top_widget)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-
         toolbar = QHBoxLayout()
+        self.new_btn = QPushButton('New Shot')
+        self.new_btn.setMinimumHeight(32)
+        self.new_btn.setCursor(Qt.PointingHandCursor)
+        self.new_btn.clicked.connect(self._new_shot)
+        toolbar.addWidget(self.new_btn)
+
         self.edit_btn = QPushButton('Edit Selected')
         self.edit_btn.setMinimumHeight(32)
         self.edit_btn.setCursor(Qt.PointingHandCursor)
         self.edit_btn.setEnabled(False)
-        self.edit_btn.clicked.connect(self._load_selected)
+        self.edit_btn.clicked.connect(self._edit_shot)
         toolbar.addWidget(self.edit_btn)
         toolbar.addStretch()
-        top_layout.addLayout(toolbar)
+        layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(
-            ['Shot', 'Path', 'Frame Range', 'Frame Rate', 'Resolution', 'Description', 'Working Dirs']
+            ['Shot', 'Path', 'Frame Range', 'Frame Rate', 'Description', 'Working Dirs']
         )
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.verticalHeader().setVisible(False)
-        self.table.itemSelectionChanged.connect(
-            lambda: self.edit_btn.setEnabled(bool(self.table.selectedItems()))
+        self.table.itemSelectionChanged.connect(self._on_selection_change)
+        layout.addWidget(self.table, 1)
+
+        self.file_browser = QGroupBox('Shot Files')
+        fb_layout = QVBoxLayout(self.file_browser)
+        self._file_panel = FileBrowserPanel(
+            self.project_root, self.apps_config, self.pipeline_dir
         )
-        top_layout.addWidget(self.table)
-        splitter.addWidget(top_widget)
-
-        bottom_widget = QWidget()
-        bottom_layout = QVBoxLayout(bottom_widget)
-        bottom_layout.setContentsMargins(0, 8, 0, 0)
-
-        self.form_group = QGroupBox('Create New Shot')
-        form_layout = QVBoxLayout(self.form_group)
-
-        r1 = QHBoxLayout()
-        r1.addWidget(QLabel('Shot Name:'), 0)
-        self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText('e.g. SH010')
-        r1.addWidget(self.name_edit, 1)
-        form_layout.addLayout(r1)
-
-        meta_grid = QGridLayout()
-        meta_grid.addWidget(QLabel('Frame Range:'), 0, 0)
-        self.fr_edit = QLineEdit()
-        self.fr_edit.setPlaceholderText('e.g. 1001-1100')
-        meta_grid.addWidget(self.fr_edit, 0, 1)
-        meta_grid.addWidget(QLabel('Frame Rate:'), 0, 2)
-        self.fps_edit = QLineEdit()
-        self.fps_edit.setPlaceholderText('e.g. 24')
-        meta_grid.addWidget(self.fps_edit, 0, 3)
-        meta_grid.addWidget(QLabel('Resolution:'), 0, 4)
-        self.res_edit = QLineEdit()
-        self.res_edit.setPlaceholderText('e.g. 1920x1080')
-        meta_grid.addWidget(self.res_edit, 0, 5)
-        form_layout.addLayout(meta_grid)
-
-        r3 = QHBoxLayout()
-        r3.addWidget(QLabel('Description:'), 0)
-        self.desc_edit = QLineEdit()
-        self.desc_edit.setPlaceholderText('e.g. Establishing wide shot')
-        r3.addWidget(self.desc_edit, 1)
-        form_layout.addLayout(r3)
-
-        btn_row = QHBoxLayout()
-        self.create_btn = QPushButton('Create Shot')
-        self.create_btn.setMinimumHeight(36)
-        self.create_btn.setCursor(Qt.PointingHandCursor)
-        self.create_btn.clicked.connect(self._save)
-        btn_row.addWidget(self.create_btn)
-
-        self.cancel_btn = QPushButton('Cancel')
-        self.cancel_btn.setMinimumHeight(36)
-        self.cancel_btn.setCursor(Qt.PointingHandCursor)
-        self.cancel_btn.setVisible(False)
-        self.cancel_btn.clicked.connect(self._cancel_edit)
-        btn_row.addWidget(self.cancel_btn)
-
-        btn_row.addStretch()
-        form_layout.addLayout(btn_row)
-
-        self.result_text = QTextEdit()
-        self.result_text.setReadOnly(True)
-        self.result_text.setMaximumHeight(70)
-        form_layout.addWidget(self.result_text)
-
-        bottom_layout.addWidget(self.form_group)
-        splitter.addWidget(bottom_widget)
-
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 1)
-        layout.addWidget(splitter)
+        fb_layout.addWidget(self._file_panel)
+        layout.addWidget(self.file_browser)
+        self.file_browser.setVisible(False)
 
         self._refresh()
+
+    def _new_shot(self):
+        dialog = ShotDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        data = dialog.result_data()
+        name = data['name']
+
+        from make_folders import make_working_directory
+
+        shot_path = self.project_root / 'sequence' / name
+        if shot_path.exists():
+            self._status(f'Shot already exists: {name}', False)
+            return
+
+        try:
+            make_working_directory(str(shot_path))
+            write_shot_meta(shot_path, {
+                'frame_range': data['frame_range'],
+                'frame_rate': data['frame_rate'],
+                'description': data['description'],
+            })
+            self._refresh()
+            self._status(f'Shot created: {name}', True)
+        except Exception as e:
+            self._status(f'Error: {e}', False)
+
+    def _edit_shot(self):
+        items = self.table.selectedItems()
+        if not items:
+            return
+        row = items[0].row()
+        shot_name = self.table.item(row, 0).text()
+        shot_path = self.project_root / 'sequence' / shot_name
+        meta = read_shot_meta(shot_path)
+
+        fr = meta.get('frame_range', '1001-1240')
+        parts = fr.split('-')
+        frame_start = parts[0] if parts else '1001'
+        frame_end = parts[1] if len(parts) > 1 else parts[0]
+
+        dialog = ShotDialog(
+            self,
+            shot_name=shot_name,
+            frame_start=frame_start,
+            frame_end=frame_end,
+            frame_rate=meta.get('frame_rate', '24'),
+            description=meta.get('description', ''),
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        data = dialog.result_data()
+
+        write_shot_meta(shot_path, {
+            'frame_range': data['frame_range'],
+            'frame_rate': data['frame_rate'],
+            'description': data['description'],
+        })
+        self._refresh()
+        self._status(f'Metadata updated: {shot_name}', True)
+
+    def _on_selection_change(self):
+        items = self.table.selectedItems()
+        self.edit_btn.setEnabled(bool(items))
+        if items:
+            row = items[0].row()
+            shot_name = self.table.item(row, 0).text()
+            shot_path = self.project_root / 'sequence' / shot_name
+            self._file_panel.set_directory(shot_path)
+            self.file_browser.setTitle(f'Files: {shot_name}')
+            self.file_browser.setVisible(True)
+        else:
+            self._file_panel.clear()
+            self.file_browser.setVisible(False)
 
     def _refresh(self):
         self.table.setRowCount(0)
@@ -390,116 +675,28 @@ class ShotExplorerPage(QWidget):
             self.table.setItem(i, 1, QTableWidgetItem(str(shot_path.relative_to(self.project_root))))
             self.table.setItem(i, 2, QTableWidgetItem(meta['frame_range']))
             self.table.setItem(i, 3, QTableWidgetItem(meta['frame_rate']))
-            self.table.setItem(i, 4, QTableWidgetItem(meta['resolution']))
-            self.table.setItem(i, 5, QTableWidgetItem(meta['description']))
-            self.table.setItem(i, 6, QTableWidgetItem(f'{working_count} dirs'))
+            self.table.setItem(i, 4, QTableWidgetItem(meta['description']))
+            self.table.setItem(i, 5, QTableWidgetItem(f'{working_count} dirs'))
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(1, max(self.table.columnWidth(1), 200))
         self.table.setColumnWidth(5, max(self.table.columnWidth(5), 200))
         self.table.horizontalHeader().setStretchLastSection(False)
 
-    def _load_selected(self):
-        items = self.table.selectedItems()
-        if not items:
-            return
-        row = items[0].row()
-        shot_name = self.table.item(row, 0).text()
-        shot_path = self.project_root / 'sequence' / shot_name
-        meta = read_shot_meta(shot_path)
-
-        self._editing_shot = shot_name
-        self.name_edit.setText(shot_name)
-        self.fr_edit.setText(meta['frame_range'])
-        self.fps_edit.setText(meta['frame_rate'])
-        self.res_edit.setText(meta['resolution'])
-        self.desc_edit.setText(meta['description'])
-        self.form_group.setTitle(f'Edit Shot: {shot_name}')
-        self.create_btn.setText('Save Metadata')
-        self.cancel_btn.setVisible(True)
-
-    def _cancel_edit(self):
-        self._editing_shot = None
-        self.name_edit.clear()
-        self.fr_edit.clear()
-        self.fps_edit.clear()
-        self.res_edit.clear()
-        self.desc_edit.clear()
-        self.form_group.setTitle('Create New Shot')
-        self.create_btn.setText('Create Shot')
-        self.cancel_btn.setVisible(False)
-
-    def _validate_meta(self):
-        errors = []
-        if not self.fr_edit.text().strip():
-            errors.append('Frame Range')
-        if not self.fps_edit.text().strip():
-            errors.append('Frame Rate')
-        if not self.res_edit.text().strip():
-            errors.append('Resolution')
-        return errors
-
-    def _save(self):
-        name = self.name_edit.text().strip()
-        if not name:
-            self.result_text.setText('Please enter a shot name.')
-            return
-
-        missing = self._validate_meta()
-        if missing:
-            self.result_text.setText(f'Required fields missing: {", ".join(missing)}')
-            return
-
-        from make_folders import make_working_directory
-
-        shot_path = self.project_root / 'sequence' / name
-        meta = {
-            'frame_range': self.fr_edit.text().strip(),
-            'frame_rate': self.fps_edit.text().strip(),
-            'resolution': self.res_edit.text().strip(),
-            'description': self.desc_edit.text().strip(),
-        }
-
-        if self._editing_shot:
-            if not shot_path.exists():
-                self._cancel_edit()
-                self._refresh()
-                self.result_text.setText(f'Shot no longer exists: {name}')
-                return
-            write_shot_meta(shot_path, meta)
-            self._cancel_edit()
-            self._refresh()
-            self.result_text.setText(f'Metadata saved for: {name}')
-            window = self.window()
-            if hasattr(window, 'show_status'):
-                window.show_status(f'Metadata updated: {name}', True)
-            return
-
-        if shot_path.exists():
-            self.result_text.setText(f'Shot already exists: {name}')
-            return
-
-        try:
-            make_working_directory(str(shot_path))
-            write_shot_meta(shot_path, meta)
-            self._cancel_edit()
-            self._refresh()
-            self.result_text.setText(f'Created shot: {name}\nLocation: {shot_path}')
-            window = self.window()
-            if hasattr(window, 'show_status'):
-                window.show_status(f'Shot created: {name}', True)
-        except Exception as e:
-            self.result_text.setText(f'Error: {e}')
+    def _status(self, msg, ok=True):
+        window = self.window()
+        if hasattr(window, 'show_status'):
+            window.show_status(msg, ok)
 
 
 class AssetExplorerPage(QWidget):
-    def __init__(self, project_root, parent=None):
+    def __init__(self, project_root, apps_config, pipeline_dir, parent=None):
         super().__init__(parent)
         self.project_root = project_root
+        self.apps_config = apps_config
+        self.pipeline_dir = pipeline_dir
         self._build()
 
     def _build(self):
-        from make_folders import NEW_ASSET_CATEGORY_LIST
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
 
@@ -511,25 +708,28 @@ class AssetExplorerPage(QWidget):
         layout.addWidget(title)
         layout.addSpacing(8)
 
-        splitter = QSplitter(Qt.Vertical)
-
-        top_widget = QWidget()
-        top_layout = QVBoxLayout(top_widget)
-        top_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar = QHBoxLayout()
+        self.new_btn = QPushButton('New Asset')
+        self.new_btn.setMinimumHeight(32)
+        self.new_btn.setCursor(Qt.PointingHandCursor)
+        self.new_btn.clicked.connect(self._new_asset)
+        toolbar.addWidget(self.new_btn)
 
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel('Category:'))
         self.filter_combo = QComboBox()
+        from make_folders import NEW_ASSET_CATEGORY_LIST
         self.filter_combo.addItems(['All'] + list(NEW_ASSET_CATEGORY_LIST))
         self.filter_combo.currentTextChanged.connect(self._refresh)
         filter_row.addWidget(self.filter_combo)
-        filter_row.addStretch()
+
         self.refresh_btn = QPushButton('Refresh')
         self.refresh_btn.setCursor(Qt.PointingHandCursor)
         self.refresh_btn.clicked.connect(self._refresh)
         filter_row.addWidget(self.refresh_btn)
-        top_layout.addLayout(filter_row)
-        top_layout.addSpacing(4)
+        toolbar.addLayout(filter_row)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
 
         self.table = QTableWidget()
         self.table.setColumnCount(4)
@@ -539,52 +739,55 @@ class AssetExplorerPage(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.verticalHeader().setVisible(False)
-        top_layout.addWidget(self.table)
-        splitter.addWidget(top_widget)
+        self.table.itemSelectionChanged.connect(self._on_selection_change)
+        layout.addWidget(self.table, 1)
 
-        bottom_widget = QWidget()
-        bottom_layout = QVBoxLayout(bottom_widget)
-        bottom_layout.setContentsMargins(0, 8, 0, 0)
-
-        form_group = QGroupBox('Create New Asset')
-        form_layout = QVBoxLayout(form_group)
-
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel('Category:'), 0)
-        self.cat_combo = QComboBox()
-        self.cat_combo.addItems(NEW_ASSET_CATEGORY_LIST)
-        row1.addWidget(self.cat_combo, 1)
-        form_layout.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel('Asset Name:'), 0)
-        self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText('e.g. MainCharacter')
-        row2.addWidget(self.name_edit, 1)
-        form_layout.addLayout(row2)
-
-        btn_row = QHBoxLayout()
-        self.create_btn = QPushButton('Create Asset')
-        self.create_btn.setMinimumHeight(36)
-        self.create_btn.setCursor(Qt.PointingHandCursor)
-        self.create_btn.clicked.connect(self._create)
-        btn_row.addWidget(self.create_btn)
-        btn_row.addStretch()
-        form_layout.addLayout(btn_row)
-
-        self.result_text = QTextEdit()
-        self.result_text.setReadOnly(True)
-        self.result_text.setMaximumHeight(80)
-        form_layout.addWidget(self.result_text)
-
-        bottom_layout.addWidget(form_group)
-        splitter.addWidget(bottom_widget)
-
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 1)
-        layout.addWidget(splitter)
+        self.file_browser = QGroupBox('Asset Files')
+        fb_layout = QVBoxLayout(self.file_browser)
+        self._file_panel = FileBrowserPanel(
+            self.project_root, self.apps_config, self.pipeline_dir
+        )
+        fb_layout.addWidget(self._file_panel)
+        layout.addWidget(self.file_browser)
+        self.file_browser.setVisible(False)
 
         self._refresh()
+
+    def _new_asset(self):
+        dialog = AssetDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        data = dialog.result_data()
+        category = data['category']
+        name = data['name']
+
+        from make_folders import make_working_directory
+
+        asset_path = self.project_root / 'asset' / category / name
+        if asset_path.exists():
+            self._status(f'Asset already exists: {category}/{name}', False)
+            return
+
+        try:
+            make_working_directory(str(asset_path))
+            self._refresh()
+            self._status(f'Asset created: {category}/{name}', True)
+        except Exception as e:
+            self._status(f'Error: {e}', False)
+
+    def _on_selection_change(self):
+        items = self.table.selectedItems()
+        if items:
+            row = items[0].row()
+            asset_name = self.table.item(row, 0).text()
+            cat = self.table.item(row, 1).text()
+            asset_path = self.project_root / 'asset' / cat / asset_name
+            self._file_panel.set_directory(asset_path)
+            self.file_browser.setTitle(f'Files: {asset_name}')
+            self.file_browser.setVisible(True)
+        else:
+            self._file_panel.clear()
+            self.file_browser.setVisible(False)
 
     def _refresh(self):
         self.table.setRowCount(0)
@@ -611,138 +814,7 @@ class AssetExplorerPage(QWidget):
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(2, max(self.table.columnWidth(2), 300))
 
-    def _create(self):
-        category = self.cat_combo.currentText()
-        name = self.name_edit.text().strip()
-        if not name:
-            self.result_text.setText('Please enter an asset name.')
-            return
-
-        from make_folders import make_working_directory
-
-        asset_path = self.project_root / 'asset' / category / name
-        if asset_path.exists():
-            self.result_text.setText(f'Asset already exists: {category}/{name}')
-            return
-
-        try:
-            make_working_directory(str(asset_path))
-            self.result_text.setText(f'Created asset: {category}/{name}\nLocation: {asset_path}')
-            self.name_edit.clear()
-            self._refresh()
-            window = self.window()
-            if hasattr(window, 'show_status'):
-                window.show_status(f'Asset created: {category}/{name}', True)
-        except Exception as e:
-            self.result_text.setText(f'Error: {e}')
-
-
-class BrowseFilesPage(QWidget):
-    def __init__(self, project_root, apps_config, pipeline_dir, parent=None):
-        super().__init__(parent)
-        self.project_root = project_root
-        self.apps_config = apps_config
-        self.pipeline_dir = pipeline_dir
-        self._file_map = {}
-        self._build()
-
-    def _build(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-
-        title = QLabel('Browse Project Files')
-        title_font = QFont()
-        title_font.setPointSize(16)
-        title_font.setBold(True)
-        title.setFont(title_font)
-        layout.addWidget(title)
-        layout.addSpacing(8)
-
-        search_layout = QHBoxLayout()
-        self.search_btn = QPushButton('Search for Project Files')
-        self.search_btn.setMinimumHeight(36)
-        self.search_btn.setCursor(Qt.PointingHandCursor)
-        self.search_btn.clicked.connect(self._search)
-        search_layout.addWidget(self.search_btn)
-        search_layout.addStretch()
-        layout.addLayout(search_layout)
-        layout.addSpacing(8)
-
-        self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(['#', 'Application', 'File', 'Path'])
-        self.tree.setColumnWidth(0, 40)
-        self.tree.setColumnWidth(1, 140)
-        self.tree.setColumnWidth(2, 200)
-        self.tree.setAlternatingRowColors(True)
-        self.tree.setRootIsDecorated(False)
-        self.tree.itemDoubleClicked.connect(self._open_selected)
-        layout.addWidget(self.tree)
-
-        btn_layout = QHBoxLayout()
-        self.open_btn = QPushButton('Open Selected')
-        self.open_btn.setMinimumHeight(36)
-        self.open_btn.setCursor(Qt.PointingHandCursor)
-        self.open_btn.clicked.connect(self._open_selected)
-        self.open_btn.setEnabled(False)
-        btn_layout.addWidget(self.open_btn)
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
-
-        self.tree.itemSelectionChanged.connect(
-            lambda: self.open_btn.setEnabled(bool(self.tree.selectedItems()))
-        )
-
-    def _search(self):
-        self.tree.clear()
-        self._file_map.clear()
-        self.search_btn.setEnabled(False)
-        self.search_btn.setText('Searching...')
-
-        results = find_project_files(self.project_root, self.apps_config)
-
-        self.search_btn.setText('Search for Project Files')
-        self.search_btn.setEnabled(True)
-
-        idx = 1
-        for app_name in sorted(results):
-            for fp in results[app_name]:
-                rel = fp.relative_to(self.project_root)
-                item = QTreeWidgetItem([
-                    str(idx), app_name, fp.name, str(rel.parent)
-                ])
-                self.tree.addTopLevelItem(item)
-                self._file_map[idx] = (app_name, fp, rel, item)
-                idx += 1
-
-        if idx == 1:
-            item = QTreeWidgetItem(['', '', 'No project files found.', ''])
-            self.tree.addTopLevelItem(item)
-
-    def _open_selected(self):
-        items = self.tree.selectedItems()
-        if not items:
-            return
-        item = items[0]
-        num_text = item.text(0)
-        if not num_text.isdigit():
-            return
-        num = int(num_text)
-        if num not in self._file_map:
-            return
-
-        app_name, file_path, rel, _ = self._file_map[num]
-        cfg = self.apps_config.get(app_name)
-        if not cfg:
-            window = self.window()
-            if hasattr(window, 'show_status'):
-                window.show_status(f'No config for {app_name}', False)
-            return
-
-        self.thread = FileOpenThread(cfg, self.pipeline_dir, file_path)
-        self.thread.finished.connect(lambda msg, ok: self._result(msg, ok))
-        self.thread.start()
-
-    def _result(self, msg, ok):
+    def _status(self, msg, ok=True):
         window = self.window()
         if hasattr(window, 'show_status'):
             window.show_status(msg, ok)
@@ -838,12 +910,11 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
 
         page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
-                        AssetExplorerPage, BrowseFilesPage, EnvVarsPage]
+                        AssetExplorerPage, EnvVarsPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
             (self.apps_config, self.pipeline_dir),
-            (self.project_root,),
-            (self.project_root,),
+            (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.env_vars,),
         ]
