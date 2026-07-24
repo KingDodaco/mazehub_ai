@@ -229,3 +229,8 @@ QDialog {
 QDialog QLabel {
     color: #e0e0e8;
 }
+
+#usdViewport {
+    border: 1px solid #0f3460;
+    border-radius: 4px;
+}
