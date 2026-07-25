@@ -27,6 +27,7 @@ SIDEBAR_ITEMS = [
     ('Shot Explorer', 'Browse existing shots and create new ones'),
     ('Asset Explorer', 'Browse existing assets and create new ones'),
     ('Env Vars', 'View environment variables'),
+    ('Settings', 'Repair file structure and configure options'),
 ]
 
 
@@ -1052,6 +1053,67 @@ class EnvVarsPage(QWidget):
         self._refresh()
 
 
+class SettingsPage(QWidget):
+    def __init__(self, project_root, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        title = QLabel('Settings')
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        layout.addSpacing(16)
+
+        group = QGroupBox('File Structure')
+        group_layout = QVBoxLayout(group)
+
+        group_layout.addWidget(QLabel(
+            'Check the project directory structure and create any missing folders.'
+        ))
+
+        self.repair_btn = QPushButton('Repair File Structure')
+        self.repair_btn.setMinimumHeight(36)
+        self.repair_btn.setCursor(Qt.PointingHandCursor)
+        self.repair_btn.clicked.connect(self._repair)
+        group_layout.addWidget(self.repair_btn)
+
+        self.repair_result = QLabel('')
+        self.repair_result.setWordWrap(True)
+        self.repair_result.setObjectName('hint')
+        group_layout.addWidget(self.repair_result)
+
+        group_layout.addStretch()
+        layout.addWidget(group)
+        layout.addStretch()
+
+    def _repair(self):
+        from make_folders import repair_project_structure
+        self.repair_btn.setEnabled(False)
+        self.repair_btn.setText('Repairing...')
+        self.repair_result.setText('')
+        QApplication.processEvents()
+        try:
+            missing = repair_project_structure(self.project_root)
+            if missing:
+                lines = '\n'.join(f'  - {p}' for p in missing[:20])
+                extra = f' (+{len(missing) - 20} more)' if len(missing) > 20 else ''
+                self.repair_result.setText(f'Created {len(missing)} missing folder(s):\n{lines}{extra}')
+            else:
+                self.repair_result.setText('All project directories exist — nothing to repair.')
+        except Exception as e:
+            self.repair_result.setText(f'Error: {e}')
+        finally:
+            self.repair_btn.setEnabled(True)
+            self.repair_btn.setText('Repair File Structure')
+
+
 class MainWindow(QMainWindow):
     def __init__(self, project_root, env_vars, apps_config, pipeline_dir):
         super().__init__()
@@ -1099,13 +1161,14 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
 
         page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
-                        AssetExplorerPage, EnvVarsPage]
+                        AssetExplorerPage, EnvVarsPage, SettingsPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
             (self.apps_config, self.pipeline_dir, self.project_root),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.env_vars,),
+            (self.project_root,),
         ]
 
         for i, (label, tooltip) in enumerate(SIDEBAR_ITEMS):

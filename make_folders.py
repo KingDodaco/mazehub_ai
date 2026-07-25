@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 
 ROOT_DIR = 'C:/Users/s5720563/OneDrive - Bournemouth University/FMP - Documents/PROJECT'
@@ -194,6 +195,41 @@ def make_working_directory(path):
             construct_subscope_path = os.path.join(path, single_directory)
             if not os.path.exists(construct_subscope_path):
                 os.makedirs(construct_subscope_path)
+
+
+def repair_project_structure(project_root):
+    missing = []
+    root = str(project_root)
+    for single_directory in NEW_PROJECT_DIRECTORY:
+        path = os.path.join(root, single_directory)
+        if not os.path.exists(path):
+            os.makedirs(path)
+            missing.append(single_directory)
+
+    for category in os.listdir(os.path.join(root, 'asset')):
+        cat_path = os.path.join(root, 'asset', category)
+        if os.path.isdir(cat_path):
+            for name in os.listdir(cat_path):
+                asset_path = os.path.join(cat_path, name)
+                if os.path.isdir(asset_path):
+                    for subdir in NEW_WORKING_DIRECTORY:
+                        sub_path = os.path.join(asset_path, subdir)
+                        if not os.path.exists(sub_path):
+                            os.makedirs(sub_path)
+                            missing.append(os.path.relpath(sub_path, root))
+
+    seq_path = os.path.join(root, 'sequence')
+    if os.path.exists(seq_path):
+        for name in os.listdir(seq_path):
+            shot_path = os.path.join(seq_path, name)
+            if os.path.isdir(shot_path):
+                for subdir in NEW_WORKING_DIRECTORY:
+                    sub_path = os.path.join(shot_path, subdir)
+                    if not os.path.exists(sub_path):
+                        os.makedirs(sub_path)
+                        missing.append(os.path.relpath(sub_path, root))
+
+    return missing
 
 
 def make_shoot_directory(path):
