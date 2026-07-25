@@ -3,7 +3,6 @@ import re
 import sys
 
 try:
-    import maya.cmds as cmds
     import maya.api.OpenMaya as om2
     _IN_MAYA = True
 except ImportError:
@@ -88,8 +87,7 @@ def _deregister_plugin():
 def setup():
     if not _IN_MAYA:
         return
-    if not cmds.pluginInfo(PLUGIN_NAME, query=True, loaded=True):
-        cmds.loadPlugin(PLUGIN_NAME)
+    _register_plugin()
 
 
 def initializePlugin(plugin):

@@ -1,3 +1,5 @@
+print("Loading Maya environment setup script...")
+
 import maya.cmds as cmds
 import os
 import sys
