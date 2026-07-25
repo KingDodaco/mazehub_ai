@@ -1,5 +1,10 @@
 import maya.cmds as cmds
 import os
+import sys
+
+scripts_dir = os.environ.get("MAYA_SCRIPT_PATH", "")
+if scripts_dir and scripts_dir not in sys.path:
+    sys.path.insert(0, scripts_dir)
 
 import envPathResolver
 envPathResolver.setup()
