@@ -1,19 +1,30 @@
 import maya.cmds as cmds
 import os
+import sys
 
-print("Setting timeline settings")
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+
+import envPathResolver
+envPathResolver.setup()
+
+START_FRAME = os.environ.get("START_FRAME")
+END_FRAME = os.environ.get("END_FRAME")
+FRAME_RATE = os.environ.get("FRAME_RATE")
+
 
 def set_timeline():
-
-    if "START_FRAME" not in os.environ or "END_FRAME" not in os.environ or "FRAME_RATE" not in os.environ:
+    if not START_FRAME or not END_FRAME or not FRAME_RATE:
         print("Required environment variables (START_FRAME, END_FRAME, FRAME_RATE) are not set. Launching Maya with default timeline settings.")
         cmds.currentUnit(time='24fps')
         cmds.playbackOptions(animationStartTime=1001, animationEndTime=1240, minTime=1001, maxTime=1240, playbackSpeed=1)
     else:
-        print(f"START_FRAME: {os.environ.get('START_FRAME')}, END_FRAME: {os.environ.get('END_FRAME')}, FRAME_RATE: {os.environ.get('FRAME_RATE')}")
+        print(f"START_FRAME: {START_FRAME}, END_FRAME: {END_FRAME}, FRAME_RATE: {FRAME_RATE}")
         cmds.currentUnit(time='24fps')
-        cmds.playbackOptions(animationStartTime=int(os.environ.get("START_FRAME")), animationEndTime=int(os.environ.get("END_FRAME")), minTime=int(os.environ.get("START_FRAME")), maxTime=int(os.environ.get("END_FRAME")), playbackSpeed=1)
-        cmds.currentTime(int(os.environ.get("START_FRAME")), edit=True)
+        cmds.playbackOptions(animationStartTime=int(START_FRAME), animationEndTime=int(END_FRAME), minTime=int(START_FRAME), maxTime=int(END_FRAME), playbackSpeed=1)
+        cmds.currentTime(int(START_FRAME), edit=True)
+
 
 # Use evalDeferred to ensure Maya is fully loaded before executing
 cmds.evalDeferred(set_timeline)
