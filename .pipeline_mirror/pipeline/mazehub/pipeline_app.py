@@ -93,6 +93,7 @@ def setup_environment(project_root):
 
     ref_vars = {
         ROOT_VAR: root,
+        'MZE': root,
         'MAZE_PROJECT': Path(root).name,
         'MAZE_PIPELINE': f'{ref}/pipeline',
         'MAZE_ASSETS': f'{ref}/asset',

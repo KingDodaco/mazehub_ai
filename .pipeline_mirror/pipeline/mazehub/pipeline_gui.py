@@ -963,6 +963,7 @@ CONTEXT_ENV_KEYS = [
 ]
 
 ENV_DESCRIPTIONS = {
+    'MZE': 'Root directory of the project (short alias)',
     'MAZE_PROJECT_ROOT': 'Root directory of the project',
     'MAZE_PROJECT': 'Project folder name',
     'MAZE_PIPELINE': 'Pipeline tools directory',
