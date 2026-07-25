@@ -3,6 +3,7 @@ import re
 import sys
 
 try:
+    import maya.cmds as cmds
     import maya.api.OpenMaya as om2
     _IN_MAYA = True
 except ImportError:
@@ -63,36 +64,25 @@ class EnvPathResolverNode(om2.MPxNode):
         return om2.kSuccess
 
 
-def _register_plugin():
-    if not _IN_MAYA:
-        return
-    plugin = om2.MFnPlugin(om2.MGlobal.getPluginName(), "MazeHub")
-    try:
-        plugin.registerNode(NODE_TYPE_NAME, NODE_ID, EnvPathResolverNode.creator, EnvPathResolverNode.initialize)
-    except RuntimeError as e:
-        if "already registered" not in str(e):
-            raise
-
-
-def _deregister_plugin():
-    if not _IN_MAYA:
-        return
-    plugin = om2.MFnPlugin(om2.MGlobal.getPluginName())
-    try:
-        plugin.deregisterNode(NODE_ID)
-    except RuntimeError:
-        pass
+def _plugin_path():
+    pipeline = os.environ.get("MAZE_PIPELINE", "")
+    if pipeline:
+        return os.path.join(pipeline, "Maya", "scripts", PLUGIN_NAME)
+    return PLUGIN_NAME
 
 
 def setup():
     if not _IN_MAYA:
         return
-    _register_plugin()
+    if not cmds.pluginInfo(PLUGIN_NAME, query=True, loaded=True):
+        cmds.loadPlugin(_plugin_path())
 
 
 def initializePlugin(plugin):
-    _register_plugin()
+    mfn_plugin = om2.MFnPlugin(plugin, "MazeHub", "1.0")
+    mfn_plugin.registerNode(NODE_TYPE_NAME, NODE_ID, EnvPathResolverNode.creator, EnvPathResolverNode.initialize)
 
 
 def uninitializePlugin(plugin):
-    _deregister_plugin()
+    mfn_plugin = om2.MFnPlugin(plugin)
+    mfn_plugin.deregisterNode(NODE_ID)
