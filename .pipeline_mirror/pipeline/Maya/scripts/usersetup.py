@@ -1,1 +1,2 @@
-#test
+import envPathResolver
+envPathResolver.setup()
