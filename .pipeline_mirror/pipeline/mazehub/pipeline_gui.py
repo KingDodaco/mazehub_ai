@@ -5,7 +5,7 @@ import platform
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QFont, QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QTableWidget,
@@ -1237,6 +1237,9 @@ def main():
 
     app = QApplication(sys.argv)
     app.setFont(QFont('Segoe UI', 10))
+    icon_path = os.path.join(app_dir, 'icon.svg')
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     _load_styles(app, app_dir)
 
     window = MainWindow(project_root, env_vars, apps_config, pipeline_dir)
