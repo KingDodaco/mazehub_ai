@@ -27,9 +27,6 @@ def setup_scene():
         scene.render.fps = int(fps)
         print(f"Frame rate set: {fps} fps")
 
-    # Defer redraw until UI is ready
-    bpy.app.timers.register(_redraw_timeline, first_interval=0.1)
-
     context_type = os.environ.get("MAZE_CONTEXT_TYPE", "")
     context_name = os.environ.get("MAZE_CONTEXT_NAME", "")
     context_path = os.environ.get("MAZE_CONTEXT_PATH", "")
