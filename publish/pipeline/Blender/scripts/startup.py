@@ -1,5 +1,7 @@
 import bpy
 import os
+import sys
+import sys
 
 
 def setup_scene():
@@ -18,6 +20,11 @@ def setup_scene():
     if fps:
         scene.render.fps = int(fps)
         print(f"Frame rate set: {fps} fps")
+
+    # Force timeline/UI redraw
+    for area in bpy.context.screen.areas:
+        if area.type in ('TIMELINE', 'DOPESHEET_EDITOR', 'GRAPH_EDITOR', 'NLA_EDITOR'):
+            area.tag_redraw()
 
     context_type = os.environ.get("MAZE_CONTEXT_TYPE", "")
     context_name = os.environ.get("MAZE_CONTEXT_NAME", "")

@@ -593,6 +593,9 @@ class LaunchAppsPage(QWidget):
 
         self._populate_contexts()
 
+    def _refresh(self):
+        self._populate_contexts()
+
     def _populate_contexts(self):
         seq_dir = self.project_root / 'sequence'
         if seq_dir.exists():
