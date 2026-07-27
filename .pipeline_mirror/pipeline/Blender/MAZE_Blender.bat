@@ -19,6 +19,6 @@ call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
 set "SAFE_SCRIPT=%SCRIPTS_DIR:\=/%/startup.py"
 
-start "" "C:\Program Files\Blender Foundation\Blender 4.2\blender.exe" --python "%SAFE_SCRIPT%"
+start "" "C:\Program Files\Blender Foundation\Blender 4.5\blender.exe" --python "%SAFE_SCRIPT%"
 
 endlocal
