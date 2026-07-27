@@ -21,10 +21,14 @@ def setup_scene():
         scene.render.fps = int(fps)
         print(f"Frame rate set: {fps} fps")
 
+    bpy.ops.anim.scene_range_frame()
+
     # Force timeline/UI redraw
     for area in bpy.context.screen.areas:
         if area.type in ('TIMELINE', 'DOPESHEET_EDITOR', 'GRAPH_EDITOR', 'NLA_EDITOR'):
             area.tag_redraw()
+            bpy.ops.action.view_all()
+
 
     context_type = os.environ.get("MAZE_CONTEXT_TYPE", "")
     context_name = os.environ.get("MAZE_CONTEXT_NAME", "")
@@ -45,5 +49,5 @@ def setup_scene():
 
     print(f"Blender launched for {context_type}: {context_name}")
 
-
+print("Running startup script...")
 setup_scene()
