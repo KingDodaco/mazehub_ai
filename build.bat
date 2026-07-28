@@ -34,6 +34,7 @@ echo Building %APP_NAME% (console mode for debugging)...
     %WINDOW_FLAG% ^
     --name "%APP_NAME%" ^
     --add-data ".pipeline_mirror\pipeline;pipeline" ^
+    --add-data "make_folders.py;." ^
     --collect-all PySide6 ^
     --hidden-import pipeline_gui ^
     --hidden-import pipeline_app ^
