@@ -560,36 +560,35 @@ class LaunchAppsPage(QWidget):
 
         container = QWidget()
         container.setObjectName('launchContainer')
-        container_layout = QVBoxLayout(container)
+        container_layout = QGridLayout(container)
         container_layout.setSpacing(12)
 
         if self.apps_config:
+            row = 0
+            col = 0
             for name, cfg in self.apps_config.items():
                 cfg['_key'] = name
-                card = QFrame()
-                card.setFrameShape(QFrame.StyledPanel)
-                card_layout = QHBoxLayout(card)
-
-                app_name_label = QLabel(cfg['display_name'])
-                app_name_label.setFont(QFont(app_name_label.font().family(), 11, QFont.Bold))
-                card_layout.addWidget(app_name_label)
-                card_layout.addStretch()
-
-                launch_btn = QPushButton('Launch')
-                launch_btn.setMinimumWidth(100)
-                launch_btn.setMinimumHeight(36)
+                launch_btn = QPushButton(cfg['display_name'])
+                launch_btn.setMinimumHeight(48)
                 launch_btn.setCursor(Qt.PointingHandCursor)
+                launch_btn.setObjectName('appLaunchBtn')
                 launch_btn.clicked.connect(lambda checked, c=cfg: self._launch(c))
-                card_layout.addWidget(launch_btn)
-
-                container_layout.addWidget(card)
+                container_layout.addWidget(launch_btn, row, col)
+                col += 1
+                if col >= 2:
+                    col = 0
+                    row += 1
         else:
-            container_layout.addWidget(QLabel('No applications configured.'))
+            container_layout.addWidget(QLabel('No applications configured.'), 0, 0, 1, 2)
 
-        container_layout.addStretch()
+        container_layout.setRowStretch(row + 1, 1)
         scroll.setWidget(container)
         body.addWidget(scroll, 1)
         layout.addLayout(body, 1)
+
+        self._file_panel = FileBrowserPanel(self.project_root, self.apps_config, self.pipeline_dir)
+        self._file_panel.setVisible(False)
+        layout.addWidget(self._file_panel)
 
         self._populate_contexts()
 
@@ -630,6 +629,7 @@ class LaunchAppsPage(QWidget):
         if ctx_type == 'None':
             self._context = None
             self.ctx_info.setText('No context — app launches without asset/shot working directory.')
+            self._file_panel.setVisible(False)
             return
 
         if ctx_type == 'Shot':
@@ -650,6 +650,8 @@ class LaunchAppsPage(QWidget):
 
         self._context = {'type': ctx_type.lower(), 'name': name, 'path': path}
         self.ctx_info.setText(f'Launch context: {ctx_type} — {name}  ({path})')
+        self._file_panel.setVisible(True)
+        self._file_panel.set_directory(path, self._context)
 
     def _launch(self, cfg):
         self.thread = AppLauncherThread(
