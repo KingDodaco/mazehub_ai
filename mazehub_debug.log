@@ -1,0 +1,31 @@
+--- MazeHub starting ---
+this_dir: C:\Users\domin\AppData\Local\Temp\_MEI179842
+frozen: True
+exe_dir: D:\users\Dominic\Projects\Uni\mazehub_ai\dist
+meipass: C:\Users\domin\AppData\Local\Temp\_MEI179842
+checking: C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub exists=True
+FOUND app_dir: C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub
+Starting MazeHub from: C:\Users\domin\AppData\Local\Temp\_MEI179842
+Using app directory: C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub
+sys.path: ['C:\\Users\\domin\\AppData\\Local\\Temp\\_MEI179842', 'C:\\Users\\domin\\AppData\\Local\\Temp\\_MEI179842\\pipeline\\mazehub', 'C:\\Users\\domin\\AppData\\Local\\Temp\\_MEI179842', 'C:\\Users\\domin\\AppData\\Local\\Temp\\_MEI179842\\base_library.zip', 'C:\\Users\\domin\\AppData\\Local\\Temp\\_MEI179842\\python3.12\\lib-dynload']
+Launching GUI entry point...
+GUI startup failed: No module named 'make_folders'
+Traceback (most recent call last):
+  File "main.py", line 88, in main
+  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 1468, in main
+    window = MainWindow(project_root, env_vars, apps_config, pipeline_dir)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 1347, in __init__
+    self._build()
+  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 1403, in _build
+    page = page_classes[i](*page_args[i])
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 653, in __init__
+    self._build()
+  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 740, in _build
+    self._populate_contexts()
+  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 754, in _populate_contexts
+    from make_folders import NEW_ASSET_CATEGORY_LIST
+ModuleNotFoundError: No module named 'make_folders'
+
+Falling back to CLI entry point...
