@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import platform
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QStackedWidget, QTextEdit, QFrame,
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
     QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog, QTabWidget,
+    QMenu,
 )
 
 from pipeline_app import (
@@ -19,6 +21,8 @@ from pipeline_app import (
     read_shot_meta, write_shot_meta, APP_FILE_EXTENSIONS,
     build_context_env, _app_dir,
 )
+
+from recent_files import add_recent_file, get_recent_files as load_recent_files, clear_recent_files
 
 
 SIDEBAR_ITEMS = [
@@ -226,6 +230,10 @@ class FileBrowserPanel(QWidget):
             if tree_item is item:
                 if app_name == 'USD':
                     self._launch_usdview(fp)
+                    ctx_type = self._current_context.get('type', '') if self._current_context else ''
+                    ctx_name = self._current_context.get('name', '') if self._current_context else ''
+                    ctx_cat = self._current_context.get('category', '') if self._current_context else ''
+                    add_recent_file(fp, 'usdview', ctx_type, ctx_name, ctx_cat)
                     return
                 cfg = self.apps_config.get(app_name)
                 if not cfg:
@@ -240,6 +248,10 @@ class FileBrowserPanel(QWidget):
                 )
                 self.thread.finished.connect(lambda msg, ok: self._result(msg, ok))
                 self.thread.start()
+                ctx_type = self._current_context.get('type', '') if self._current_context else ''
+                ctx_name = self._current_context.get('name', '') if self._current_context else ''
+                ctx_cat = self._current_context.get('category', '') if self._current_context else ''
+                add_recent_file(fp, cfg.get('display_name', app_name), ctx_type, ctx_name, ctx_cat)
                 return
 
     def _launch_usdview(self, fp):
@@ -460,6 +472,49 @@ class DashboardPage(QWidget):
             quick_layout.addWidget(QLabel('No applications configured.'))
         layout.addWidget(quick_group)
 
+        recent_group = QGroupBox('Recent Files')
+        recent_layout = QVBoxLayout(recent_group)
+        recent_layout.setSpacing(8)
+
+        self.recent_table = QTableWidget()
+        self.recent_table.setColumnCount(3)
+        self.recent_table.setHorizontalHeaderLabels(['File', 'App', 'Opened'])
+        self.recent_table.horizontalHeader().setStretchLastSection(True)
+        self.recent_table.setAlternatingRowColors(True)
+        self.recent_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.recent_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.recent_table.setMaximumHeight(180)
+        self.recent_table.itemDoubleClicked.connect(self._open_recent_file)
+        self.recent_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.recent_table.customContextMenuRequested.connect(self._show_recent_context_menu)
+        self.recent_table.itemSelectionChanged.connect(
+            lambda: self.open_recent_btn.setEnabled(bool(self.recent_table.selectedItems()))
+        )
+        recent_layout.addWidget(self.recent_table)
+
+        self.empty_label = QLabel('No recent files')
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setStyleSheet('color: #888;')
+        self.empty_label.setVisible(False)
+        recent_layout.addWidget(self.empty_label)
+
+        btn_row = QHBoxLayout()
+        self.open_recent_btn = QPushButton('Open')
+        self.open_recent_btn.setCursor(Qt.PointingHandCursor)
+        self.open_recent_btn.setMinimumHeight(32)
+        self.open_recent_btn.setEnabled(False)
+        self.open_recent_btn.clicked.connect(self._open_selected_recent_file)
+        btn_row.addWidget(self.open_recent_btn)
+        btn_row.addStretch()
+        clear_btn = QPushButton('Clear History')
+        clear_btn.setCursor(Qt.PointingHandCursor)
+        clear_btn.clicked.connect(self._clear_recent_files)
+        btn_row.addWidget(clear_btn)
+        recent_layout.addLayout(btn_row)
+        layout.addWidget(recent_group)
+
+        self._refresh_recent_files()
+
         layout.addStretch()
 
     def _stat_card(self, label, value):
@@ -479,6 +534,98 @@ class DashboardPage(QWidget):
         l.setAlignment(Qt.AlignCenter)
         cl.addWidget(l)
         return card
+
+    def _refresh_recent_files(self):
+        files = load_recent_files()[:8]
+        self.recent_table.setRowCount(len(files))
+        self.empty_label.setVisible(len(files) == 0)
+        self.recent_table.setVisible(len(files) > 0)
+        for i, f in enumerate(files):
+            item0 = QTableWidgetItem(f.get('display_name', f.get('path', '')))
+            item0.setData(Qt.UserRole, f.get('path', ''))
+            self.recent_table.setItem(i, 0, item0)
+            self.recent_table.setItem(i, 1, QTableWidgetItem(f.get('app_name', '')))
+            ts = f.get('timestamp', 0)
+            date_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(ts)) if ts else '-'
+            self.recent_table.setItem(i, 2, QTableWidgetItem(date_str))
+        self.recent_table.resizeColumnsToContents()
+        self.open_recent_btn.setEnabled(False)
+
+    def _show_recent_context_menu(self, pos):
+        item = self.recent_table.itemAt(pos)
+        if not item:
+            return
+        row = item.row()
+        path = self.recent_table.item(row, 0).data(Qt.UserRole)
+        menu = QMenu(self)
+        remove_action = menu.addAction('Remove from History')
+        remove_action.triggered.connect(lambda: self._remove_recent_file(path))
+        menu.exec(self.recent_table.viewport().mapToGlobal(pos))
+
+    def _remove_recent_file(self, path):
+        from recent_files import remove_recent_file
+        remove_recent_file(path)
+        self._refresh_recent_files()
+
+    def _clear_recent_files(self):
+        from recent_files import clear_recent_files
+        clear_recent_files()
+        self._refresh_recent_files()
+
+    def _open_recent_file(self, item):
+        row = item.row()
+        path = self.recent_table.item(row, 0).data(Qt.UserRole)
+        if not path or not os.path.exists(path):
+            return
+        # Find the full recent entry with context info
+        recent_files = load_recent_files()
+        entry = next((f for f in recent_files if f.get('path') == path), None)
+        if not entry:
+            window = self.window()
+            if hasattr(window, 'show_status'):
+                window.show_status(f'No context info for {path}', False)
+            return
+        
+        app_name = entry.get('app_name', '')
+        cfg = self.apps_config.get(app_name)
+        if not cfg:
+            window = self.window()
+            if hasattr(window, 'show_status'):
+                window.show_status(f'No config for app: {app_name}', False)
+            return
+        
+        ctx_type = entry.get('context_type', '')
+        ctx_name = entry.get('context_name', '')
+        context = None
+        if ctx_type and ctx_name:
+            if ctx_type == 'shot':
+                context = {'type': 'shot', 'name': ctx_name, 'path': self.project_root / 'sequence' / ctx_name}
+            elif ctx_type == 'asset':
+                context = {'type': 'asset', 'name': ctx_name, 'path': self.project_root / 'asset' / entry.get('context_category', '') / ctx_name}
+        
+        cfg['_key'] = entry.get('app_key', app_name)
+        self.thread = FileOpenThread(
+            cfg, self.pipeline_dir, Path(path),
+            project_root=self.project_root, context=context,
+        )
+        self.thread.finished.connect(lambda msg, ok: self._show_launch_result(msg, ok))
+        self.thread.start()
+        add_recent_file(
+            path,
+            cfg.get('display_name', app_name),
+            ctx_type,
+            ctx_name,
+            entry.get('context_category', ''),
+        )
+        self._refresh_recent_files()
+
+    def _open_selected_recent_file(self):
+        items = self.recent_table.selectedItems()
+        if items:
+            self._open_recent_file(items[0])
+
+    def _refresh(self):
+        self._refresh_recent_files()
 
     def _quick_launch(self, app_name):
         cfg = self.apps_config.get(app_name)
@@ -649,6 +796,8 @@ class LaunchAppsPage(QWidget):
             path = self.project_root / 'asset' / cat / name
 
         self._context = {'type': ctx_type.lower(), 'name': name, 'path': path}
+        if ctx_type == 'Asset':
+            self._context['category'] = self.ctx_cat_combo.currentText()
         self.ctx_info.setText(f'Launch context: {ctx_type} — {name}  ({path})')
         self._file_panel.setVisible(True)
         self._file_panel.set_directory(path, self._context)
@@ -923,7 +1072,7 @@ class AssetExplorerPage(QWidget):
             asset_name = self.table.item(row, 0).text()
             cat = self.table.item(row, 1).text()
             asset_path = self.project_root / 'asset' / cat / asset_name
-            ctx = {'type': 'asset', 'name': asset_name, 'path': asset_path}
+            ctx = {'type': 'asset', 'name': asset_name, 'path': asset_path, 'category': cat}
             self._file_panel.set_directory(asset_path, context=ctx)
             self.file_browser.setTitle(f'Files: {asset_name}')
             self.file_browser.setVisible(True)
@@ -991,6 +1140,75 @@ ENV_DESCRIPTIONS = {
     'JOB': 'Generic job directory (Houdini)',
     'MAYA_PROJECT': 'Maya project directory',
 }
+
+
+import os
+from recent_files import load_recent_files, clear_recent_files
+
+
+class RecentFilesPage(QWidget):
+    def __init__(self, project_root, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        header = QHBoxLayout()
+        title = QLabel('Recent Files')
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        header.addWidget(title)
+        header.addStretch()
+        clear_btn = QPushButton('Clear History')
+        clear_btn.setCursor(Qt.PointingHandCursor)
+        clear_btn.clicked.connect(self._clear_history)
+        header.addWidget(clear_btn)
+        layout.addLayout(header)
+        layout.addSpacing(8)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(['File', 'App', 'Context', 'Opened'])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.itemDoubleClicked.connect(self._open_file)
+        layout.addWidget(self.table, 1)
+
+        self._refresh()
+
+    def _refresh(self):
+        files = load_recent_files()
+        self.table.setRowCount(len(files))
+        for i, f in enumerate(files):
+            item0 = QTableWidgetItem(f.get('display_name', f.get('path', '')))
+            item0.setData(Qt.UserRole, f.get('path', ''))
+            self.table.setItem(i, 0, item0)
+            self.table.setItem(i, 1, QTableWidgetItem(f.get('app_name', '')))
+            ctx = f.get('context_type', '')
+            ctx_name = f.get('context_name', '')
+            ctx_display = f'{ctx}: {ctx_name}' if ctx and ctx_name else (ctx or '-')
+            self.table.setItem(i, 2, QTableWidgetItem(ctx_display))
+            ts = f.get('timestamp', 0)
+            date_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(ts)) if ts else '-'
+            self.table.setItem(i, 3, QTableWidgetItem(date_str))
+        self.table.resizeColumnsToContents()
+
+    def _open_file(self, item):
+        path = item.data(Qt.UserRole)
+        if path and os.path.exists(path):
+            os.startfile(path) if os.name == 'nt' else subprocess.Popen(['xdg-open', path])
+
+    def _clear_history(self):
+        clear_recent_files()
+        self._refresh()
 
 
 class EnvVarsPage(QWidget):
