@@ -4,10 +4,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MIRROR_SOURCE = ROOT / '.pipeline_mirror' / 'pipeline'
-PUBLISH_DEST = ROOT / 'publish' / 'pipeline'
-LAUNCHER_SRC = ROOT / 'main.py'
-BATCH_SRC = ROOT / 'launch_mazehub.bat'
+PUBLISH_DEST = ROOT / 'publish'
+EXE_SRC = ROOT / 'dist' / 'MazeHub.exe'
 HELPER_SRC = ROOT / 'make_folders.py'
+
+CONFIG_FILES = ['apps.json', 'styles.qss', 'icon.svg']
+
+DCC_DIRS = [
+    'Blender', 'Houdini21.0', 'Mari', 'Maya',
+    'Nuke', 'OCIO', 'Photoshop', 'Substance', 'Zbrush',
+]
 
 
 def ensure_source_exists():
@@ -22,30 +28,68 @@ def copy_tree(src: Path, dst: Path):
     shutil.copytree(src, dst)
 
 
-def publish_pipeline(target: Path | None = None):
+def publish_pipeline(target: Path | None = None, exe_only: bool = False):
     ensure_source_exists()
-    copy_tree(MIRROR_SOURCE, PUBLISH_DEST)
+    publish_pipeline_dir = PUBLISH_DEST / 'pipeline'
 
-    mazehub_publish_dir = PUBLISH_DEST / 'mazehub'
-    mazehub_publish_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(LAUNCHER_SRC, mazehub_publish_dir / 'main.py')
-    shutil.copy2(BATCH_SRC, mazehub_publish_dir / 'launch_mazehub.bat')
-    shutil.copy2(HELPER_SRC, mazehub_publish_dir / 'make_folders.py')
+    if publish_pipeline_dir.exists():
+        shutil.rmtree(publish_pipeline_dir)
+    publish_pipeline_dir.mkdir(parents=True)
 
-    print(f'Published pipeline to {PUBLISH_DEST}')
-    print(f'Placed launcher files in {mazehub_publish_dir}')
+    for d in DCC_DIRS:
+        src = MIRROR_SOURCE / d
+        if src.exists():
+            copy_tree(src, publish_pipeline_dir / d)
+
+    mazehub_dir = publish_pipeline_dir / 'mazehub'
+    mazehub_dir.mkdir(parents=True, exist_ok=True)
+
+    for f in CONFIG_FILES:
+        src = MIRROR_SOURCE / 'mazehub' / f
+        if src.exists():
+            shutil.copy2(src, mazehub_dir / f)
+
+    if HELPER_SRC.exists():
+        shutil.copy2(HELPER_SRC, mazehub_dir / 'make_folders.py')
+
+    if not exe_only and EXE_SRC.exists():
+        shutil.copy2(EXE_SRC, PUBLISH_DEST / 'MazeHub.exe')
+    elif not EXE_SRC.exists():
+        print(f'Warning: exe not found at {EXE_SRC}. Run build.bat first.')
+
+    launcher = PUBLISH_DEST / 'launch_mazehub.bat'
+    launcher.write_text(
+        '@echo off\r\n'
+        'setlocal\r\n'
+        'cd /d "%~dp0"\r\n'
+        'if exist "MazeHub.exe" (\r\n'
+        '    start "" "MazeHub.exe"\r\n'
+        '    exit /b 0\r\n'
+        ')\r\n'
+        'echo MazeHub.exe not found in %~dp0\r\n'
+        'exit /b 1\r\n'
+    )
+
+    print(f'Published pipeline to {publish_pipeline_dir}')
+    if EXE_SRC.exists() and not exe_only:
+        print(f'Copied MazeHub.exe to {PUBLISH_DEST}')
 
     if target:
         target = target.resolve()
+        if target.exists():
+            shutil.rmtree(target)
         copy_tree(PUBLISH_DEST, target)
-        print(f'Also copied pipeline to {target}')
+        print(f'Also copied to {target}')
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Sync the mirrored pipeline into the working tree and publish a clean publish/pipeline bundle.')
-    parser.add_argument('--target', type=Path, help='Optional destination folder to receive the published pipeline tree')
+    parser = argparse.ArgumentParser(
+        description='Publish a clean deployable bundle: exe + pipeline data (no Python source).'
+    )
+    parser.add_argument('--target', type=Path, help='Optional destination folder to receive the published bundle')
+    parser.add_argument('--no-exe', action='store_true', help='Skip copying the exe (publish pipeline data only)')
     args = parser.parse_args()
-    publish_pipeline(args.target)
+    publish_pipeline(args.target, exe_only=args.no_exe)
 
 
 if __name__ == '__main__':
