@@ -25,11 +25,13 @@ echo Cleaning previous builds...
 if exist "%BUILD%" rmdir /s /q "%BUILD%"
 if exist "%DIST%" rmdir /s /q "%DIST%"
 
-rem Run PyInstaller
-echo Building %APP_NAME%...
+rem Build with --console so errors are visible; change to --windowed for release
+set "WINDOW_FLAG=--console"
+
+echo Building %APP_NAME% (console mode for debugging)...
 "%PY_EXE%" -m PyInstaller ^
     --onefile ^
-    --windowed ^
+    %WINDOW_FLAG% ^
     --name "%APP_NAME%" ^
     --add-data ".pipeline_mirror\pipeline;pipeline" ^
     --collect-all PySide6 ^
@@ -48,4 +50,7 @@ echo.
 echo ========================================
 echo  Build complete: %DIST%\%APP_NAME%.exe
 echo ========================================
+echo.
+echo Debug log will be at: %%TEMP%%\mazehub_debug.log
+echo.
 pause

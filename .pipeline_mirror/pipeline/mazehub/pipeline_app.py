@@ -21,6 +21,14 @@ APP_FILE_EXTENSIONS = {
 
 def _app_dir():
     if getattr(sys, 'frozen', False):
+        meipass = Path(getattr(sys, '_MEIPASS', ''))
+        if meipass:
+            candidate = meipass / 'pipeline' / 'mazehub'
+            if candidate.exists():
+                return candidate
+            candidate = meipass / 'mazehub'
+            if candidate.exists():
+                return candidate
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
 

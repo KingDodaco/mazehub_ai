@@ -1,19 +1,34 @@
 from pathlib import Path
 import sys
+import tempfile
+import traceback
+
+
+def _debug_log(msg):
+    try:
+        log_path = Path(tempfile.gettempdir()) / 'mazehub_debug.log'
+        with open(log_path, 'a') as f:
+            f.write(msg + '\n')
+    except Exception:
+        pass
 
 
 def _find_app_dir():
     this_dir = Path(__file__).resolve().parent
+    _debug_log(f"this_dir: {this_dir}")
+    _debug_log(f"frozen: {getattr(sys, 'frozen', False)}")
     paths = []
 
     if getattr(sys, 'frozen', False):
         exe_dir = Path(sys.executable).resolve().parent
         meipass = Path(getattr(sys, '_MEIPASS', ''))
+        _debug_log(f"exe_dir: {exe_dir}")
+        _debug_log(f"meipass: {meipass}")
         paths.extend([
-            exe_dir / 'pipeline' / 'mazehub',
-            exe_dir / 'mazehub',
             meipass / 'pipeline' / 'mazehub' if meipass else None,
             meipass / 'mazehub' if meipass else None,
+            exe_dir / 'pipeline' / 'mazehub',
+            exe_dir / 'mazehub',
             exe_dir,
             this_dir / 'pipeline' / 'mazehub',
             this_dir / '.pipeline_mirror' / 'pipeline' / 'mazehub',
@@ -28,21 +43,27 @@ def _find_app_dir():
     for p in paths:
         if p is None:
             continue
+        _debug_log(f"checking: {p} exists={p.exists()}")
         if p.exists() and (p / 'pipeline_app.py').exists() and (p / 'pipeline_gui.py').exists():
+            _debug_log(f"FOUND app_dir: {p}")
             return p
 
     if getattr(sys, 'frozen', False):
         bundled_dir = Path(sys.executable).resolve().parent / '_internal' / 'pipeline' / 'mazehub'
+        _debug_log(f"checking bundled_dir: {bundled_dir}")
         if bundled_dir.exists() and (bundled_dir / 'pipeline_app.py').exists():
+            _debug_log(f"FOUND app_dir: {bundled_dir}")
             return bundled_dir
 
+    _debug_log("ERROR: app_dir not found")
     return None
 
 
 def main():
+    _debug_log("--- MazeHub starting ---")
     app_dir = _find_app_dir()
     if not app_dir:
-        print("ERROR: pipeline app directory not found.")
+        _debug_log("ERROR: pipeline app directory not found.")
         sys.exit(1)
 
     this_dir = Path(__file__).resolve().parent
@@ -57,24 +78,24 @@ def main():
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    print(f"Starting MazeHub from: {this_dir}")
-    print(f"Using app directory: {app_dir}")
+    _debug_log(f"Starting MazeHub from: {this_dir}")
+    _debug_log(f"Using app directory: {app_dir}")
+    _debug_log(f"sys.path: {sys.path[:5]}")
 
     try:
         from pipeline_gui import main as gui_main
-        print("Launching GUI entry point...")
+        _debug_log("Launching GUI entry point...")
         gui_main()
     except Exception as exc:
-        print(f"GUI startup failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        _debug_log(f"GUI startup failed: {exc}")
+        _debug_log(traceback.format_exc())
         try:
             from pipeline_app import main as cli_main
-            print("Falling back to CLI entry point...")
+            _debug_log("Falling back to CLI entry point...")
             cli_main()
         except Exception as cli_exc:
-            print(f"CLI fallback failed: {cli_exc}")
-            traceback.print_exc()
+            _debug_log(f"CLI fallback failed: {cli_exc}")
+            _debug_log(traceback.format_exc())
             sys.exit(1)
 
 
