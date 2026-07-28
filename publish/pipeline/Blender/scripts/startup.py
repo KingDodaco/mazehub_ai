@@ -17,16 +17,6 @@ def setup_scene():
     end = os.environ.get("END_FRAME")
     fps = os.environ.get("FRAME_RATE")
 
-    if start and end:
-        scene.frame_start = int(start)
-        scene.frame_end = int(end)
-        scene.frame_current = int(start)
-        print(f"Frame range set: {start}-{end}")
-
-    if fps:
-        scene.render.fps = int(fps)
-        print(f"Frame rate set: {fps} fps")
-
     context_type = os.environ.get("MAZE_CONTEXT_TYPE", "")
     context_name = os.environ.get("MAZE_CONTEXT_NAME", "")
     context_path = os.environ.get("MAZE_CONTEXT_PATH", "")
@@ -37,6 +27,16 @@ def setup_scene():
             os.makedirs(blend_dir, exist_ok=True)
         scene.render.filepath = os.path.join(context_path, "blender", "render", "####")
         print(f"Render output: {context_path}/blender/render/####")
+
+    if start and end:
+        scene.frame_start = int(start)
+        scene.frame_end = int(end)
+        scene.frame_current = int(start)
+        print(f"Frame range set: {start}-{end}")
+
+    if fps:
+        scene.render.fps = int(fps)
+        print(f"Frame rate set: {fps} fps")
 
     pipeline = os.environ.get("MAZE_PIPELINE", "")
     if pipeline:
