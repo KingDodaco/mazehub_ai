@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MIRROR_SOURCE = ROOT / '.pipeline_mirror' / 'pipeline'
-PUBLISH_DEST = ROOT / 'publish'
+PUBLISH_DEST = ROOT / 'publish' / 'pipeline'
 EXE_SRC = ROOT / 'dist' / 'MazeHub.exe'
 HELPER_SRC = ROOT / 'make_folders.py'
 
@@ -30,18 +30,17 @@ def copy_tree(src: Path, dst: Path):
 
 def publish_pipeline(target: Path | None = None, exe_only: bool = False):
     ensure_source_exists()
-    publish_pipeline_dir = PUBLISH_DEST / 'pipeline'
 
-    if publish_pipeline_dir.exists():
-        shutil.rmtree(publish_pipeline_dir)
-    publish_pipeline_dir.mkdir(parents=True)
+    if PUBLISH_DEST.exists():
+        shutil.rmtree(PUBLISH_DEST)
+    PUBLISH_DEST.mkdir(parents=True)
 
     for d in DCC_DIRS:
         src = MIRROR_SOURCE / d
         if src.exists():
-            copy_tree(src, publish_pipeline_dir / d)
+            copy_tree(src, PUBLISH_DEST / d)
 
-    mazehub_dir = publish_pipeline_dir / 'mazehub'
+    mazehub_dir = PUBLISH_DEST / 'mazehub'
     mazehub_dir.mkdir(parents=True, exist_ok=True)
 
     for f in CONFIG_FILES:
@@ -70,7 +69,7 @@ def publish_pipeline(target: Path | None = None, exe_only: bool = False):
         'exit /b 1\r\n'
     )
 
-    print(f'Published pipeline to {publish_pipeline_dir}')
+    print(f'Published pipeline to {PUBLISH_DEST}')
     if EXE_SRC.exists() and not exe_only:
         print(f'Copied MazeHub.exe to {PUBLISH_DEST}')
 
