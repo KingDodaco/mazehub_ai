@@ -19,6 +19,22 @@ call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
 set "SAFE_SCRIPT=%SCRIPTS_DIR:\=/%\startup.py"
 
-start "" "C:\Program Files\Blender Foundation\Blender 4.5\blender.exe" --python "%SAFE_SCRIPT%"
+set "BLEND_FILE="
+if defined MAZE_CONTEXT_PATH (
+    set "BLEND_DIR=%MAZE_CONTEXT_PATH%\blender\blend"
+    if exist "%BLEND_DIR%" (
+        for %%f in ("%BLEND_DIR%\*.blend") do (
+            if not defined BLEND_FILE set "BLEND_FILE=%%f"
+        )
+    )
+)
+
+if defined BLEND_FILE (
+    echo Opening: %BLEND_FILE%
+    start "" "C:\Program Files\Blender Foundation\Blender 4.5\blender.exe" "%BLEND_FILE%" --python "%SAFE_SCRIPT%"
+) else (
+    echo No .blend file found, starting fresh
+    start "" "C:\Program Files\Blender Foundation\Blender 4.5\blender.exe" --python "%SAFE_SCRIPT%"
+)
 
 endlocal
