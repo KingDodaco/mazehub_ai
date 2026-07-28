@@ -477,8 +477,8 @@ class DashboardPage(QWidget):
         recent_layout.setSpacing(8)
 
         self.recent_table = QTableWidget()
-        self.recent_table.setColumnCount(3)
-        self.recent_table.setHorizontalHeaderLabels(['File', 'App', 'Opened'])
+        self.recent_table.setColumnCount(5)
+        self.recent_table.setHorizontalHeaderLabels(['File', 'Path', 'Context', 'App', 'Opened'])
         self.recent_table.horizontalHeader().setStretchLastSection(True)
         self.recent_table.setAlternatingRowColors(True)
         self.recent_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -544,10 +544,22 @@ class DashboardPage(QWidget):
             item0 = QTableWidgetItem(f.get('display_name', f.get('path', '')))
             item0.setData(Qt.UserRole, f.get('path', ''))
             self.recent_table.setItem(i, 0, item0)
-            self.recent_table.setItem(i, 1, QTableWidgetItem(f.get('app_name', '')))
+            self.recent_table.setItem(i, 1, QTableWidgetItem(f.get('path', '')))
+            ctx_type = f.get('context_type', '')
+            ctx_name = f.get('context_name', '')
+            ctx_cat = f.get('context_category', '')
+            if ctx_type and ctx_name:
+                if ctx_type.lower() == 'asset' and ctx_cat:
+                    ctx_str = f'Asset: {ctx_cat}/{ctx_name}'
+                else:
+                    ctx_str = f'{ctx_type.title()}: {ctx_name}'
+            else:
+                ctx_str = ''
+            self.recent_table.setItem(i, 2, QTableWidgetItem(ctx_str))
+            self.recent_table.setItem(i, 3, QTableWidgetItem(f.get('app_name', '')))
             ts = f.get('timestamp', 0)
             date_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(ts)) if ts else '-'
-            self.recent_table.setItem(i, 2, QTableWidgetItem(date_str))
+            self.recent_table.setItem(i, 4, QTableWidgetItem(date_str))
         self.recent_table.resizeColumnsToContents()
         self.open_recent_btn.setEnabled(False)
 
