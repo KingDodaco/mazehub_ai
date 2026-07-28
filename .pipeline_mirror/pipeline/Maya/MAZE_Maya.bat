@@ -28,6 +28,9 @@ set "SAFE_SCRIPT_PATH=%SCRIPTS_DIR:\=/%"
 set "SET_PROJECT_CMD="
 if defined JOB set "SET_PROJECT_CMD=setProject \"%JOB%\"; "
 
-start "" "C:\Program Files\Autodesk\Maya2025\bin\maya.exe" -command "%SET_PROJECT_CMD%python(\"exec(open('%SAFE_SCRIPT_PATH%/123.py').read())\");"
+set "FILE_CMD="
+if not "%~1"=="" set "FILE_CMD=cmds.file(\"%~1:\=/%\", open=True, force=True); "
+
+start "" "C:\Program Files\Autodesk\Maya2025\bin\maya.exe" -command "%SET_PROJECT_CMD%%FILE_CMD%python(\"exec(open('%SAFE_SCRIPT_PATH%/123.py').read())\");"
 
 endlocal

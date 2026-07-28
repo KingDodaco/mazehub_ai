@@ -11,6 +11,6 @@ if "%MAZE_CONTEXT_TYPE%"=="shot" (
 
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
-start "" "C:\Program Files\Adobe\Adobe Substance 3D Painter\Adobe Substance 3D Painter.exe"
+start "" "C:\Program Files\Adobe\Adobe Substance 3D Painter\Adobe Substance 3D Painter.exe" "%~1"
 
 endlocal

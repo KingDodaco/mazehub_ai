@@ -11,6 +11,6 @@ if "%MAZE_CONTEXT_TYPE%"=="shot" (
 
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
-start "" "C:\Program Files\Adobe\Adobe Photoshop 2025\Photoshop.exe"
+start "" "C:\Program Files\Adobe\Adobe Photoshop 2025\Photoshop.exe" "%~1"
 
 endlocal
