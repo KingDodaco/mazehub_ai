@@ -1,31 +1,23 @@
---- MazeHub starting ---
-this_dir: C:\Users\domin\AppData\Local\Temp\_MEI179842
-frozen: True
-exe_dir: D:\users\Dominic\Projects\Uni\mazehub_ai\dist
-meipass: C:\Users\domin\AppData\Local\Temp\_MEI179842
-checking: C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub exists=True
-FOUND app_dir: C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub
-Starting MazeHub from: C:\Users\domin\AppData\Local\Temp\_MEI179842
-Using app directory: C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub
-sys.path: ['C:\\Users\\domin\\AppData\\Local\\Temp\\_MEI179842', 'C:\\Users\\domin\\AppData\\Local\\Temp\\_MEI179842\\pipeline\\mazehub', 'C:\\Users\\domin\\AppData\\Local\\Temp\\_MEI179842', 'C:\\Users\\domin\\AppData\\Local\\Temp\\_MEI179842\\base_library.zip', 'C:\\Users\\domin\\AppData\\Local\\Temp\\_MEI179842\\python3.12\\lib-dynload']
-Launching GUI entry point...
-GUI startup failed: No module named 'make_folders'
 Traceback (most recent call last):
-  File "main.py", line 88, in main
-  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 1468, in main
-    window = MainWindow(project_root, env_vars, apps_config, pipeline_dir)
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 1347, in __init__
-    self._build()
-  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 1403, in _build
-    page = page_classes[i](*page_args[i])
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 653, in __init__
-    self._build()
-  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 740, in _build
-    self._populate_contexts()
-  File "C:\Users\domin\AppData\Local\Temp\_MEI179842\pipeline\mazehub\pipeline_gui.py", line 754, in _populate_contexts
-    from make_folders import NEW_ASSET_CATEGORY_LIST
-ModuleNotFoundError: No module named 'make_folders'
-
-Falling back to CLI entry point...
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "D:\users\Dominic\Projects\Uni\mazehub_ai\.venv\Lib\site-packages\PyInstaller\__main__.py", line 321, in <module>
+    run()
+  File "D:\users\Dominic\Projects\Uni\mazehub_ai\.venv\Lib\site-packages\PyInstaller\__main__.py", line 215, in run
+    run_build(pyi_config, spec_file, **vars(args))
+  File "D:\users\Dominic\Projects\Uni\mazehub_ai\.venv\Lib\site-packages\PyInstaller\__main__.py", line 70, in run_build
+    PyInstaller.building.build_main.main(pyi_config, spec_file, **kwargs)
+  File "D:\users\Dominic\Projects\Uni\mazehub_ai\.venv\Lib\site-packages\PyInstaller\building\build_main.py", line 1275, in main
+    build(specfile, distpath, workpath, clean_build)
+  File "D:\users\Dominic\Projects\Uni\mazehub_ai\.venv\Lib\site-packages\PyInstaller\building\build_main.py", line 1213, in build
+    exec(code, spec_namespace)
+  File "D:\users\Dominic\Projects\Uni\mazehub_ai\MazeHub.spec", line 26, in <module>
+    exe = EXE(
+          ^^^^
+  File "D:\users\Dominic\Projects\Uni\mazehub_ai\.venv\Lib\site-packages\PyInstaller\building\api.py", line 675, in __init__
+    self.__postinit__()
+  File "D:\users\Dominic\Projects\Uni\mazehub_ai\.venv\Lib\site-packages\PyInstaller\building\datastruct.py", line 184, in __postinit__
+    self.assemble()
+  File "D:\users\Dominic\Projects\Uni\mazehub_ai\.venv\Lib\site-packages\PyInstaller\building\api.py", line 769, in assemble
+    os.remove(self.name)
+PermissionError: [WinError 5] Access is denied: 'D:\\users\\Dominic\\Projects\\Uni\\mazehub_ai\\dist\\MazeHub.exe'

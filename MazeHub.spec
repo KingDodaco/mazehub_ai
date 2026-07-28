@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('.pipeline_mirror\\pipeline', 'pipeline')]
+datas = [('.pipeline_mirror\\pipeline', 'pipeline'), ('make_folders.py', '.')]
 binaries = []
 hiddenimports = ['pipeline_gui', 'pipeline_app', 'recent_files']
 tmp_ret = collect_all('PySide6')
