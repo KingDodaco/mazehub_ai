@@ -38,6 +38,15 @@ def find_project_root():
     if env_root:
         return Path(env_root).resolve()
 
+    if getattr(sys, 'frozen', False):
+        exe_dir = Path(sys.executable).resolve().parent
+        for parent in [exe_dir] + list(exe_dir.parents):
+            root_marker = parent / 'pipeline' / 'mazehub' / 'apps.json'
+            mirror_marker = parent / '.pipeline_mirror' / 'pipeline' / 'mazehub' / 'apps.json'
+            if root_marker.exists() or mirror_marker.exists():
+                return parent
+        return exe_dir
+
     this_dir = _app_dir()
 
     for parent in [this_dir] + list(this_dir.parents):
