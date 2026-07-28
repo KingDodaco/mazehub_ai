@@ -22,6 +22,8 @@ if exist "%VENV_PY%" (
 
 rem Clean previous builds
 echo Cleaning previous builds...
+taskkill /f /im MazeHub.exe >nul 2>nul
+timeout /t 2 /nobreak >nul
 if exist "%BUILD%" rmdir /s /q "%BUILD%"
 if exist "%DIST%" rmdir /s /q "%DIST%"
 
