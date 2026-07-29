@@ -11,6 +11,6 @@ if "%MAZE_CONTEXT_TYPE%"=="shot" (
 
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
-start "" "C:\Program Files\Maxon ZBrush 2024\ZBrush.exe"
+start "" "C:\Program Files\Maxon ZBrush 2024\ZBrush.exe" "%~1"
 
 endlocal

@@ -16,6 +16,7 @@ envPathResolver.setup()
 START_FRAME = os.environ.get("START_FRAME")
 END_FRAME = os.environ.get("END_FRAME")
 FRAME_RATE = os.environ.get("FRAME_RATE")
+OPEN_FILE = os.environ.get("MAZE_OPEN_FILE")
 
 
 def set_timeline():
@@ -30,5 +31,13 @@ def set_timeline():
         cmds.currentTime(int(START_FRAME), edit=True)
 
 
-# Use evalDeferred to ensure Maya is fully loaded before executing
+def open_file():
+    if OPEN_FILE and os.path.isfile(OPEN_FILE):
+        print(f"Opening file: {OPEN_FILE}")
+        cmds.file(OPEN_FILE, open=True, force=True)
+    elif OPEN_FILE:
+        print(f"File not found: {OPEN_FILE}")
+
+
+cmds.evalDeferred(open_file)
 cmds.evalDeferred(set_timeline)

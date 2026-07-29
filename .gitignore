@@ -11,3 +11,4 @@ wheels/
 
 # All copies of the executable files
 */MazeHub.exe
+publish/*

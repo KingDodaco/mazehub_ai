@@ -22,6 +22,13 @@ echo START_FRAME=%START_FRAME%  END_FRAME=%END_FRAME%  FRAME_RATE=%FRAME_RATE%
 
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
-start "" "C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\heducation.exe"
+set "HOUDINI_FILE_ARG="
+if not "%~1"=="" set "HOUDINI_FILE_ARG=%~1:\=/%"
+
+if defined HOUDINI_FILE_ARG (
+    start "" "C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\heducation.exe" "%HOUDINI_FILE_ARG%"
+) else (
+    start "" "C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\heducation.exe"
+)
 
 endlocal
