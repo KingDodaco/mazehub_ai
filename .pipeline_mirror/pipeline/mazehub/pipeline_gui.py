@@ -211,7 +211,7 @@ class FileBrowserPanel(QWidget):
         idx = 1
         for app_name in sorted(groups):
             cfg = self.apps_config.get(app_name, {})
-            display = cfg.get('display_name', app_name)
+            display = cfg.get('file_label', cfg.get('display_name', app_name))
             parent = QTreeWidgetItem([f'{display}', '', ''])
             parent.setFlags(parent.flags() & ~Qt.ItemIsSelectable)
             font = parent.font(0)

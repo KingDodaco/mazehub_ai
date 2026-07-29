@@ -48,7 +48,8 @@
         "appsanywhere": true
     },
     "USD":{
-        "display_name":"usdview",
+        "display_name":"USDview",
+        "file_label":"USD",
         "executable":"MAZE_usdview.bat",
         "subdir":"Houdini21.0",
         "appsanywhere": false
