@@ -28,6 +28,8 @@ set "SAFE_SCRIPT_PATH=%SCRIPTS_DIR:\=/%"
 set "SET_PROJECT_CMD="
 if defined JOB set "SET_PROJECT_CMD=setProject \"%JOB%\"; "
 
+if not "%~1"=="" set "MAZE_OPEN_FILE=%~1"
+
 start "" "C:\Program Files\Autodesk\Maya2025\bin\maya.exe" -command "%SET_PROJECT_CMD%python(\"exec(open('%SAFE_SCRIPT_PATH%/123.py').read())\");"
 
 endlocal
