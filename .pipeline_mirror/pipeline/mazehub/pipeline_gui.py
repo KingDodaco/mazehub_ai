@@ -594,8 +594,16 @@ class DashboardPage(QWidget):
             return
         
         app_key = entry.get('app_key', '')
-        app_name = entry.get('app_name', app_key)
-        cfg = self.apps_config.get(app_key) if app_key else self.apps_config.get(app_name)
+        app_name = entry.get('app_name', '')
+        cfg = None
+        if app_key:
+            cfg = self.apps_config.get(app_key)
+        if not cfg:
+            for key, c in self.apps_config.items():
+                if c.get('display_name') == app_name:
+                    cfg = c
+                    app_key = key
+                    break
         if not cfg:
             window = self.window()
             if hasattr(window, 'show_status'):
