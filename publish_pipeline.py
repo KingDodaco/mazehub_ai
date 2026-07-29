@@ -8,7 +8,7 @@ PUBLISH_DEST = ROOT / 'publish' / 'pipeline'
 EXE_SRC = ROOT / 'dist' / 'MazeHub.exe'
 HELPER_SRC = ROOT / 'make_folders.py'
 
-CONFIG_FILES = ['apps.json', 'styles.qss', 'icon.svg']
+CONFIG_FILES = ['apps.json', 'styles.qss', 'icon.png']
 
 DCC_DIRS = [
     'Blender', 'Houdini21.0', 'Mari', 'Maya',
