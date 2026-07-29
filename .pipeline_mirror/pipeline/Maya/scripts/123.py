@@ -39,5 +39,14 @@ def open_file():
         print(f"File not found: {OPEN_FILE}")
 
 
+def register_maze_tools():
+    try:
+        import maze_tools
+        print("MazeHub tools registered")
+    except Exception as e:
+        print(f"Failed to register MazeHub tools: {e}")
+
+
 cmds.evalDeferred(open_file)
 cmds.evalDeferred(set_timeline)
+cmds.evalDeferred(register_maze_tools)
