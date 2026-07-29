@@ -42,4 +42,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['D:\\users\\Dominic\\Projects\\Uni\\mazehub_ai\\MazeHub_Logo.ico'],
 )
