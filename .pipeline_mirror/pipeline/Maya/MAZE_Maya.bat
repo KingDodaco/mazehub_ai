@@ -13,6 +13,8 @@ if "%MAZE_CONTEXT_TYPE%"=="shot" (
     set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
 )
 
+if defined JOB if not exist "%JOB%" mkdir "%JOB%"
+
 set "MAYA_PROJECT=%JOB%"
 
 if defined JOB set "JOB=%JOB:\=/%"

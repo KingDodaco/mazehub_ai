@@ -43,6 +43,7 @@ def _export_usd(filepath):
     if not sel:
         cmds.warning("No objects selected.")
         return False
+
     cmds.mayaUSDExport(
         file=filepath,
         selection=True,
@@ -78,74 +79,34 @@ def _show_export_dialog(*args):
         cmds.deleteUI(win)
 
     cmds.window(win, title="Export USD", widthHeight=(350, 120), sizeable=True)
-
-    form = cmds.formLayout()
+    col = cmds.columnLayout(adjustableColumn=True, rowSpacing=8, columnOffset=("both", 10))
 
     use_existing_var = cmds.checkBoxGrp(
         label="Use existing descriptor: ",
         value1=False,
-        columnWidth2=(120, 30),
+        columnWidth2=(130, 30),
     )
 
+    descriptor_var = None
     if existing:
-        descriptor_menu = cmds.optionMenu(label="Descriptor: ")
+        descriptor_var = cmds.optionMenu(label="Descriptor: ")
         cmds.menuItem(label="(none)")
         for d in existing:
             cmds.menuItem(label=d)
     else:
-        descriptor_field = cmds.textFieldGrp(label="Descriptor: ", text="")
+        descriptor_var = cmds.textFieldGrp(label="Descriptor: ", text="")
 
-    cmds.formLayout(
-        form,
-        edit=True,
-        attachForm=[
-            (use_existing_var, "top", 10),
-            (use_existing_var, "left", 10),
-        ],
-    )
-
-    if existing:
-        cmds.formLayout(
-            form,
-            edit=True,
-            attachControl=[
-                (descriptor_menu, "top", 5, use_existing_var),
-            ],
-            attachForm=[
-                (descriptor_menu, "left", 10),
-            ],
-        )
-        cmds.formLayout(
-            form,
-            edit=True,
-            attachControl=[
-                (descriptor_field, "top", 5, descriptor_menu),
-            ],
-            attachForm=[
-                (descriptor_field, "left", 10),
-            ],
-        )
-    else:
-        cmds.formLayout(
-            form,
-            edit=True,
-            attachControl=[
-                (descriptor_field, "top", 5, use_existing_var),
-            ],
-            attachForm=[
-                (descriptor_field, "left", 10),
-            ],
-        )
+    cmds.separator(height=5, style="none")
 
     def do_export(*_):
         use_existing = cmds.checkBoxGrp(use_existing_var, query=True, value1=True)
 
         if use_existing and existing:
-            descriptor = cmds.optionMenu(descriptor_menu, query=True, value=True)
+            descriptor = cmds.optionMenu(descriptor_var, query=True, value=True)
             if descriptor == "(none)":
                 descriptor = ""
         else:
-            descriptor = cmds.textFieldGrp(descriptor_field, query=True, text=True).strip()
+            descriptor = cmds.textFieldGrp(descriptor_var, query=True, text=True).strip()
 
         version = _find_next_version(usd_dir, context_name, descriptor)
 
@@ -165,21 +126,7 @@ def _show_export_dialog(*args):
 
         cmds.deleteUI(win)
 
-    cmds.button(
-        label="Export",
-        command=do_export,
-        height=30,
-    )
-
-    cmds.formLayout(
-        form,
-        edit=True,
-        attachForm=[
-            (cmds.formLayout(query=True, childArray=True)[-1], "bottom", 10),
-            (cmds.formLayout(query=True, childArray=True)[-1], "left", 10),
-            (cmds.formLayout(query=True, childArray=True)[-1], "right", 10),
-        ],
-    )
+    cmds.button(label="Export", command=do_export, height=30)
 
     cmds.showWindow(win)
 
