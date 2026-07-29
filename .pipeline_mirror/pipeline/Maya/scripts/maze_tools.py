@@ -85,28 +85,43 @@ def _show_export_dialog(*args):
         label="Use existing descriptor: ",
         value1=False,
         columnWidth2=(130, 30),
+        changeCommand=lambda val: _toggle_descriptorUI(val),
     )
 
-    descriptor_var = None
     if existing:
-        descriptor_var = cmds.optionMenu(label="Descriptor: ")
+        descriptor_menu = cmds.optionMenu(label="Descriptor: ")
         cmds.menuItem(label="(none)")
         for d in existing:
             cmds.menuItem(label=d)
     else:
-        descriptor_var = cmds.textFieldGrp(label="Descriptor: ", text="")
+        descriptor_menu = None
+
+    descriptor_field = cmds.textFieldGrp(label="Descriptor: ", text="")
+
+    if existing:
+        cmds.optionMenu(descriptor_menu, edit=True, visible=True)
+        cmds.textFieldGrp(descriptor_field, edit=True, visible=False)
+    else:
+        cmds.textFieldGrp(descriptor_field, edit=True, visible=True)
+
+    def _toggle_descriptorUI(val):
+        if not existing:
+            return
+        use_new = not val
+        cmds.optionMenu(descriptor_menu, edit=True, visible=not use_new)
+        cmds.textFieldGrp(descriptor_field, edit=True, visible=use_new)
 
     cmds.separator(height=5, style="none")
 
     def do_export(*_):
         use_existing = cmds.checkBoxGrp(use_existing_var, query=True, value1=True)
 
-        if use_existing and existing:
-            descriptor = cmds.optionMenu(descriptor_var, query=True, value=True)
+        if use_existing and descriptor_menu:
+            descriptor = cmds.optionMenu(descriptor_menu, query=True, value=True)
             if descriptor == "(none)":
                 descriptor = ""
         else:
-            descriptor = cmds.textFieldGrp(descriptor_var, query=True, text=True).strip()
+            descriptor = cmds.textFieldGrp(descriptor_field, query=True, text=True).strip()
 
         version = _find_next_version(usd_dir, context_name, descriptor)
 
