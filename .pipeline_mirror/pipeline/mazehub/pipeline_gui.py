@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QStackedWidget, QTextEdit, QFrame,
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
     QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog, QTabWidget,
-    QMenu,
+    QMenu, QCheckBox,
 )
 
 from pipeline_app import (
@@ -140,6 +140,14 @@ class FileBrowserPanel(QWidget):
         header.addWidget(self.file_count_label)
         layout.addLayout(header)
 
+        filter_row = QHBoxLayout()
+        self.show_backups_cb = QCheckBox('Show backup files')
+        self.show_backups_cb.setChecked(False)
+        self.show_backups_cb.stateChanged.connect(lambda: self._refresh())
+        filter_row.addWidget(self.show_backups_cb)
+        filter_row.addStretch()
+        layout.addLayout(filter_row)
+
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(['File', 'Application', 'Path'])
         self.tree.setColumnWidth(0, 200)
@@ -188,11 +196,15 @@ class FileBrowserPanel(QWidget):
 
         self.path_label.setText(str(self._current_path.relative_to(self.project_root)))
 
+        show_backups = self.show_backups_cb.isChecked()
+
         groups = {}
         for ext, app_name in sorted(REVERSE_EXT_MAP.items()):
             for fp in sorted(self._current_path.rglob(f'*{ext}')):
                 parts = fp.relative_to(self._current_path).parts
                 if any(p.startswith('_') or p.startswith('.') for p in parts):
+                    continue
+                if not show_backups and 'backup' in parts:
                     continue
                 groups.setdefault(app_name, []).append(fp)
 
