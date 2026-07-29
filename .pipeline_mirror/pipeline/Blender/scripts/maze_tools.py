@@ -66,16 +66,26 @@ class MAZE_OT_export_usd(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class MAZE_MT_menu(bpy.types.Menu):
+    bl_label = "MAZE"
+    bl_idname = "MAZE_MT_menu"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator(MAZE_OT_export_usd.bl_idname, text="Export Selection as USD")
+
+
 def draw_maze_menu(self, context):
-    self.layout.separator()
-    self.layout.operator(MAZE_OT_export_usd.bl_idname, text="Export Selection as USD")
+    self.layout.menu(MAZE_MT_menu.bl_idname)
 
 
 def register():
     bpy.utils.register_class(MAZE_OT_export_usd)
-    bpy.types.TOPBAR_MT_maze = draw_maze_menu
+    bpy.utils.register_class(MAZE_MT_menu)
+    bpy.types.TOPBAR_MT_editor_menus.append(draw_maze_menu)
 
 
 def unregister():
     bpy.utils.unregister_class(MAZE_OT_export_usd)
-    del bpy.types.TOPBAR_MT_maze
+    bpy.utils.unregister_class(MAZE_MT_menu)
+    bpy.types.TOPBAR_MT_editor_menus.remove(draw_maze_menu)
