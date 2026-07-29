@@ -6,6 +6,8 @@ set "VENV_PY=%ROOT%.venv\Scripts\python.exe"
 set "DIST=%ROOT%dist"
 set "BUILD=%ROOT%build"
 set "APP_NAME=MazeHub"
+set "ICON_PNG=%ROOT%MazeHub_Logo.png"
+set "ICON_ICO=%ROOT%MazeHub_Logo.ico"
 
 echo ========================================
 echo  MazeHub Build Script
@@ -18,6 +20,21 @@ if exist "%VENV_PY%" (
     echo Using project venv: %VENV_PY%
 ) else (
     echo Using system Python...
+)
+
+rem Convert PNG to ICO if needed
+if exist "%ICON_PNG%" (
+    echo Converting logo to ICO format...
+    "%PY_EXE%" -c "from PIL import Image; img = Image.open(r'%ICON_PNG%'); img.save(r'%ICON_ICO%', format='ICO', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+    if errorlevel 1 (
+        echo Warning: ICO conversion failed, building without icon
+        set "ICON_FLAG="
+    ) else (
+        set "ICON_FLAG=--icon=%ICON_ICO%"
+    )
+) else (
+    echo No logo found at %ICON_PNG%, building without icon
+    set "ICON_FLAG="
 )
 
 rem Clean previous builds
@@ -34,6 +51,7 @@ echo Building %APP_NAME% (console mode for debugging)...
 "%PY_EXE%" -m PyInstaller ^
     --onefile ^
     %WINDOW_FLAG% ^
+    %ICON_FLAG% ^
     --name "%APP_NAME%" ^
     --add-data ".pipeline_mirror\pipeline;pipeline" ^
     --add-data "make_folders.py;." ^
