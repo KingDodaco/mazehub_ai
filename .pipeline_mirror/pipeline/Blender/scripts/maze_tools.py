@@ -57,9 +57,9 @@ class MAZE_OT_export_usd(bpy.types.Operator):
 
         bpy.ops.wm.usd_export(
             filepath=filepath,
-            selected_objects=selected,
             export_active_collection=False,
             export_visible_only=False,
+            export_selected=True,
         )
 
         self.report({'INFO'}, f"Exported: {filename}")
