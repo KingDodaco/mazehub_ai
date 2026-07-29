@@ -55,12 +55,7 @@ class MAZE_OT_export_usd(bpy.types.Operator):
             self.report({'ERROR'}, "No objects selected.")
             return {'CANCELLED'}
 
-        bpy.ops.wm.usd_export(
-            filepath=filepath,
-            export_active_collection=False,
-            export_visible_only=False,
-            export_selected=True,
-        )
+        bpy.ops.wm.usd_export(filepath=filepath)
 
         self.report({'INFO'}, f"Exported: {filename}")
         return {'FINISHED'}
