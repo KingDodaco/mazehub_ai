@@ -32,7 +32,7 @@ def save_recent_files(files):
         pass
 
 
-def add_recent_file(path, app_name='', context_type='', context_name='', context_category=''):
+def add_recent_file(path, app_name='', context_type='', context_name='', context_category='', app_key=''):
     if not path:
         return
     files = load_recent_files()
@@ -41,6 +41,7 @@ def add_recent_file(path, app_name='', context_type='', context_name='', context
         'path': str(path),
         'display_name': display_name,
         'app_name': app_name,
+        'app_key': app_key,
         'context_type': context_type,
         'context_name': context_name,
         'context_category': context_category,

@@ -256,7 +256,7 @@ class FileBrowserPanel(QWidget):
                 ctx_type = self._current_context.get('type', '') if self._current_context else ''
                 ctx_name = self._current_context.get('name', '') if self._current_context else ''
                 ctx_cat = self._current_context.get('category', '') if self._current_context else ''
-                add_recent_file(fp, cfg.get('display_name', app_name), ctx_type, ctx_name, ctx_cat)
+                add_recent_file(fp, cfg.get('display_name', app_name), ctx_type, ctx_name, ctx_cat, app_key=app_name)
                 return
 
     def _result(self, msg, ok):
@@ -593,8 +593,9 @@ class DashboardPage(QWidget):
                 window.show_status(f'No context info for {path}', False)
             return
         
-        app_name = entry.get('app_name', '')
-        cfg = self.apps_config.get(app_name)
+        app_key = entry.get('app_key', '')
+        app_name = entry.get('app_name', app_key)
+        cfg = self.apps_config.get(app_key) if app_key else self.apps_config.get(app_name)
         if not cfg:
             window = self.window()
             if hasattr(window, 'show_status'):
@@ -623,6 +624,7 @@ class DashboardPage(QWidget):
             ctx_type,
             ctx_name,
             entry.get('context_category', ''),
+            app_key=app_key,
         )
         self._refresh_recent_files()
 
