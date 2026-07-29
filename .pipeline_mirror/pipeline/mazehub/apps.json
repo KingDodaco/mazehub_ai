@@ -46,5 +46,11 @@
         "executable":"MAZE_Photoshop.bat",
         "subdir":"Photoshop",
         "appsanywhere": true
+    },
+    "USD":{
+        "display_name":"usdview",
+        "executable":"MAZE_usdview.bat",
+        "subdir":"Houdini21.0",
+        "appsanywhere": false
     }
 }

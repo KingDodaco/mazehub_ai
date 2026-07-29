@@ -15,7 +15,7 @@ APP_FILE_EXTENSIONS = {
     'SubstancePainter': ['.spp'],
     'Zbrush': ['.ztl', '.zbp'],
     'Photoshop': ['.psd', '.psb'],
-    'USD': ['.usd', '.usda', '.usdc'],
+    'USD': ['.usd', '.usda', '.usdc', '.usdz'],
 }
 
 
