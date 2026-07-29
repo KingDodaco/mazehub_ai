@@ -46,5 +46,16 @@ def setup_scene():
 
     print(f"Blender launched for {context_type}: {context_name}")
 
+
+def register_maze_tools():
+    try:
+        import maze_tools
+        maze_tools.register()
+        print("MazeHub tools registered")
+    except Exception as e:
+        print(f"Failed to register MazeHub tools: {e}")
+
+
 print("Running startup script...")
 setup_scene()
+register_maze_tools()
