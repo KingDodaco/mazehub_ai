@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 from pipeline_app import (
     find_project_root, setup_environment, load_apps_config,
     read_shot_meta, write_shot_meta, APP_FILE_EXTENSIONS,
-    build_context_env, _app_dir,
+    build_context_env, _app_dir, APP_VERSION,
 )
 
 from recent_files import add_recent_file, get_recent_files as load_recent_files, clear_recent_files
@@ -1420,6 +1420,10 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage(f'Project Root: {self.project_root}')
+
+        version_label = QLabel(f'v{APP_VERSION}')
+        version_label.setStyleSheet('color: #888; padding-right: 8px;')
+        self.status_bar.addPermanentWidget(version_label)
 
         self.sidebar_buttons[0].setChecked(True)
 

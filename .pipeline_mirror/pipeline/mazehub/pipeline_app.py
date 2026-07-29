@@ -5,6 +5,8 @@ import subprocess
 import platform
 from pathlib import Path
 
+APP_VERSION = "0.2.0"
+
 
 APP_FILE_EXTENSIONS = {
     'Houdini': ['.hip', '.hipnc', '.hiplc'],
