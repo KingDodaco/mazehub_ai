@@ -240,13 +240,6 @@ class FileBrowserPanel(QWidget):
         item = items[0]
         for idx, (app_name, fp, rel, tree_item) in self._file_map.items():
             if tree_item is item:
-                if app_name == 'USD':
-                    self._launch_usdview(fp)
-                    ctx_type = self._current_context.get('type', '') if self._current_context else ''
-                    ctx_name = self._current_context.get('name', '') if self._current_context else ''
-                    ctx_cat = self._current_context.get('category', '') if self._current_context else ''
-                    add_recent_file(fp, 'usdview', ctx_type, ctx_name, ctx_cat)
-                    return
                 cfg = self.apps_config.get(app_name)
                 if not cfg:
                     window = self.window()
@@ -265,16 +258,6 @@ class FileBrowserPanel(QWidget):
                 ctx_cat = self._current_context.get('category', '') if self._current_context else ''
                 add_recent_file(fp, cfg.get('display_name', app_name), ctx_type, ctx_name, ctx_cat)
                 return
-
-    def _launch_usdview(self, fp):
-        import shutil
-        usdview = shutil.which('usdview')
-        if not usdview:
-            window = self.window()
-            if hasattr(window, 'show_status'):
-                window.show_status('usdview not found on PATH', False)
-            return
-        subprocess.Popen([usdview, str(fp)])
 
     def _result(self, msg, ok):
         window = self.window()
