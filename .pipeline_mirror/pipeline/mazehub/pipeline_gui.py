@@ -1484,7 +1484,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setFont(QFont('Segoe UI', 10))
-    icon_path = os.path.join(app_dir, 'icon.svg')
+    icon_path = os.path.join(app_dir, 'icon.png')
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     _load_styles(app, app_dir)
