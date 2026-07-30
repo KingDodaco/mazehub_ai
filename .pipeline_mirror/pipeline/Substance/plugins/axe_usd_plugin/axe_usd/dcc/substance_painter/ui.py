@@ -3,7 +3,7 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 from ...version import get_version
 from .qt_compat import (
@@ -79,15 +79,13 @@ class USDExporterView(QDialog):
     UI widget for USD export settings.
     """
 
-    def __init__(self, parent=None, logger: Optional[logging.Logger] = None) -> None:
+    def __init__(self, parent=None) -> None:
         """Build the export settings UI.
 
         Args:
             parent: Optional parent widget.
-            logger: Optional logger to use for UI-related messages.
         """
         super().__init__(parent)
-        self._logger = logger or logging.getLogger(__name__)
         self._plugin_version = get_version()
         self._log_level_actions = {}
         self._log_level_name = "Debug"
@@ -241,8 +239,8 @@ class USDExporterView(QDialog):
         preview_grid.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.override_usdpreview = QComboBox()
-        self.override_usdpreview.addItems(["Auto (Match Source)", "JPEG", "PNG"])
-        self.override_usdpreview.setItemData(0, "auto")
+        self.override_usdpreview.addItems(["jpg", "jpeg", "png"])
+        self.override_usdpreview.setItemData(0, "jpg")
         self.override_usdpreview.setItemData(1, "jpeg")
         self.override_usdpreview.setItemData(2, "png")
         self.override_usdpreview.setToolTip(
@@ -310,7 +308,7 @@ class USDExporterView(QDialog):
         self.materialx.setChecked(DEFAULT_DIALOGUE_DICT["enable_materialx"])
         self.openpbr.setChecked(DEFAULT_DIALOGUE_DICT["enable_openpbr"])
 
-        self.override_usdpreview.setCurrentIndex(0)  # auto
+        self.override_usdpreview.setCurrentIndex(0)
         self.usdpreview_resolution.setCurrentText("128")
 
     def _show_help(self) -> None:
@@ -362,7 +360,7 @@ class USDExporterView(QDialog):
         # Handle the combobox data for override format
         format_override = self.override_usdpreview.currentData()
         overrides = {}
-        if format_override and format_override != "auto":
+        if format_override:
             overrides["usd_preview"] = format_override
         arnold_displacement_mode = resolve_arnold_displacement_mode(
             self.arnold.isChecked(), self.arnold_displacement.isChecked()
