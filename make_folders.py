@@ -18,6 +18,8 @@ NEW_PROJECT_DIRECTORY = ['asset',
                          'pipeline/Maya',
                          'pipeline/Blender',
                          'pipeline/OCIO',
+                         'pipeline/Substance',
+                         'pipeline/Substance/plugins',
 
                          'IO/incoming',
                          'IO/outgoing',
@@ -50,6 +52,7 @@ NEW_WORKING_DIRECTORY = ['blender',
                      'blender/assets',
                      'blender/cache',
                      'blender/texture',
+                     'blender/USD',
                      
                      'houdini',
                      'houdini/hip',
@@ -65,6 +68,7 @@ NEW_WORKING_DIRECTORY = ['blender',
                      'maya/assets',
                      'maya/cache',
                      'maya/images',
+                     'maya/USD',
 
                      'MISC',
 
@@ -91,6 +95,13 @@ NEW_WORKING_DIRECTORY = ['blender',
                      'silhouette/project',
                      'silhouette/annotations',
                      'silhouette/module',
+
+                     'substance',
+                     'substance/spp',
+                     'substance/textures',
+                     'substance/export',
+                     'substance/USD',
+                    
 
                      'zbrush',
                      'zbrush/ztl',
