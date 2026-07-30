@@ -120,9 +120,7 @@ class _MtlxLikeBuilder:
         input_name: str,
     ) -> None:
         color_correct_path = f"{collect_path}/{self.texture_prefix}_{slot}ColorCorrect"
-        color_correct_shader = self._initialize_color_correct_shader(
-            color_correct_path
-        )
+        color_correct_shader = self._initialize_color_correct_shader(color_correct_path)
         color_correct_shader.CreateInput(
             "in", Sdf.ValueTypeNames.Color3f
         ).ConnectToSource(
@@ -143,17 +141,21 @@ class _MtlxLikeBuilder:
         texture_shader: UsdShade.Shader,
         std_surf_shader: UsdShade.Shader,
         input_name: str,
+        signature: str = "float",
     ) -> None:
         range_path = f"{collect_path}/{self.texture_prefix}_{slot}Range"
-        range_shader = self._initialize_range_shader(range_path, signature="float")
-        range_shader.CreateInput(
-            "in", Sdf.ValueTypeNames.Float
-        ).ConnectToSource(
+        range_shader = self._initialize_range_shader(range_path, signature=signature)
+        range_value_type = (
+            Sdf.ValueTypeNames.Float
+            if signature == "float"
+            else Sdf.ValueTypeNames.Color3f
+        )
+        range_shader.CreateInput("in", range_value_type).ConnectToSource(
             texture_shader.ConnectableAPI(),
             "out",
         )
         std_surf_shader.CreateInput(
-            input_name, Sdf.ValueTypeNames.Float
+            input_name, range_value_type
         ).ConnectToSource(
             range_shader.ConnectableAPI(),
             "out",
@@ -168,9 +170,7 @@ class _MtlxLikeBuilder:
     ) -> None:
         normal_map_path = f"{collect_path}/{self.texture_prefix}_NormalMap"
         normal_map_shader = self._initialize_normal_map_shader(normal_map_path)
-        normal_map_shader.CreateInput(
-            "in", Sdf.ValueTypeNames.Float3
-        ).ConnectToSource(
+        normal_map_shader.CreateInput("in", Sdf.ValueTypeNames.Float3).ConnectToSource(
             texture_shader.ConnectableAPI(),
             "out",
         )
@@ -218,12 +218,23 @@ class _MtlxLikeBuilder:
                     collect_path, slot, texture_shader, std_surf_shader, input_name
                 )
             elif slot == "emission":
-                std_surf_shader.CreateInput(
-                    input_name, Sdf.ValueTypeNames.Color3f
-                ).ConnectToSource(
-                    texture_shader.ConnectableAPI(),
-                    "out",
-                )
+                if self.image_signatures[slot] == "float":
+                    self._connect_range(
+                        collect_path,
+                        slot,
+                        texture_shader,
+                        std_surf_shader,
+                        input_name,
+                        signature="float",
+                    )
+                else:
+                    self._connect_color_correct(
+                        collect_path,
+                        slot,
+                        texture_shader,
+                        std_surf_shader,
+                        input_name,
+                    )
                 emission_input = std_surf_shader.GetInput(self.emission_intensity_input)
                 if emission_input:
                     emission_input.Set(1)
@@ -234,16 +245,16 @@ class _MtlxLikeBuilder:
                     collect_path, slot, texture_shader, std_surf_shader, input_name
                 )
             elif slot == "opacity":
-                opacity_type = (
-                    Sdf.ValueTypeNames.Float
-                    if self.image_signatures[slot] == "float"
-                    else Sdf.ValueTypeNames.Color3f
+                opacity_signature = (
+                    "float" if self.image_signatures[slot] == "float" else "color3"
                 )
-                std_surf_shader.CreateInput(
-                    input_name, opacity_type
-                ).ConnectToSource(
-                    texture_shader.ConnectableAPI(),
-                    "out",
+                self._connect_range(
+                    collect_path,
+                    slot,
+                    texture_shader,
+                    std_surf_shader,
+                    input_name,
+                    signature=opacity_signature,
                 )
             elif slot == "normal":
                 self._connect_normal(

@@ -29,11 +29,12 @@ When the plugin is loaded by Substance Painter, the bootloader runs automaticall
    ```
 
 2. **Bootloader Execution**:
-   - Detects Python version (3.9, 3.10, or 3.11)
+   - Detects Python version (3.9, 3.10, 3.11, or 3.13)
    - Maps to appropriate dependency folder:
      - Python 3.9 → `dependencies/py39_usd24_5/` (USD 24.5)
      - Python 3.10 → `dependencies/py310_usd24_5/` (USD 24.5)
      - Python 3.11 → `dependencies/py311_usd25_5_1/` (USD 25.5.1)
+      - Python 3.13 → `dependencies/py313_usd25_8/` (USD 25.8)
    - Adds dependency path to `sys.path`
    - Registers DLL directory for Windows
    - Sets global flag to prevent duplicate loading
@@ -46,19 +47,20 @@ When the plugin is loaded by Substance Painter, the bootloader runs automaticall
 |------------|----------------|-------------------|
 | 9.x | 3.10 | `py310_usd24_5/` |
 | 10.0 | 3.9 | `py39_usd24_5/` |
-| 10.1+ | 3.11 | `py311_usd25_5_1/` |
+| 10.1 - 11.x | 3.11 | `py311_usd25_5_1/` |
+| 12.0+ | 3.13 | `py313_usd25_8/` |
 
 ---
 
 ## Testing Without Substance Painter
 
-### Method 1: Using the Provided Test Script
+### Method 1: Using the Provided Verification Script
 
-A test script is provided in the repository root:
+A verification script is provided under `tools/`:
 
 ```bash
 cd G:\Projects\Dev\Github\SP_usd_creator
-python test_pxr_loader.py
+python tools/verify_pxr_loader.py
 ```
 
 **What it tests**:
@@ -83,9 +85,9 @@ Load result: True/False (depends on Python version)
 
 ---
 
-### Method 2: Manual Testing with Python 3.9, 3.10, or 3.11
+### Method 2: Manual Testing with Python 3.9, 3.10, 3.11, or 3.13
 
-If you have Python 3.10 or 3.11 installed:
+If you have Python 3.9, 3.10, 3.11, or 3.13 installed:
 
 ```python
 import sys
@@ -96,7 +98,7 @@ plugin_dir = Path("G:/Projects/Dev/Github/SP_usd_creator/dist/axe_usd_plugin")
 sys.path.insert(0, str(plugin_dir))
 
 # Import and test
-from axe_usd.dcc.substance_painter.pxr_loader import load_dependencies, verify_pxr_available
+from axe_usd.dcc.substance_painter.pxr_loader import load_dependencies
 
 # Load dependencies
 result = load_dependencies(plugin_dir)
@@ -104,19 +106,13 @@ print(f"Load result: {result}")
 
 # Verify pxr is importable
 if result:
-    pxr_available = verify_pxr_available()
-    print(f"pxr available: {pxr_available}")
-    
-    if pxr_available:
-        # Test actual pxr imports
-        from pxr import Usd, UsdGeom, UsdShade
-        print("✓ Successfully imported pxr modules!")
+    from pxr import Usd, UsdGeom, UsdShade
+    print("✓ Successfully imported pxr modules!")
 ```
 
-**Expected output** (Python 3.9, 3.10, or 3.11):
+**Expected output** (Python 3.9, 3.10, 3.11, or 3.13):
 ```
 Load result: True
-pxr available: True
 ✓ Successfully imported pxr modules!
 ```
 
@@ -143,9 +139,9 @@ except ImportError as e:
 
 **Expected output**:
 ```
-Python version: 3.11.x (or 3.10.x / 3.9.x)
+Python version: 3.13.x (or 3.11.x / 3.10.x / 3.9.x)
 ✓ pxr module loaded successfully!
-USD version: (25, 5, 1) for Python 3.11, (24, 5, 0) for Python 3.9/3.10
+USD version: (25, 5, 1) for Python 3.11/3.13, (24, 5, 0) for Python 3.9/3.10
 ```
 
 ---
@@ -154,10 +150,10 @@ USD version: (25, 5, 1) for Python 3.11, (24, 5, 0) for Python 3.9/3.10
 
 ### "Unsupported Python version" Error
 
-**Cause**: Your Python version is not 3.9, 3.10, or 3.11.
+**Cause**: Your Python version is not 3.9, 3.10, 3.11, or 3.13.
 
 **Solution**: 
-- For testing: Use Python 3.10 or 3.11
+- For testing: Use Python 3.10, 3.11, or 3.13
 - For Substance Painter: Ensure you're using SP 9.x+ (which uses Python 3.10 or 3.11)
 
 ---
@@ -227,24 +223,6 @@ success = load_dependencies(plugin_dir)
 
 ---
 
-### `verify_pxr_available() -> bool`
-
-Verify that pxr module can be imported.
-
-**Returns**:
-- `bool`: True if pxr is importable, False otherwise.
-
-**Example**:
-```python
-from axe_usd.dcc.substance_painter.pxr_loader import verify_pxr_available
-
-if verify_pxr_available():
-    from pxr import Usd, UsdGeom
-    # Use USD modules
-```
-
----
-
 ## Development Notes
 
 ### Path Detection Logic
@@ -289,7 +267,10 @@ plugin_root/
     │       ├── UsdShade/
     │       ├── __init__.py
     │       └── *.dll
-    └── py311_usd25_5_1/      # Python 3.11
+    ├── py311_usd25_5_1/      # Python 3.11
+    │   └── pxr/
+    │       ├── (same structure)
+    └── py313_usd25_8/        # Python 3.13
         └── pxr/
             ├── (same structure)
 ```
@@ -315,6 +296,6 @@ To add support for a new Python version (e.g., 3.12):
 ## Related Files
 
 - **Plugin Entry Point**: `dist/axe_usd_plugin/__init__.py`
-- **Test Script**: `test_pxr_loader.py`
+- **Verification Script**: `tools/verify_pxr_loader.py`
 - **Dependencies README**: `dist/axe_usd_plugin/dependencies/README.md`
 - **Main README**: `README.md`
