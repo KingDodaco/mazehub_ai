@@ -1,5 +1,4 @@
 @echo off
-setlocal
 
 set "PIPELINE_DIR=%MAZE_PIPELINE%"
 set "SUBSTANCE_PLUGINS=%PIPELINE_DIR%\Substance\plugins"
@@ -19,5 +18,3 @@ if "%MAZE_CONTEXT_TYPE%"=="shot" (
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
 start "" "C:\Program Files\Adobe\Adobe Substance 3D Painter\Adobe Substance 3D Painter.exe" "%~1"
-
-endlocal
