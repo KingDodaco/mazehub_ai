@@ -271,7 +271,15 @@ def discover_husk_passes(husk_path, usd_file):
         passes = []
         for line in result.stdout.splitlines():
             line = line.strip()
-            if line and not line.startswith('#') and not line.startswith('husk'):
+            if not line or line.startswith('#') or line.startswith('husk'):
+                continue
+            if 'render passes found' in line.lower():
+                continue
+            if line.startswith('['):
+                end = line.find(']')
+                if end != -1:
+                    line = line[end + 1:].strip()
+            if line:
                 passes.append(line)
         return passes
     except Exception:

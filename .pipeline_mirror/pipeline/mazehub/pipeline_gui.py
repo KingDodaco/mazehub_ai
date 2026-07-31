@@ -1595,19 +1595,12 @@ class RenderPage(QWidget):
         self.deselect_all_btn.clicked.connect(self._deselect_all_passes)
         passes_toolbar.addWidget(self.deselect_all_btn)
         passes_toolbar.addStretch()
-        self.passes_status_label = QLabel('')
-        self.passes_status_label.setObjectName('hint')
-        passes_toolbar.addWidget(self.passes_status_label)
         passes_layout.addLayout(passes_toolbar)
 
-        self.passes_scroll = QScrollArea()
-        self.passes_scroll.setWidgetResizable(True)
-        self.passes_scroll.setMaximumHeight(200)
         self.passes_container = QWidget()
         self.passes_layout = QVBoxLayout(self.passes_container)
         self.passes_layout.setAlignment(Qt.AlignTop)
-        self.passes_scroll.setWidget(self.passes_container)
-        passes_layout.addWidget(self.passes_scroll)
+        passes_layout.addWidget(self.passes_container)
 
         self.no_passes_label = QLabel('No passes found. Select a USD file to discover passes.')
         self.no_passes_label.setObjectName('hint')
@@ -1729,13 +1722,9 @@ class RenderPage(QWidget):
         from settings import find_husk
         husk_path = find_husk()
         if not husk_path:
-            self.passes_status_label.setText('husk not found — set path in Settings')
             return
 
-        self.passes_status_label.setText('Discovering passes...')
-        QApplication.processEvents()
         passes = discover_husk_passes(husk_path, usd_file)
-        self.passes_status_label.setText('')
         if not passes:
             self.no_passes_label.setVisible(True)
             return
@@ -1810,40 +1799,26 @@ class RenderPage(QWidget):
             self._status('Start frame must be <= end frame', False)
             return
 
-        usd_stem = usd_file.stem
-        output_base = shot_path / 'houdini' / 'render' / usd_stem
-        output_base.mkdir(parents=True, exist_ok=True)
-
         commands = []
         if interval <= 1:
             for p in passes:
-                safe_name = p.replace('/', '_').strip('_')
-                out_dir = output_base / safe_name
-                out_dir.mkdir(parents=True, exist_ok=True)
                 cmd = [
                     husk_path,
                     '--pass', p,
                     '-f', str(start),
                     '-n', str(end - start + 1),
-                    '-o', str(out_dir / '$F4.exr'),
-                    '--make-output-path',
                     str(usd_file),
                 ]
                 commands.append(cmd)
         else:
             frames = list(range(start, end + 1, interval))
             for p in passes:
-                safe_name = p.replace('/', '_').strip('_')
-                out_dir = output_base / safe_name
-                out_dir.mkdir(parents=True, exist_ok=True)
                 for frame in frames:
                     cmd = [
                         husk_path,
                         '--pass', p,
                         '-f', str(frame),
                         '-n', '1',
-                        '-o', str(out_dir / '$F4.exr'),
-                        '--make-output-path',
                         str(usd_file),
                     ]
                     commands.append(cmd)
@@ -1852,7 +1827,6 @@ class RenderPage(QWidget):
         self.log_output.append(f'Rendering: {usd_name}')
         self.log_output.append(f'Passes: {", ".join(passes)}')
         self.log_output.append(f'Frames: {start}-{end} (interval {interval})')
-        self.log_output.append(f'Output: {output_base}')
         self.log_output.append(f'Commands: {len(commands)}')
         self.log_output.append('')
 
