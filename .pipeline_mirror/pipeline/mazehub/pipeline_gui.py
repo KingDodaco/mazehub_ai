@@ -1740,22 +1740,26 @@ class RenderPage(QWidget):
         shot_name = self.shot_combo.currentText()
         usd_name = self.usd_combo.currentText()
         if not shot_name or not usd_name:
+            self.log_output.append('[error] Select a shot and USD file first')
             self._status('Select a shot and USD file first', False)
             return
 
         passes = self._get_selected_passes()
         if not passes:
+            self.log_output.append('[error] Select at least one render pass')
             self._status('Select at least one render pass', False)
             return
 
         husk_path = find_husk()
         if not husk_path:
+            self.log_output.append('[error] husk binary not found — configure in Settings')
             self._status('husk binary not found — configure in Settings', False)
             return
 
         shot_path = self.project_root / 'sequence' / shot_name
         usd_file = shot_path / 'houdini' / 'USD' / usd_name
         if not usd_file.exists():
+            self.log_output.append(f'[error] USD file not found: {usd_file}')
             self._status(f'USD file not found: {usd_file}', False)
             return
 
@@ -1763,6 +1767,7 @@ class RenderPage(QWidget):
         end = self.end_frame_spin.value()
         interval = self.interval_spin.value()
         if start > end:
+            self.log_output.append('[error] Start frame must be <= end frame')
             self._status('Start frame must be <= end frame', False)
             return
 
@@ -1828,22 +1833,17 @@ class RenderPage(QWidget):
         self.log_output.append(line)
         sb = self.log_output.verticalScrollBar()
         sb.setValue(sb.maximum())
-        log = get_log_stream()
-        log.write(f'[render] {line}')
 
     def _on_render_finished(self, exit_code):
         self.render_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
-        log = get_log_stream()
         if exit_code == 0:
             self.log_output.append('')
             self.log_output.append('[render complete]')
-            log.write('[render] Render complete')
             self._status('Render complete', True)
         else:
             self.log_output.append('')
             self.log_output.append(f'[render finished with errors (exit code {exit_code})]')
-            log.write(f'[render] Finished with errors (exit code {exit_code})')
             self._status(f'Render finished with errors', False)
 
     def _status(self, msg, ok=True):
