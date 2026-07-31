@@ -5,7 +5,7 @@ import platform
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QDateTime
 from PySide6.QtGui import QFont, QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -34,6 +34,7 @@ SIDEBAR_ITEMS = [
     ('Render', 'Headless USD rendering with husk'),
     ('Env Vars', 'View environment variables'),
     ('Settings', 'Repair file structure and configure options'),
+    ('Log', 'View application and launch output'),
 ]
 
 
@@ -44,6 +45,53 @@ class SidebarButton(QPushButton):
         self.setFixedHeight(44)
         self.setCursor(Qt.PointingHandCursor)
         self.setCheckable(True)
+
+
+class LogStream(QObject):
+    message = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._buffer = ''
+
+    def write(self, text):
+        if not text:
+            return
+        self._buffer += text
+        while '\n' in self._buffer:
+            line, self._buffer = self._buffer.split('\n', 1)
+            if line:
+                ts = QDateTime.currentDateTime().toString('HH:mm:ss')
+                self.message.emit(f'[{ts}] {line}')
+        if self._buffer and not text.endswith('\n'):
+            return
+        if self._buffer:
+            ts = QDateTime.currentDateTime().toString('HH:mm:ss')
+            self.message.emit(f'[{ts}] {self._buffer}')
+            self._buffer = ''
+
+    def flush(self):
+        if self._buffer:
+            ts = QDateTime.currentDateTime().toString('HH:mm:ss')
+            self.message.emit(f'[{ts}] {self._buffer}')
+            self._buffer = ''
+
+    def isatty(self):
+        return False
+
+    @property
+    def encoding(self):
+        return 'utf-8'
+
+
+_log_stream = None
+
+
+def get_log_stream():
+    global _log_stream
+    if _log_stream is None:
+        _log_stream = LogStream()
+    return _log_stream
 
 
 class AppLauncherThread(QThread):
@@ -57,9 +105,11 @@ class AppLauncherThread(QThread):
         self.context = context
 
     def run(self):
+        log = get_log_stream()
         try:
             exec_path = self.pipeline_dir / self.config['subdir'] / self.config['executable']
             if not exec_path.exists():
+                log.write(f'[launch] Executable not found: {exec_path}')
                 self.finished.emit(f'Executable not found: {exec_path}', False)
                 return
 
@@ -69,14 +119,17 @@ class AppLauncherThread(QThread):
                 ctx_env = build_context_env(ctx, self.project_root)
                 launch_env.update(ctx_env)
 
+            log.write(f'[launch] Starting {self.config["display_name"]}...')
             if platform.system() == 'Windows':
                 subprocess.Popen([str(exec_path)], shell=True, env=launch_env)
             elif platform.system() == 'Darwin':
                 subprocess.Popen(['open', str(exec_path)], env=launch_env)
             else:
                 subprocess.Popen([str(exec_path)], shell=True, env=launch_env)
+            log.write(f'[launch] {self.config["display_name"]} launched successfully')
             self.finished.emit(f'Launched {self.config["display_name"]}', True)
         except Exception as e:
+            log.write(f'[launch] Failed to launch: {e}')
             self.finished.emit(f'Failed: {e}', False)
 
 
@@ -92,6 +145,7 @@ class FileOpenThread(QThread):
         self.context = context
 
     def run(self):
+        log = get_log_stream()
         try:
             exec_path = self.pipeline_dir / self.config['subdir'] / self.config['executable']
 
@@ -101,14 +155,17 @@ class FileOpenThread(QThread):
                 ctx_env = build_context_env(ctx, self.project_root)
                 launch_env.update(ctx_env)
 
+            log.write(f'[open] Opening {self.file_path.name} with {self.config["display_name"]}...')
             if platform.system() == 'Windows':
                 subprocess.Popen([str(exec_path), str(self.file_path)], shell=True, env=launch_env)
             elif platform.system() == 'Darwin':
                 subprocess.Popen(['open', str(self.file_path)], env=launch_env)
             else:
                 subprocess.Popen([str(exec_path), str(self.file_path)], shell=True, env=launch_env)
+            log.write(f'[open] {self.file_path.name} opened with {self.config["display_name"]}')
             self.finished.emit(f'Opened {self.file_path.name} with {self.config["display_name"]}', True)
         except Exception as e:
+            log.write(f'[open] Failed to open: {e}')
             self.finished.emit(f'Failed: {e}', False)
 
 
@@ -1295,6 +1352,60 @@ class EnvVarsPage(QWidget):
         self._refresh()
 
 
+class LogPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        title = QLabel('Log')
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        layout.addSpacing(8)
+
+        toolbar = QHBoxLayout()
+        self.clear_btn = QPushButton('Clear Log')
+        self.clear_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_btn.clicked.connect(self._clear)
+        toolbar.addWidget(self.clear_btn)
+        toolbar.addStretch()
+        self.line_count_label = QLabel('')
+        self.line_count_label.setObjectName('hint')
+        toolbar.addWidget(self.line_count_label)
+        layout.addLayout(toolbar)
+
+        self.log_output = QTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setObjectName('renderLog')
+        layout.addWidget(self.log_output, 1)
+
+        self._line_count = 0
+
+        log_stream = get_log_stream()
+        log_stream.message.connect(self._append_line)
+
+    def _append_line(self, line):
+        self.log_output.append(line)
+        self._line_count += 1
+        self.line_count_label.setText(f'{self._line_count} lines')
+        sb = self.log_output.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _clear(self):
+        self.log_output.clear()
+        self._line_count = 0
+        self.line_count_label.setText('')
+
+    def _refresh(self):
+        pass
+
+
 class RenderThread(QThread):
     output = Signal(str)
     finished = Signal(int)
@@ -1687,17 +1798,22 @@ class RenderPage(QWidget):
         self.log_output.append(line)
         sb = self.log_output.verticalScrollBar()
         sb.setValue(sb.maximum())
+        log = get_log_stream()
+        log.write(f'[render] {line}')
 
     def _on_render_finished(self, exit_code):
         self.render_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        log = get_log_stream()
         if exit_code == 0:
             self.log_output.append('')
             self.log_output.append('[render complete]')
+            log.write('[render] Render complete')
             self._status('Render complete', True)
         else:
             self.log_output.append('')
             self.log_output.append(f'[render finished with errors (exit code {exit_code})]')
+            log.write(f'[render] Finished with errors (exit code {exit_code})')
             self._status(f'Render finished with errors', False)
 
     def _status(self, msg, ok=True):
@@ -1907,7 +2023,7 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
 
         page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
-                        AssetExplorerPage, RenderPage, EnvVarsPage, SettingsPage]
+                        AssetExplorerPage, RenderPage, EnvVarsPage, SettingsPage, LogPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
             (self.apps_config, self.pipeline_dir, self.project_root),
@@ -1916,6 +2032,7 @@ class MainWindow(QMainWindow):
             (self.project_root, self.pipeline_dir),
             (self.env_vars,),
             (self.project_root,),
+            (),
         ]
 
         for i, (label, tooltip) in enumerate(SIDEBAR_ITEMS):
@@ -1992,6 +2109,10 @@ def main():
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     _load_styles(app, app_dir)
+
+    log_stream = get_log_stream()
+    sys.stdout = log_stream
+    sys.stderr = log_stream
 
     window = MainWindow(project_root, env_vars, apps_config, pipeline_dir)
     window.show()

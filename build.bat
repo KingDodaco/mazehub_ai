@@ -44,8 +44,8 @@ timeout /t 2 /nobreak >nul
 if exist "%BUILD%" rmdir /s /q "%BUILD%"
 if exist "%DIST%" rmdir /s /q "%DIST%"
 
-rem Build with --console so errors are visible; change to --windowed for release
-set "WINDOW_FLAG=--console"
+rem Build with --windowed so no console window appears
+set "WINDOW_FLAG=--windowed"
 
 echo Building %APP_NAME% (console mode for debugging)...
 "%PY_EXE%" -m PyInstaller ^
