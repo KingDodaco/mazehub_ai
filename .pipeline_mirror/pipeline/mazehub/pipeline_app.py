@@ -161,11 +161,12 @@ def build_context_env(context, project_root):
     if not context:
         return {}
     ctx_path = Path(context['path'])
+    proj = Path(project_root).resolve()
     env = {
         'MAZE_CONTEXT_TYPE': context['type'],
         'MAZE_CONTEXT_NAME': context['name'],
         'MAZE_CONTEXT_PATH': str(ctx_path),
-        'PIPELINE_DIR': str(Path(project_root) / 'pipeline'),
+        'PIPELINE_DIR': str(proj / 'pipeline'),
     }
 
     if context['type'] == 'shot':

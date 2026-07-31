@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set "PIPELINE_DIR=%MAZE_PIPELINE%"
+set "PIPELINE_DIR=%PIPELINE_DIR%"
 
 set HOUDINI_PACKAGE_DIR=%PIPELINE_DIR%\Houdini21.0\Packages
 set HOUDINI_PATH=^&;%HOUDINI_PATH%
@@ -11,7 +11,7 @@ echo START_FRAME=%START_FRAME%  END_FRAME=%END_FRAME%  FRAME_RATE=%FRAME_RATE%
 
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
-set "USD_FILE=%~1"
+set "USD_FILE=%MAZE_OPEN_FILE%"
 
 if defined USD_FILE (
     echo Opening: %USD_FILE%

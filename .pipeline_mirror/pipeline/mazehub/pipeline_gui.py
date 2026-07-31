@@ -181,7 +181,8 @@ class FileOpenThread(QThread):
 
             log.write(f'[open] Opening {self.file_path.name} with {self.config["display_name"]}...')
             if platform.system() == 'Windows':
-                subprocess.Popen([str(exec_path), str(self.file_path)], shell=True, env=launch_env)
+                launch_env['MAZE_OPEN_FILE'] = str(self.file_path)
+                subprocess.Popen([str(exec_path)], shell=True, env=launch_env)
             elif platform.system() == 'Darwin':
                 subprocess.Popen(['open', str(self.file_path)], env=launch_env)
             else:
