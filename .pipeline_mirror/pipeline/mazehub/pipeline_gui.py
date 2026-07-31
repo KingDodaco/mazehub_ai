@@ -555,13 +555,13 @@ class DashboardPage(QWidget):
         layout.addSpacing(16)
 
         stats_layout = QHBoxLayout()
-        seq_count = len(list((self.project_root / 'sequence').iterdir())) if (self.project_root / 'sequence').exists() else 0
+        seq_count = len([d for d in (self.project_root / 'sequence').iterdir() if d.is_dir() and not d.name.startswith('_')]) if (self.project_root / 'sequence').exists() else 0
         asset_count = 0
         asset_dir = self.project_root / 'asset'
         if asset_dir.exists():
             for cat_dir in asset_dir.iterdir():
-                if cat_dir.is_dir():
-                    asset_count += len([d for d in cat_dir.iterdir() if d.is_dir()])
+                if cat_dir.is_dir() and not cat_dir.name.startswith('_'):
+                    asset_count += len([d for d in cat_dir.iterdir() if d.is_dir() and not d.name.startswith('_')])
         stats_layout.addWidget(self._stat_card('Shots', str(seq_count)))
         stats_layout.addWidget(self._stat_card('Assets', str(asset_count)))
         stats_layout.addWidget(self._stat_card('Apps', str(len(self.apps_config))))

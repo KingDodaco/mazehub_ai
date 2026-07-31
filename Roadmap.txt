@@ -7,5 +7,3 @@ Maya animation scene setup (load scene usd + rig)
 Blender default save location
 
 Substance default save location
-
-fix asset counter including asset categories
