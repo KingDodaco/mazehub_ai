@@ -1,8 +1,10 @@
 import os
 import sys
+import re
 import subprocess
 import platform
 import time
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QDateTime, QTimer
@@ -13,7 +15,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QStackedWidget, QTextEdit, QFrame,
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
     QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog, QTabWidget,
-    QMenu, QCheckBox, QSpinBox,
+    QMenu, QCheckBox, QSpinBox, QProgressBar,
 )
 
 from pipeline_app import (
@@ -1478,53 +1480,303 @@ class LogPage(QWidget):
 class RenderThread(QThread):
     output = Signal(str)
     finished = Signal(int)
+    progress = Signal(int, int)
+    pass_changed = Signal(str)
+    frame_started = Signal(int, int, int)
+    frame_finished = Signal()
+    bucket_progress = Signal(int)
 
-    def __init__(self, commands, working_dir=None):
+    def __init__(self, commands, working_dir=None, env=None):
         super().__init__()
         self.commands = commands
         self.working_dir = working_dir
+        self._env = env
         self._process = None
         self._cancel = False
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        self._paused = False
 
     def run(self):
         exit_code = 0
+        total = len(self.commands)
+        current_pass = ''
+        pass_frame_count = 0
+        pass_frames_done = 0
         for i, cmd in enumerate(self.commands):
             if self._cancel:
                 self.output.emit('[cancelled]')
                 break
-            self.output.emit(f'[rendering pass {i + 1}/{len(self.commands)}]')
+            self._pause_event.wait()
+            if self._cancel:
+                self.output.emit('[cancelled]')
+                break
+            pass_name = ''
+            frame_num = 0
+            try:
+                idx = cmd.index('--pass')
+                pass_name = cmd[idx + 1]
+            except (ValueError, IndexError):
+                pass
+            try:
+                idx = cmd.index('-f')
+                frame_num = int(cmd[idx + 1])
+            except (ValueError, IndexError):
+                pass
+            if pass_name != current_pass:
+                current_pass = pass_name
+                pass_frame_count = sum(
+                    1 for c in self.commands
+                    if c[cmd.index('--pass') + 1] == pass_name
+                ) if '--pass' in cmd else 0
+                pass_frames_done = 0
+            self.pass_changed.emit(pass_name)
+            pass_frames_done += 1
+            self.frame_started.emit(frame_num, pass_frame_count, pass_frames_done)
+            self.output.emit(f'[rendering pass {i + 1}/{total}: {pass_name} frame {frame_num}]')
             self.output.emit(f'  cmd: {" ".join(cmd)}')
             try:
+                cmd_env = os.environ.copy()
+                if self._env:
+                    cmd_env.update(self._env)
+                if pass_name:
+                    cmd_env['RENDERPASS'] = pass_name
+                creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                 self._process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
                     cwd=self.working_dir,
+                    env=cmd_env,
+                    creationflags=creation_flags,
                 )
                 for line in self._process.stdout:
                     if self._cancel:
                         self._process.terminate()
                         break
-                    self.output.emit(line.rstrip('\n'))
+                    self._pause_event.wait()
+                    if self._cancel:
+                        self._process.terminate()
+                        break
+                    stripped = line.rstrip('\n')
+                    self.output.emit(stripped)
+                    if 'ALF_PROGRESS' in stripped:
+                        m = re.search(r'ALF_PROGRESS\s+(\d+)', stripped)
+                        if m:
+                            self.bucket_progress.emit(int(m.group(1)))
                 self._process.wait()
+                self.frame_finished.emit()
                 code = self._process.returncode
                 if code != 0:
                     exit_code = code
                     self.output.emit(f'[warning: husk exited with code {code}]')
                 self._process = None
             except Exception as e:
+                self.frame_finished.emit()
                 self.output.emit(f'[error: {e}]')
                 exit_code = 1
+            self.progress.emit(i + 1, total)
         self.finished.emit(exit_code)
 
     def cancel(self):
         self._cancel = True
+        self._pause_event.set()
         if self._process:
             try:
                 self._process.terminate()
             except Exception:
                 pass
+
+    def pause(self):
+        self._paused = True
+        self._pause_event.clear()
+
+    def resume(self):
+        self._paused = False
+        self._pause_event.set()
+
+    @property
+    def is_paused(self):
+        return self._paused
+
+
+class RenderProgressDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Rendering')
+        self.setMinimumWidth(420)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self._render_start = 0
+        self._frame_start = 0
+        self._current_pass = ''
+        self._pass_times = {}
+        self._frames_in_pass = 0
+        self._frames_done = 0
+        self._clock_timer = QTimer(self)
+        self._clock_timer.setInterval(1000)
+        self._clock_timer.timeout.connect(self._tick_clock)
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        self.shot_label = QLabel('Shot: —')
+        shot_font = QFont()
+        shot_font.setBold(True)
+        self.shot_label.setFont(shot_font)
+        layout.addWidget(self.shot_label)
+
+        self.pass_label = QLabel('Pass: —')
+        layout.addWidget(self.pass_label)
+
+        self.frame_label = QLabel('Frame: —')
+        layout.addWidget(self.frame_label)
+
+        frame_progress_group = QGroupBox('Frame Progress')
+        frame_progress_layout = QVBoxLayout(frame_progress_group)
+        self.bucket_progress = QProgressBar()
+        self.bucket_progress.setTextVisible(True)
+        self.bucket_progress.setFormat('%p%')
+        self.bucket_progress.setMaximum(100)
+        frame_progress_layout.addWidget(self.bucket_progress)
+        layout.addWidget(frame_progress_group)
+
+        info_group = QGroupBox('Timing')
+        self.info_layout = QGridLayout(info_group)
+
+        self.info_layout.addWidget(QLabel('Total time:'), 0, 0)
+        self.uptime_label = QLabel('0:00:00')
+        self.info_layout.addWidget(self.uptime_label, 0, 1)
+
+        self.info_layout.addWidget(QLabel('Frame time:'), 1, 0)
+        self.frame_time_label = QLabel('—')
+        self.info_layout.addWidget(self.frame_time_label, 1, 1)
+
+        self._avg_row = 2
+        self._avg_labels = {}
+
+        layout.addWidget(info_group)
+
+        total_group = QGroupBox('Total Job')
+        total_layout = QVBoxLayout(total_group)
+        self.total_progress = QProgressBar()
+        self.total_progress.setTextVisible(True)
+        self.total_progress.setFormat('%v / %m')
+        total_layout.addWidget(self.total_progress)
+        layout.addWidget(total_group)
+
+        btn_row = QHBoxLayout()
+        self.pause_btn = QPushButton('Pause')
+        self.pause_btn.setCursor(Qt.PointingHandCursor)
+        self.pause_btn.clicked.connect(self._toggle_pause)
+        btn_row.addWidget(self.pause_btn)
+        self.cancel_btn = QPushButton('Cancel')
+        self.cancel_btn.setCursor(Qt.PointingHandCursor)
+        btn_row.addWidget(self.cancel_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self.close_btn = QPushButton('Close')
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.setVisible(False)
+        self.close_btn.clicked.connect(self.accept)
+        layout.addWidget(self.close_btn)
+
+    def start_render(self):
+        self._render_start = time.monotonic()
+        self._clock_timer.start()
+        self._tick_clock()
+
+    def set_shot(self, name):
+        self.shot_label.setText(f'Shot: {name}')
+
+    def set_pass(self, name):
+        self._current_pass = name.split('/')[-1]
+        self.pass_label.setText(f'Pass: {self._current_pass}')
+
+    def init_passes(self, passes):
+        self._pass_times = {p.split('/')[-1]: [] for p in passes}
+        self._update_avg_pass()
+
+    def start_frame(self, frame_num=0, frames_in_pass=0, frames_done=0):
+        self._frame_start = time.monotonic()
+        self._frames_in_pass = frames_in_pass
+        self._frames_done = frames_done
+        self.bucket_progress.setValue(0)
+        if frames_in_pass:
+            self.frame_label.setText(f'Frame: {frame_num} ({frames_done} of {frames_in_pass})')
+        else:
+            self.frame_label.setText(f'Frame: {frame_num}')
+
+    def set_bucket_progress(self, percent):
+        self.bucket_progress.setValue(min(percent, 100))
+
+    def stop_frame(self):
+        if self._frame_start:
+            elapsed = time.monotonic() - self._frame_start
+            self.frame_time_label.setText(self._format_duration(elapsed))
+            if self._current_pass:
+                self._pass_times.setdefault(self._current_pass, []).append(elapsed)
+            self._update_avg_pass()
+            self._frame_start = 0
+
+    def _update_avg_pass(self):
+        if not self._pass_times:
+            return
+        for pass_name, times in self._pass_times.items():
+            if pass_name not in self._avg_labels:
+                lbl_name = QLabel(f'{pass_name}:')
+                lbl_name.setObjectName('hint')
+                lbl_time = QLabel('-:--:--')
+                lbl_time.setObjectName('hint')
+                self.info_layout.addWidget(lbl_name, self._avg_row, 0)
+                self.info_layout.addWidget(lbl_time, self._avg_row, 1)
+                self._avg_labels[pass_name] = lbl_time
+                self._avg_row += 1
+            if times:
+                avg = sum(times) / len(times)
+                self._avg_labels[pass_name].setText(self._format_duration(avg))
+
+    def set_total(self, current, total):
+        self.total_progress.setMaximum(total)
+        self.total_progress.setValue(current)
+
+    def _tick_clock(self):
+        if self._render_start:
+            elapsed = time.monotonic() - self._render_start
+            self.uptime_label.setText(self._format_duration(elapsed))
+        if self._frame_start:
+            elapsed = time.monotonic() - self._frame_start
+            self.frame_time_label.setText(self._format_duration(elapsed))
+
+    def _format_duration(self, seconds):
+        h = int(seconds) // 3600
+        m = (int(seconds) % 3600) // 60
+        s = int(seconds) % 60
+        return f'{h}:{m:02d}:{s:02d}'
+
+    def _toggle_pause(self):
+        thread = self._render_thread
+        if not thread:
+            return
+        if thread.is_paused:
+            thread.resume()
+            self.pause_btn.setText('Pause')
+        else:
+            thread.pause()
+            self.pause_btn.setText('Resume')
+
+    def set_render_thread(self, thread):
+        self._render_thread = thread
+
+    def finish_render(self):
+        self._clock_timer.stop()
+        self.pause_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(False)
+        self.close_btn.setVisible(True)
 
 
 class RenderPage(QWidget):
@@ -1533,6 +1785,7 @@ class RenderPage(QWidget):
         self.project_root = project_root
         self.pipeline_dir = pipeline_dir
         self._render_thread = None
+        self._render_dialog = None
         self._build()
 
     def _build(self):
@@ -1579,6 +1832,14 @@ class RenderPage(QWidget):
         self.usd_refresh_btn.clicked.connect(self._refresh_usd_files)
         usd_row.addWidget(self.usd_refresh_btn)
         layout.addLayout(usd_row)
+
+        version_row = QHBoxLayout()
+        version_row.addWidget(QLabel('Version:'))
+        self.version_combo = QComboBox()
+        self.version_combo.setMinimumWidth(260)
+        version_row.addWidget(self.version_combo, 1)
+        version_row.addStretch()
+        layout.addLayout(version_row)
 
         layout.addSpacing(8)
 
@@ -1706,7 +1967,30 @@ class RenderPage(QWidget):
             usd_files = discover_usd_files(shot_path)
             self.usd_combo.addItems([f.name for f in usd_files])
         self.usd_combo.blockSignals(False)
+        self._refresh_versions()
         self._on_usd_changed(self.usd_combo.currentText())
+
+    def _refresh_versions(self):
+        self.version_combo.clear()
+        shot_name = self.shot_combo.currentText()
+        if not shot_name:
+            return
+        render_base = self.project_root / 'sequence' / shot_name / 'houdini' / 'render'
+        versions = []
+        if render_base.exists():
+            for d in render_base.iterdir():
+                if d.is_dir() and d.name.startswith(f'{shot_name}_v'):
+                    try:
+                        v = int(d.name.split('_v')[1])
+                        versions.append(v)
+                    except (ValueError, IndexError):
+                        pass
+        versions.sort()
+        next_version = (versions[-1] + 1) if versions else 1
+        for v in versions:
+            self.version_combo.addItem(f'v{v:03d}', v)
+        self.version_combo.addItem(f'v{next_version:03d} (new)', next_version)
+        self.version_combo.setCurrentIndex(self.version_combo.count() - 1)
 
     def _refresh_usd_files(self):
         self._on_shot_changed(self.shot_combo.currentText())
@@ -1800,28 +2084,27 @@ class RenderPage(QWidget):
             return
 
         commands = []
-        if interval <= 1:
-            for p in passes:
+        render_base = shot_path / 'houdini' / 'render'
+        version = self.version_combo.currentData()
+        version_dir_name = f'{shot_name}_v{version:03d}'
+        frames = list(range(start, end + 1, max(interval, 1)))
+        for p in passes:
+            pass_safe = p.split('/')[-1]
+            out_dir = render_base / version_dir_name / pass_safe
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for frame in frames:
+                out_file = out_dir / f'{shot_name}_{pass_safe}_v{version:03d}_{frame:04d}.exr'
                 cmd = [
                     husk_path,
                     '--pass', p,
-                    '-f', str(start),
-                    '-n', str(end - start + 1),
+                    '-f', str(frame),
+                    '-n', '1',
+                    '-o', str(out_file),
+                    '--make-output-path',
+                    '-V', '2a',
                     str(usd_file),
                 ]
                 commands.append(cmd)
-        else:
-            frames = list(range(start, end + 1, interval))
-            for p in passes:
-                for frame in frames:
-                    cmd = [
-                        husk_path,
-                        '--pass', p,
-                        '-f', str(frame),
-                        '-n', '1',
-                        str(usd_file),
-                    ]
-                    commands.append(cmd)
 
         self.log_output.clear()
         self.log_output.append(f'Rendering: {usd_name}')
@@ -1833,10 +2116,32 @@ class RenderPage(QWidget):
         self.render_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
 
-        self._render_thread = RenderThread(commands, working_dir=str(shot_path))
+        render_env = {
+            'MAZE_CONTEXT_NAME': shot_name,
+            'MAZE_CONTEXT_TYPE': 'shot',
+            'JOB': str(shot_path),
+        }
+
+        self._render_thread = RenderThread(commands, working_dir=str(shot_path), env=render_env)
+
+        self._render_dialog = RenderProgressDialog(self.window())
+        self._render_dialog.set_render_thread(self._render_thread)
+        self._render_dialog.cancel_btn.clicked.connect(self._cancel_render)
+        self._render_dialog.set_total(0, len(commands))
+        self._render_dialog.set_shot(shot_name)
+        self._render_dialog.init_passes(passes)
+
         self._render_thread.output.connect(self._on_render_output)
         self._render_thread.finished.connect(self._on_render_finished)
+        self._render_thread.progress.connect(self._render_dialog.set_total)
+        self._render_thread.pass_changed.connect(self._render_dialog.set_pass)
+        self._render_thread.frame_started.connect(self._render_dialog.start_frame)
+        self._render_thread.frame_finished.connect(self._render_dialog.stop_frame)
+        self._render_thread.bucket_progress.connect(self._render_dialog.set_bucket_progress)
         self._render_thread.start()
+
+        self._render_dialog.open()
+        self._render_dialog.start_render()
 
     def _cancel_render(self):
         if self._render_thread:
@@ -1850,6 +2155,8 @@ class RenderPage(QWidget):
     def _on_render_finished(self, exit_code):
         self.render_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        if self._render_dialog:
+            self._render_dialog.finish_render()
         if exit_code == 0:
             self.log_output.append('')
             self.log_output.append('[render complete]')
