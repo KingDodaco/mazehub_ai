@@ -13,13 +13,14 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QStackedWidget, QTextEdit, QFrame,
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
     QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog, QTabWidget,
-    QMenu, QCheckBox,
+    QMenu, QCheckBox, QSpinBox,
 )
 
 from pipeline_app import (
     find_project_root, setup_environment, load_apps_config,
     read_shot_meta, write_shot_meta, APP_FILE_EXTENSIONS,
     build_context_env, _app_dir, APP_VERSION,
+    discover_usd_files, discover_husk_passes,
 )
 
 from recent_files import add_recent_file, get_recent_files as load_recent_files, clear_recent_files
@@ -30,6 +31,7 @@ SIDEBAR_ITEMS = [
     ('Launch Apps', 'Launch VFX applications'),
     ('Shot Explorer', 'Browse existing shots and create new ones'),
     ('Asset Explorer', 'Browse existing assets and create new ones'),
+    ('Render', 'Headless USD rendering with husk'),
     ('Env Vars', 'View environment variables'),
     ('Settings', 'Repair file structure and configure options'),
 ]
@@ -1293,6 +1295,420 @@ class EnvVarsPage(QWidget):
         self._refresh()
 
 
+class RenderThread(QThread):
+    output = Signal(str)
+    finished = Signal(int)
+
+    def __init__(self, commands, working_dir=None):
+        super().__init__()
+        self.commands = commands
+        self.working_dir = working_dir
+        self._process = None
+        self._cancel = False
+
+    def run(self):
+        exit_code = 0
+        for i, cmd in enumerate(self.commands):
+            if self._cancel:
+                self.output.emit('[cancelled]')
+                break
+            self.output.emit(f'[rendering pass {i + 1}/{len(self.commands)}]')
+            self.output.emit(f'  cmd: {" ".join(cmd)}')
+            try:
+                self._process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    cwd=self.working_dir,
+                )
+                for line in self._process.stdout:
+                    if self._cancel:
+                        self._process.terminate()
+                        break
+                    self.output.emit(line.rstrip('\n'))
+                self._process.wait()
+                code = self._process.returncode
+                if code != 0:
+                    exit_code = code
+                    self.output.emit(f'[warning: husk exited with code {code}]')
+                self._process = None
+            except Exception as e:
+                self.output.emit(f'[error: {e}]')
+                exit_code = 1
+        self.finished.emit(exit_code)
+
+    def cancel(self):
+        self._cancel = True
+        if self._process:
+            try:
+                self._process.terminate()
+            except Exception:
+                pass
+
+
+class RenderPage(QWidget):
+    def __init__(self, project_root, pipeline_dir, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self.pipeline_dir = pipeline_dir
+        self._render_thread = None
+        self._build()
+
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        title = QLabel('Render')
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        layout.addSpacing(8)
+
+        shot_row = QHBoxLayout()
+        shot_row.addWidget(QLabel('Shot:'))
+        self.shot_combo = QComboBox()
+        self.shot_combo.setMinimumWidth(260)
+        self.shot_combo.currentTextChanged.connect(self._on_shot_changed)
+        shot_row.addWidget(self.shot_combo, 1)
+        self.shot_refresh_btn = QPushButton('Refresh')
+        self.shot_refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.shot_refresh_btn.clicked.connect(self._refresh_shots)
+        shot_row.addWidget(self.shot_refresh_btn)
+        layout.addLayout(shot_row)
+
+        usd_row = QHBoxLayout()
+        usd_row.addWidget(QLabel('USD File:'))
+        self.usd_combo = QComboBox()
+        self.usd_combo.setMinimumWidth(260)
+        self.usd_combo.currentTextChanged.connect(self._on_usd_changed)
+        usd_row.addWidget(self.usd_combo, 1)
+        self.usd_refresh_btn = QPushButton('Refresh')
+        self.usd_refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.usd_refresh_btn.clicked.connect(self._refresh_usd_files)
+        usd_row.addWidget(self.usd_refresh_btn)
+        layout.addLayout(usd_row)
+
+        layout.addSpacing(8)
+
+        passes_group = QGroupBox('Render Passes')
+        passes_layout = QVBoxLayout(passes_group)
+
+        passes_toolbar = QHBoxLayout()
+        self.select_all_btn = QPushButton('Select All')
+        self.select_all_btn.setCursor(Qt.PointingHandCursor)
+        self.select_all_btn.clicked.connect(self._select_all_passes)
+        passes_toolbar.addWidget(self.select_all_btn)
+        self.deselect_all_btn = QPushButton('Deselect All')
+        self.deselect_all_btn.setCursor(Qt.PointingHandCursor)
+        self.deselect_all_btn.clicked.connect(self._deselect_all_passes)
+        passes_toolbar.addWidget(self.deselect_all_btn)
+        passes_toolbar.addStretch()
+        self.passes_status_label = QLabel('')
+        self.passes_status_label.setObjectName('hint')
+        passes_toolbar.addWidget(self.passes_status_label)
+        passes_layout.addLayout(passes_toolbar)
+
+        self.passes_scroll = QScrollArea()
+        self.passes_scroll.setWidgetResizable(True)
+        self.passes_scroll.setMaximumHeight(200)
+        self.passes_container = QWidget()
+        self.passes_layout = QVBoxLayout(self.passes_container)
+        self.passes_layout.setAlignment(Qt.AlignTop)
+        self.passes_scroll.setWidget(self.passes_container)
+        passes_layout.addWidget(self.passes_scroll)
+
+        self.no_passes_label = QLabel('No passes found. Select a USD file to discover passes.')
+        self.no_passes_label.setObjectName('hint')
+        passes_layout.addWidget(self.no_passes_label)
+
+        layout.addWidget(passes_group)
+
+        layout.addSpacing(8)
+
+        frame_group = QGroupBox('Frame Range')
+        frame_layout = QHBoxLayout(frame_group)
+
+        frame_layout.addWidget(QLabel('Start:'))
+        self.start_frame_spin = QSpinBox()
+        self.start_frame_spin.setRange(0, 999999)
+        self.start_frame_spin.setValue(1001)
+        frame_layout.addWidget(self.start_frame_spin)
+
+        frame_layout.addWidget(QLabel('End:'))
+        self.end_frame_spin = QSpinBox()
+        self.end_frame_spin.setRange(0, 999999)
+        self.end_frame_spin.setValue(1240)
+        frame_layout.addWidget(self.end_frame_spin)
+
+        frame_layout.addWidget(QLabel('Interval:'))
+        self.interval_spin = QSpinBox()
+        self.interval_spin.setRange(1, 9999)
+        self.interval_spin.setValue(1)
+        self.interval_spin.setToolTip('Render every Nth frame (1 = every frame)')
+        frame_layout.addWidget(self.interval_spin)
+
+        frame_layout.addStretch()
+        layout.addWidget(frame_group)
+
+        layout.addSpacing(8)
+
+        btn_row = QHBoxLayout()
+        self.render_btn = QPushButton('Render Selected Passes')
+        self.render_btn.setMinimumHeight(36)
+        self.render_btn.setCursor(Qt.PointingHandCursor)
+        self.render_btn.clicked.connect(self._start_render)
+        btn_row.addWidget(self.render_btn)
+        self.cancel_btn = QPushButton('Cancel')
+        self.cancel_btn.setMinimumHeight(36)
+        self.cancel_btn.setCursor(Qt.PointingHandCursor)
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self._cancel_render)
+        btn_row.addWidget(self.cancel_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        layout.addSpacing(8)
+
+        log_group = QGroupBox('Output Log')
+        log_layout = QVBoxLayout(log_group)
+        self.log_output = QTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setObjectName('renderLog')
+        self.log_output.setMinimumHeight(150)
+        log_layout.addWidget(self.log_output)
+        self.clear_log_btn = QPushButton('Clear Log')
+        self.clear_log_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_log_btn.clicked.connect(self.log_output.clear)
+        log_layout.addWidget(self.clear_log_btn)
+        layout.addWidget(log_group)
+
+        layout.addStretch()
+
+        scroll.setWidget(container)
+        self._refresh_shots()
+
+    def _refresh_shots(self):
+        current = self.shot_combo.currentText()
+        self.shot_combo.blockSignals(True)
+        self.shot_combo.clear()
+        seq_dir = self.project_root / 'sequence'
+        if seq_dir.exists():
+            shots = sorted(
+                d.name for d in seq_dir.iterdir()
+                if d.is_dir() and not d.name.startswith('_')
+            )
+            self.shot_combo.addItems(shots)
+        idx = self.shot_combo.findText(current)
+        if idx >= 0:
+            self.shot_combo.setCurrentIndex(idx)
+        self.shot_combo.blockSignals(False)
+        self._on_shot_changed(self.shot_combo.currentText())
+
+    def _on_shot_changed(self, shot_name):
+        self.usd_combo.blockSignals(True)
+        self.usd_combo.clear()
+        if shot_name:
+            shot_path = self.project_root / 'sequence' / shot_name
+            meta = read_shot_meta(shot_path)
+            fr = meta.get('frame_range', '')
+            if fr and '-' in fr:
+                parts = fr.split('-')
+                try:
+                    self.start_frame_spin.setValue(int(parts[0]))
+                    self.end_frame_spin.setValue(int(parts[1]))
+                except ValueError:
+                    pass
+            usd_files = discover_usd_files(shot_path)
+            self.usd_combo.addItems([f.name for f in usd_files])
+        self.usd_combo.blockSignals(False)
+        self._on_usd_changed(self.usd_combo.currentText())
+
+    def _refresh_usd_files(self):
+        self._on_shot_changed(self.shot_combo.currentText())
+
+    def _on_usd_changed(self, usd_name):
+        self._clear_passes()
+        shot_name = self.shot_combo.currentText()
+        if not shot_name or not usd_name:
+            return
+        shot_path = self.project_root / 'sequence' / shot_name
+        usd_file = shot_path / 'houdini' / 'USD' / usd_name
+
+        from settings import find_husk
+        husk_path = find_husk()
+        if not husk_path:
+            self.passes_status_label.setText('husk not found — set path in Settings')
+            return
+
+        self.passes_status_label.setText('Discovering passes...')
+        QApplication.processEvents()
+        passes = discover_husk_passes(husk_path, usd_file)
+        self.passes_status_label.setText('')
+        if not passes:
+            self.no_passes_label.setVisible(True)
+            return
+        self.no_passes_label.setVisible(False)
+        for p in passes:
+            cb = QCheckBox(p)
+            cb.setChecked(True)
+            self.passes_layout.addWidget(cb)
+
+    def _clear_passes(self):
+        while self.passes_layout.count():
+            item = self.passes_layout.takeAt()
+            if item.widget():
+                item.widget().deleteLater()
+        self.no_passes_label.setVisible(True)
+
+    def _get_selected_passes(self):
+        passes = []
+        for i in range(self.passes_layout.count()):
+            item = self.passes_layout.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), QCheckBox):
+                if item.widget().isChecked():
+                    passes.append(item.widget().text())
+        return passes
+
+    def _select_all_passes(self):
+        for i in range(self.passes_layout.count()):
+            item = self.passes_layout.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), QCheckBox):
+                item.widget().setChecked(True)
+
+    def _deselect_all_passes(self):
+        for i in range(self.passes_layout.count()):
+            item = self.passes_layout.itemAt(i)
+            if item and item.widget() and isinstance(item.widget(), QCheckBox):
+                item.widget().setChecked(False)
+
+    def _start_render(self):
+        from settings import find_husk
+
+        shot_name = self.shot_combo.currentText()
+        usd_name = self.usd_combo.currentText()
+        if not shot_name or not usd_name:
+            self._status('Select a shot and USD file first', False)
+            return
+
+        passes = self._get_selected_passes()
+        if not passes:
+            self._status('Select at least one render pass', False)
+            return
+
+        husk_path = find_husk()
+        if not husk_path:
+            self._status('husk binary not found — configure in Settings', False)
+            return
+
+        shot_path = self.project_root / 'sequence' / shot_name
+        usd_file = shot_path / 'houdini' / 'USD' / usd_name
+        if not usd_file.exists():
+            self._status(f'USD file not found: {usd_file}', False)
+            return
+
+        start = self.start_frame_spin.value()
+        end = self.end_frame_spin.value()
+        interval = self.interval_spin.value()
+        if start > end:
+            self._status('Start frame must be <= end frame', False)
+            return
+
+        usd_stem = usd_file.stem
+        output_base = shot_path / 'houdini' / 'render' / usd_stem
+        output_base.mkdir(parents=True, exist_ok=True)
+
+        commands = []
+        if interval <= 1:
+            for p in passes:
+                safe_name = p.replace('/', '_').strip('_')
+                out_dir = output_base / safe_name
+                out_dir.mkdir(parents=True, exist_ok=True)
+                cmd = [
+                    husk_path,
+                    '--pass', p,
+                    '-f', str(start),
+                    '-n', str(end - start + 1),
+                    '-o', str(out_dir / '$F4.exr'),
+                    '--make-output-path',
+                    str(usd_file),
+                ]
+                commands.append(cmd)
+        else:
+            frames = list(range(start, end + 1, interval))
+            for p in passes:
+                safe_name = p.replace('/', '_').strip('_')
+                out_dir = output_base / safe_name
+                out_dir.mkdir(parents=True, exist_ok=True)
+                for frame in frames:
+                    cmd = [
+                        husk_path,
+                        '--pass', p,
+                        '-f', str(frame),
+                        '-n', '1',
+                        '-o', str(out_dir / '$F4.exr'),
+                        '--make-output-path',
+                        str(usd_file),
+                    ]
+                    commands.append(cmd)
+
+        self.log_output.clear()
+        self.log_output.append(f'Rendering: {usd_name}')
+        self.log_output.append(f'Passes: {", ".join(passes)}')
+        self.log_output.append(f'Frames: {start}-{end} (interval {interval})')
+        self.log_output.append(f'Output: {output_base}')
+        self.log_output.append(f'Commands: {len(commands)}')
+        self.log_output.append('')
+
+        self.render_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+
+        self._render_thread = RenderThread(commands, working_dir=str(shot_path))
+        self._render_thread.output.connect(self._on_render_output)
+        self._render_thread.finished.connect(self._on_render_finished)
+        self._render_thread.start()
+
+    def _cancel_render(self):
+        if self._render_thread:
+            self._render_thread.cancel()
+
+    def _on_render_output(self, line):
+        self.log_output.append(line)
+        sb = self.log_output.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_render_finished(self, exit_code):
+        self.render_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        if exit_code == 0:
+            self.log_output.append('')
+            self.log_output.append('[render complete]')
+            self._status('Render complete', True)
+        else:
+            self.log_output.append('')
+            self.log_output.append(f'[render finished with errors (exit code {exit_code})]')
+            self._status(f'Render finished with errors', False)
+
+    def _status(self, msg, ok=True):
+        window = self.window()
+        if hasattr(window, 'show_status'):
+            window.show_status(msg, ok)
+
+    def _refresh(self):
+        self._refresh_shots()
+
+
 class SettingsPage(QWidget):
     def __init__(self, project_root, parent=None):
         super().__init__(parent)
@@ -1310,6 +1726,43 @@ class SettingsPage(QWidget):
         title.setFont(title_font)
         layout.addWidget(title)
         layout.addSpacing(16)
+
+        husk_group = QGroupBox('Husk Render Binary')
+        husk_layout = QVBoxLayout(husk_group)
+
+        husk_layout.addWidget(QLabel(
+            'Path to the husk executable for headless USD rendering.'
+        ))
+
+        husk_path_row = QHBoxLayout()
+        self.husk_path_input = QLineEdit()
+        self.husk_path_input.setPlaceholderText('Auto-detected from Houdini install...')
+        husk_path_row.addWidget(self.husk_path_input, 1)
+        self.husk_browse_btn = QPushButton('Browse')
+        self.husk_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.husk_browse_btn.clicked.connect(self._browse_husk)
+        husk_path_row.addWidget(self.husk_browse_btn)
+        husk_layout.addLayout(husk_path_row)
+
+        husk_btn_row = QHBoxLayout()
+        self.husk_save_btn = QPushButton('Save')
+        self.husk_save_btn.setCursor(Qt.PointingHandCursor)
+        self.husk_save_btn.clicked.connect(self._save_husk_path)
+        husk_btn_row.addWidget(self.husk_save_btn)
+        self.husk_detect_btn = QPushButton('Auto-Detect')
+        self.husk_detect_btn.setCursor(Qt.PointingHandCursor)
+        self.husk_detect_btn.clicked.connect(self._detect_husk)
+        husk_btn_row.addWidget(self.husk_detect_btn)
+        husk_btn_row.addStretch()
+        husk_layout.addLayout(husk_btn_row)
+
+        self.husk_status = QLabel('')
+        self.husk_status.setWordWrap(True)
+        self.husk_status.setObjectName('hint')
+        husk_layout.addWidget(self.husk_status)
+
+        husk_layout.addStretch()
+        layout.addWidget(husk_group)
 
         group = QGroupBox('File Structure')
         group_layout = QVBoxLayout(group)
@@ -1332,6 +1785,59 @@ class SettingsPage(QWidget):
         group_layout.addStretch()
         layout.addWidget(group)
         layout.addStretch()
+
+        self._load_husk_path()
+
+    def _load_husk_path(self):
+        from settings import get_setting, find_husk
+        configured = get_setting('husk_path')
+        if configured:
+            self.husk_path_input.setText(configured)
+        detected = find_husk()
+        if configured:
+            if configured == detected:
+                self.husk_status.setText(f'OK: {detected}')
+                self.husk_status.setStyleSheet('color: #00c853;')
+            else:
+                self.husk_status.setText(f'Saved: {configured}\nAuto-detected: {detected}')
+                self.husk_status.setStyleSheet('')
+        elif detected:
+            self.husk_path_input.setText(detected)
+            self.husk_status.setText(f'Auto-detected: {detected}')
+            self.husk_status.setStyleSheet('color: #00c853;')
+        else:
+            self.husk_status.setText('husk not found. Install Houdini or set the path manually.')
+            self.husk_status.setStyleSheet('color: #ff6b6b;')
+
+    def _browse_husk(self):
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select husk Binary', '',
+            'All Files (*)' if platform.system() != 'Windows' else 'husk (*.exe);;All Files (*)'
+        )
+        if path:
+            self.husk_path_input.setText(path)
+
+    def _detect_husk(self):
+        from settings import find_husk
+        detected = find_husk()
+        if detected:
+            self.husk_path_input.setText(detected)
+            self.husk_status.setText(f'Auto-detected: {detected}')
+            self.husk_status.setStyleSheet('color: #00c853;')
+        else:
+            self.husk_status.setText('Could not auto-detect husk. Check your Houdini installation or HFS environment variable.')
+            self.husk_status.setStyleSheet('color: #ff6b6b;')
+
+    def _save_husk_path(self):
+        from settings import set_setting
+        path = self.husk_path_input.text().strip()
+        if path and not Path(path).exists():
+            self.husk_status.setText(f'Warning: File not found at {path}')
+            self.husk_status.setStyleSheet('color: #ffa726;')
+            return
+        set_setting('husk_path', path)
+        self._load_husk_path()
 
     def _repair(self):
         from make_folders import repair_project_structure
@@ -1401,12 +1907,13 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
 
         page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
-                        AssetExplorerPage, EnvVarsPage, SettingsPage]
+                        AssetExplorerPage, RenderPage, EnvVarsPage, SettingsPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
             (self.apps_config, self.pipeline_dir, self.project_root),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.apps_config, self.pipeline_dir),
+            (self.project_root, self.pipeline_dir),
             (self.env_vars,),
             (self.project_root,),
         ]

@@ -248,3 +248,16 @@ QToolTip {
     border-radius: 4px;
     padding: 4px 8px;
 }
+
+/* ── Render Log ── */
+QTextEdit#renderLog {
+    background-color: #0d0d0d;
+    color: #b0b0b0;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 9pt;
+    border: 1px solid #2a2a2a;
+    border-radius: 4px;
+    padding: 8px;
+    selection-background-color: #1a3a2a;
+    selection-color: #00c853;
+}

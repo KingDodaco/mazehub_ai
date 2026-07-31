@@ -5,7 +5,7 @@ import subprocess
 import platform
 from pathlib import Path
 
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.3.0"
 
 
 APP_FILE_EXTENSIONS = {
@@ -245,6 +245,37 @@ def find_project_files(project_root, apps_config):
         if found:
             results[app_name] = sorted(found)[:20]
     return results
+
+
+USD_EXTENSIONS = {'.usd', '.usda', '.usdc'}
+
+
+def discover_usd_files(shot_path):
+    usd_dir = Path(shot_path) / 'houdini' / 'USD'
+    if not usd_dir.exists():
+        return []
+    return sorted(
+        f for f in usd_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in USD_EXTENSIONS
+    )
+
+
+def discover_husk_passes(husk_path, usd_file):
+    if not husk_path or not Path(husk_path).exists():
+        return []
+    try:
+        result = subprocess.run(
+            [husk_path, '--list-passes', str(usd_file)],
+            capture_output=True, text=True, timeout=30,
+        )
+        passes = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line and not line.startswith('#') and not line.startswith('husk'):
+                passes.append(line)
+        return passes
+    except Exception:
+        return []
 
 
 def print_header(project_root):
