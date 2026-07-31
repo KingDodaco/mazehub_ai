@@ -5,7 +5,7 @@ import platform
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QDateTime
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QDateTime, QTimer
 from PySide6.QtGui import QFont, QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -47,12 +47,12 @@ class SidebarButton(QPushButton):
         self.setCheckable(True)
 
 
-class LogStream(QObject):
-    message = Signal(str)
-
+class LogStream:
     def __init__(self):
-        super().__init__()
+        import threading
         self._buffer = ''
+        self._queue = []
+        self._lock = threading.Lock()
 
     def write(self, text):
         if not text:
@@ -62,18 +62,25 @@ class LogStream(QObject):
             line, self._buffer = self._buffer.split('\n', 1)
             if line:
                 ts = QDateTime.currentDateTime().toString('HH:mm:ss')
-                self.message.emit(f'[{ts}] {line}')
+                with self._lock:
+                    self._queue.append(f'[{ts}] {line}')
         if self._buffer and not text.endswith('\n'):
+            ts = QDateTime.currentDateTime().toString('HH:mm:ss')
+            with self._lock:
+                self._queue.append(f'[{ts}] {self._buffer}')
+            self._buffer = ''
             return
         if self._buffer:
             ts = QDateTime.currentDateTime().toString('HH:mm:ss')
-            self.message.emit(f'[{ts}] {self._buffer}')
+            with self._lock:
+                self._queue.append(f'[{ts}] {self._buffer}')
             self._buffer = ''
 
     def flush(self):
         if self._buffer:
             ts = QDateTime.currentDateTime().toString('HH:mm:ss')
-            self.message.emit(f'[{ts}] {self._buffer}')
+            with self._lock:
+                self._queue.append(f'[{ts}] {self._buffer}')
             self._buffer = ''
 
     def isatty(self):
@@ -82,6 +89,12 @@ class LogStream(QObject):
     @property
     def encoding(self):
         return 'utf-8'
+
+    def get_lines(self):
+        with self._lock:
+            lines = list(self._queue)
+            self._queue.clear()
+        return lines
 
 
 _log_stream = None
@@ -111,6 +124,12 @@ class AppLauncherThread(QThread):
             if not exec_path.exists():
                 log.write(f'[launch] Executable not found: {exec_path}')
                 self.finished.emit(f'Executable not found: {exec_path}', False)
+                return
+
+            if exec_path.suffix.lower() == '.bat' and platform.system() != 'Windows':
+                log.write(f'[launch] Cannot launch .bat file on {platform.system()}: {exec_path.name}')
+                log.write(f'[launch] Only Windows can run .bat files')
+                self.finished.emit(f'.bat files cannot run on {platform.system()}', False)
                 return
 
             launch_env = os.environ.copy()
@@ -148,6 +167,11 @@ class FileOpenThread(QThread):
         log = get_log_stream()
         try:
             exec_path = self.pipeline_dir / self.config['subdir'] / self.config['executable']
+
+            if exec_path.suffix.lower() == '.bat' and platform.system() != 'Windows':
+                log.write(f'[open] Cannot launch .bat file on {platform.system()}: {exec_path.name}')
+                self.finished.emit(f'.bat files cannot run on {platform.system()}', False)
+                return
 
             launch_env = os.environ.copy()
             if self.context and self.project_root:
@@ -1387,8 +1411,14 @@ class LogPage(QWidget):
 
         self._line_count = 0
 
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._poll_log)
+        self._poll_timer.start(100)
+
+    def _poll_log(self):
         log_stream = get_log_stream()
-        log_stream.message.connect(self._append_line)
+        for line in log_stream.get_lines():
+            self._append_line(line)
 
     def _append_line(self, line):
         self.log_output.append(line)
@@ -2035,11 +2065,18 @@ class MainWindow(QMainWindow):
             (),
         ]
 
+        SIDEBAR_RENDER_IDX = 4
         for i, (label, tooltip) in enumerate(SIDEBAR_ITEMS):
             btn = SidebarButton(label, tooltip)
             btn.clicked.connect(lambda checked, idx=i: self._switch_page(idx))
             self.sidebar_buttons.append(btn)
             sidebar_layout.addWidget(btn)
+
+            if i == SIDEBAR_RENDER_IDX:
+                sep = QFrame()
+                sep.setFrameShape(QFrame.Shape.HLine)
+                sep.setStyleSheet('color: #444; margin: 4px 12px;')
+                sidebar_layout.addWidget(sep)
 
             page = page_classes[i](*page_args[i])
             self.pages.addWidget(page)

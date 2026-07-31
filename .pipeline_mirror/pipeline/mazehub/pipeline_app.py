@@ -5,7 +5,7 @@ import subprocess
 import platform
 from pathlib import Path
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 
 
 APP_FILE_EXTENSIONS = {
