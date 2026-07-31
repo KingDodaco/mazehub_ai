@@ -140,7 +140,26 @@ class AppLauncherThread(QThread):
 
             log.write(f'[launch] Starting {self.config["display_name"]}...')
             if platform.system() == 'Windows':
-                subprocess.Popen([str(exec_path)], shell=True, env=launch_env)
+                import tempfile
+                log_file = tempfile.NamedTemporaryFile(suffix='.log', delete=False, mode='w')
+                log_path = log_file.name
+                log_file.close()
+                with open(log_path, 'w') as f:
+                    f.write('')
+                cmd = f'"{exec_path}" > "{log_path}" 2>&1'
+                proc = subprocess.Popen(
+                    cmd,
+                    shell=True, env=launch_env,
+                )
+                proc.wait()
+                try:
+                    with open(log_path, 'r') as f:
+                        bat_output = f.read()
+                    os.unlink(log_path)
+                except Exception:
+                    bat_output = ''
+                for line in bat_output.strip().splitlines():
+                    log.write(f'[launch] {line}')
             elif platform.system() == 'Darwin':
                 subprocess.Popen(['open', str(exec_path)], env=launch_env)
             else:
@@ -180,9 +199,29 @@ class FileOpenThread(QThread):
                 launch_env.update(ctx_env)
 
             log.write(f'[open] Opening {self.file_path.name} with {self.config["display_name"]}...')
+            log.write(f'[open] MAZE_PIPELINE={launch_env.get("MAZE_PIPELINE", "<not set>")}')
+            log.write(f'[open] PIPELINE_DIR={launch_env.get("PIPELINE_DIR", "<not set>")}')
+            log.write(f'[open] MAZE_OPEN_FILE={launch_env.get("MAZE_OPEN_FILE", "<not set>")}')
+            log.write(f'[open] HOUDINI_PATH={launch_env.get("HOUDINI_PATH", "<not set>")}')
             if platform.system() == 'Windows':
+                import tempfile
                 launch_env['MAZE_OPEN_FILE'] = str(self.file_path)
-                subprocess.Popen([str(exec_path)], shell=True, env=launch_env)
+                log_file = tempfile.NamedTemporaryFile(suffix='.log', delete=False, mode='w')
+                log_path = log_file.name
+                log_file.close()
+                with open(log_path, 'w') as f:
+                    f.write('')
+                cmd = f'"{exec_path}" > "{log_path}" 2>&1'
+                proc = subprocess.Popen(cmd, shell=True, env=launch_env)
+                proc.wait()
+                try:
+                    with open(log_path, 'r') as f:
+                        bat_output = f.read()
+                    os.unlink(log_path)
+                except Exception:
+                    bat_output = ''
+                for line in bat_output.strip().splitlines():
+                    log.write(f'[open] {line}')
             elif platform.system() == 'Darwin':
                 subprocess.Popen(['open', str(self.file_path)], env=launch_env)
             else:
