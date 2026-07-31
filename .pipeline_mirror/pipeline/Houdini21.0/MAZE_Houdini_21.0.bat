@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set "PIPELINE_DIR=%PIPELINE_DIR%"
+set "PIPELINE_DIR=%MAZE_PIPELINE%"
 
 if "%MAZE_CONTEXT_TYPE%"=="shot" (
     set "JOB=%MAZE_CONTEXT_PATH%\houdini"

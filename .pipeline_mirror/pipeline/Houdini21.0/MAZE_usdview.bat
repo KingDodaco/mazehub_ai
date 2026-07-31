@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set "PIPELINE_DIR=%PIPELINE_DIR%"
+set "PIPELINE_DIR=%MAZE_PIPELINE%"
 
 set HOUDINI_PACKAGE_DIR=%PIPELINE_DIR%\Houdini21.0\Packages
 set HOUDINI_PATH=^&;%HOUDINI_PATH%
