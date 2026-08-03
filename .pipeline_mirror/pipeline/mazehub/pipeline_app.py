@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import json
 import subprocess
 import platform
@@ -258,6 +259,39 @@ def discover_usd_files(shot_path):
         f for f in usd_dir.iterdir()
         if f.is_file() and f.suffix.lower() in USD_EXTENSIONS
     )
+
+
+IMAGE_EXTENSIONS = {'.exr', '.png', '.tiff', '.tif', '.jpeg', '.jpg', '.dpx', '.pic'}
+
+
+def discover_image_sequences(shot_path):
+    render_dir = Path(shot_path) / 'houdini' / 'render'
+    if not render_dir.exists():
+        return []
+    from collections import defaultdict
+    sequences = defaultdict(list)
+    for f in render_dir.rglob('*'):
+        if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
+            sequences[f.parent].append(f)
+    results = []
+    for folder in sorted(sequences):
+        files = sorted(sequences[folder])
+        if len(files) < 2:
+            continue
+        stem = files[0].stem
+        prefix = re.split(r'\d+$', stem)[0] if re.search(r'\d+$', stem) else stem
+        pad = len(stem) - len(prefix)
+        ext = files[0].suffix
+        pattern = str(folder / f'{prefix}$FRAMES{ext}')
+        results.append({
+            'pattern': pattern,
+            'prefix': prefix,
+            'folder': folder,
+            'count': len(files),
+            'first_frame': files[0].name,
+            'last_frame': files[-1].name,
+        })
+    return results
 
 
 def discover_husk_passes(husk_path, usd_file):

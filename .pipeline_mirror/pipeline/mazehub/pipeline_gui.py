@@ -21,6 +21,7 @@ from pipeline_app import (
     read_shot_meta, write_shot_meta, APP_FILE_EXTENSIONS,
     build_context_env, _app_dir, APP_VERSION,
     discover_usd_files, discover_husk_passes,
+    discover_image_sequences,
 )
 
 from recent_files import add_recent_file, get_recent_files as load_recent_files, clear_recent_files
@@ -32,6 +33,7 @@ SIDEBAR_ITEMS = [
     ('Shot Explorer', 'Browse existing shots and create new ones'),
     ('Asset Explorer', 'Browse existing assets and create new ones'),
     ('Render', 'Headless USD rendering with husk'),
+    ('Preview', 'Preview image sequences in MPlay'),
     ('Env Vars', 'View environment variables'),
     ('Settings', 'Repair file structure and configure options'),
     ('Log', 'View application and launch output'),
@@ -1350,6 +1352,132 @@ class RecentFilesPage(QWidget):
         self._refresh()
 
 
+class PreviewPage(QWidget):
+    def __init__(self, project_root, pipeline_dir, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self.pipeline_dir = pipeline_dir
+        self._sequences = []
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        title = QLabel('Preview')
+        title.setObjectName('sectionTitle')
+        layout.addWidget(title)
+
+        shot_row = QHBoxLayout()
+        shot_row.addWidget(QLabel('Shot:'))
+        self.shot_combo = QComboBox()
+        self.shot_combo.setMinimumWidth(260)
+        self.shot_combo.currentTextChanged.connect(self._on_shot_changed)
+        shot_row.addWidget(self.shot_combo, 1)
+        self.shot_refresh_btn = QPushButton('Refresh')
+        self.shot_refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.shot_refresh_btn.clicked.connect(self._refresh_shots)
+        shot_row.addWidget(self.shot_refresh_btn)
+        layout.addLayout(shot_row)
+
+        self.seq_list = QTreeWidget()
+        self.seq_list.setHeaderLabels(['Sequence', 'Frames', 'Folder'])
+        self.seq_list.setRootIsDecorated(False)
+        self.seq_list.setSelectionMode(QTreeWidget.SingleSelection)
+        self.seq_list.setAlternatingRowColors(True)
+        self.seq_list.itemDoubleClicked.connect(self._open_in_mplay)
+        layout.addWidget(self.seq_list, 1)
+
+        btn_row = QHBoxLayout()
+        self.open_btn = QPushButton('Open in MPlay')
+        self.open_btn.setMinimumHeight(36)
+        self.open_btn.setCursor(Qt.PointingHandCursor)
+        self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self._open_in_mplay)
+        btn_row.addWidget(self.open_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self.status_label = QLabel('')
+        self.status_label.setStyleSheet('color: #888;')
+        layout.addWidget(self.status_label)
+
+        self.seq_list.itemSelectionChanged.connect(
+            lambda: self.open_btn.setEnabled(bool(self.seq_list.selectedItems()))
+        )
+
+        self._refresh_shots()
+
+    def _refresh_shots(self):
+        current = self.shot_combo.currentText()
+        self.shot_combo.blockSignals(True)
+        self.shot_combo.clear()
+        seq_dir = self.project_root / 'sequence'
+        if seq_dir.exists():
+            shots = sorted(
+                d.name for d in seq_dir.iterdir()
+                if d.is_dir() and not d.name.startswith('_')
+            )
+            self.shot_combo.addItems(shots)
+        idx = self.shot_combo.findText(current)
+        if idx >= 0:
+            self.shot_combo.setCurrentIndex(idx)
+        self.shot_combo.blockSignals(False)
+        self._on_shot_changed(self.shot_combo.currentText())
+
+    def _on_shot_changed(self, shot_name):
+        self.seq_list.clear()
+        self._sequences = []
+        if not shot_name:
+            self.status_label.setText('No shot selected')
+            return
+        shot_path = self.project_root / 'sequence' / shot_name
+        sequences = discover_image_sequences(shot_path)
+        self._sequences = sequences
+        for seq in sequences:
+            item = QTreeWidgetItem([
+                seq['prefix'],
+                str(seq['count']),
+                str(seq['folder'].relative_to(shot_path)),
+            ])
+            self.seq_list.addTopLevelItem(item)
+        self.status_label.setText(
+            f'{len(sequences)} sequence{"s" if len(sequences) != 1 else ""} found'
+            if sequences else 'No image sequences found'
+        )
+
+    def _open_in_mplay(self, *args):
+        items = self.seq_list.selectedItems()
+        if not items:
+            return
+        idx = self.seq_list.indexOfTopLevelItem(items[0])
+        seq = self._sequences[idx]
+
+        mplay_path = self.pipeline_dir / 'Houdini21.0' / 'bin' / 'mplay.exe'
+        if not mplay_path.exists():
+            mplay_path = Path(r'C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\mplay.exe')
+        if not mplay_path.exists():
+            self.status_label.setText('mplay.exe not found')
+            return
+
+        launch_env = os.environ.copy()
+        ctx_env = build_context_env(
+            {'type': 'shot', 'name': self.shot_combo.currentText(),
+             'path': str(self.project_root / 'sequence' / self.shot_combo.currentText())},
+            self.project_root,
+        )
+        launch_env.update(ctx_env)
+        launch_env['HOUDINI_PATH'] = str(self.pipeline_dir / 'Houdini21.0') + ';&;' + launch_env.get('HOUDINI_PATH', '')
+
+        pattern = seq['pattern'].replace('$FRAMES', '#')
+        try:
+            subprocess.Popen([str(mplay_path), pattern], env=launch_env)
+            self.status_label.setText(f'Opened {seq["prefix"]} in MPlay')
+        except Exception as e:
+            self.status_label.setText(f'Failed to launch MPlay: {e}')
+
+
 class EnvVarsPage(QWidget):
     def __init__(self, env_vars, parent=None):
         super().__init__(parent)
@@ -2092,19 +2220,21 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
 
         page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
-                        AssetExplorerPage, RenderPage, EnvVarsPage, SettingsPage, LogPage]
+                        AssetExplorerPage, RenderPage, PreviewPage,
+                        EnvVarsPage, SettingsPage, LogPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
             (self.apps_config, self.pipeline_dir, self.project_root),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.pipeline_dir),
+            (self.project_root, self.pipeline_dir),
             (self.env_vars,),
             (self.project_root,),
             (),
         ]
 
-        SIDEBAR_RENDER_IDX = 4
+        SIDEBAR_RENDER_IDX = 5
         for i, (label, tooltip) in enumerate(SIDEBAR_ITEMS):
             btn = SidebarButton(label, tooltip)
             btn.clicked.connect(lambda checked, idx=i: self._switch_page(idx))
