@@ -1841,6 +1841,16 @@ class RenderPage(QWidget):
         version_row.addStretch()
         layout.addLayout(version_row)
 
+        render_engine_row = QHBoxLayout()
+        render_engine_row.addWidget(QLabel('Render Engine:'))
+        self.render_engine_combo = QComboBox()
+        self.render_engine_combo.setMinimumWidth(260)
+        self.render_engine_combo.addItem('Karma XPU', 'xpu')
+        self.render_engine_combo.addItem('Karma CPU', 'cpu')
+        render_engine_row.addWidget(self.render_engine_combo, 1)
+        render_engine_row.addStretch()
+        layout.addLayout(render_engine_row)
+
         layout.addSpacing(8)
 
         passes_group = QGroupBox('Render Passes')
@@ -2086,6 +2096,7 @@ class RenderPage(QWidget):
         commands = []
         render_base = shot_path / 'houdini' / 'render'
         version = self.version_combo.currentData()
+        render_engine = self.render_engine_combo.currentData()
         version_dir_name = f'{shot_name}_v{version:03d}'
         frames = list(range(start, end + 1, max(interval, 1)))
         for p in passes:
@@ -2096,6 +2107,7 @@ class RenderPage(QWidget):
                 out_file = out_dir / f'{shot_name}_{pass_safe}_v{version:03d}_{frame:04d}.exr'
                 cmd = [
                     husk_path,
+                    '--engine', render_engine,
                     '--pass', p,
                     '-f', str(frame),
                     '-n', '1',
@@ -2110,6 +2122,7 @@ class RenderPage(QWidget):
         self.log_output.append(f'Rendering: {usd_name}')
         self.log_output.append(f'Passes: {", ".join(passes)}')
         self.log_output.append(f'Frames: {start}-{end} (interval {interval})')
+        self.log_output.append(f'Engine: Karma {render_engine.upper()}')
         self.log_output.append(f'Commands: {len(commands)}')
         self.log_output.append('')
 
