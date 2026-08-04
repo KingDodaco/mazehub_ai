@@ -1384,8 +1384,7 @@ class PreviewPage(QWidget):
         layout.addLayout(shot_row)
 
         self.seq_list = QTreeWidget()
-        self.seq_list.setHeaderLabels(['Sequence', 'Frames', 'Folder'])
-        self.seq_list.setRootIsDecorated(False)
+        self.seq_list.setHeaderLabels(['Name', 'Frames', 'Folder'])
         self.seq_list.setSelectionMode(QTreeWidget.SingleSelection)
         self.seq_list.setAlternatingRowColors(True)
         self.seq_list.itemDoubleClicked.connect(self._open_in_mplay)
@@ -1437,13 +1436,30 @@ class PreviewPage(QWidget):
         shot_path = self.project_root / 'sequence' / shot_name
         sequences = discover_image_sequences(shot_path)
         self._sequences = sequences
-        for seq in sequences:
-            item = QTreeWidgetItem([
-                seq['prefix'],
+        software_items = {}
+        name_items = {}
+        for i, seq in enumerate(sequences):
+            sw = seq['software']
+            if sw not in software_items:
+                sw_item = QTreeWidgetItem(self.seq_list, [sw])
+                sw_item.setFlags(sw_item.flags() & ~Qt.ItemIsSelectable)
+                software_items[sw] = sw_item
+                sw_item.setExpanded(True)
+            sw_item = software_items[sw]
+            name_key = (sw, seq['prefix'])
+            if name_key not in name_items:
+                name_item = QTreeWidgetItem(sw_item, [seq['prefix']])
+                name_item.setFlags(name_item.flags() & ~Qt.ItemIsSelectable)
+                name_item.setExpanded(True)
+                name_items[name_key] = name_item
+            name_item = name_items[name_key]
+            v_item = QTreeWidgetItem(name_item, [
+                seq['version'],
                 str(seq['count']),
                 str(seq['folder'].relative_to(shot_path)),
             ])
-            self.seq_list.addTopLevelItem(item)
+            v_item.setData(0, Qt.UserRole, i)
+        self.seq_list.sortItems(0, Qt.AscendingOrder)
         self.status_label.setText(
             f'{len(sequences)} sequence{"s" if len(sequences) != 1 else ""} found'
             if sequences else 'No image sequences found'
@@ -1453,7 +1469,9 @@ class PreviewPage(QWidget):
         items = self.seq_list.selectedItems()
         if not items:
             return
-        idx = self.seq_list.indexOfTopLevelItem(items[0])
+        idx = items[0].data(0, Qt.UserRole)
+        if idx is None:
+            return
         seq = self._sequences[idx]
 
         mplay_path = self.pipeline_dir / 'Houdini21.0' / 'bin' / 'mplay.exe'
@@ -1472,9 +1490,17 @@ class PreviewPage(QWidget):
         launch_env.update(ctx_env)
         launch_env['HOUDINI_PATH'] = str(self.pipeline_dir / 'Houdini21.0') + ';&;' + launch_env.get('HOUDINI_PATH', '')
 
-        pattern = seq['pattern'].replace('$FRAMES', '#')
+        ocio_config = self.pipeline_dir / 'OCIO' / 'BU_nov2024_config.ocio'
+        if ocio_config.exists():
+            launch_env['OCIO'] = str(ocio_config)
+            launch_env['OCIO_ACTIVE_DISPLAYS'] = 'arri709 - Display:sRGB - Display'
+            launch_env['OCIO_ACTIVE_VIEWS'] = 'arri709 - View:Raw'
+
+        pattern = seq['pattern'].replace('$FRAMES', f'$F{seq["pad"]}')
+        start_frame = int(re.search(r'(\d+)(?=\.\w+$)', seq['first_frame']).group(1))
+        end_frame = int(re.search(r'(\d+)(?=\.\w+$)', seq['last_frame']).group(1))
         try:
-            subprocess.Popen([str(mplay_path), pattern], env=launch_env)
+            subprocess.Popen([str(mplay_path), '-f', str(start_frame), str(end_frame), '1', pattern], env=launch_env)
             self.status_label.setText(f'Opened {seq["prefix"]} in MPlay')
         except Exception as e:
             self.status_label.setText(f'Failed to launch MPlay: {e}')
