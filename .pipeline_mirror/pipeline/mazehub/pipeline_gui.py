@@ -24,7 +24,19 @@ from pipeline_app import (
     build_context_env, _app_dir, APP_VERSION,
     discover_usd_files, discover_husk_passes,
     discover_image_sequences,
+    read_production, write_production, production_score,
+    PRODUCTION_STATUSES, PRODUCTION_VALUES,
+    ASSET_CATEGORIES, SHOT_CATEGORIES,
 )
+
+
+def _score_color(score_str):
+    if not score_str:
+        return None
+    pct = int(score_str.replace('%', ''))
+    r = 220 if pct < 50 else int(220 * (1 - (pct - 50) / 50))
+    g = int(180 * (pct / 50)) if pct < 50 else 180
+    return QColor(min(r, 220), min(g, 180), 60)
 
 from recent_files import add_recent_file, get_recent_files as load_recent_files, clear_recent_files
 
@@ -34,6 +46,7 @@ SIDEBAR_ITEMS = [
     ('Launch Apps', 'Launch VFX applications'),
     ('Shot Explorer', 'Browse existing shots and create new ones'),
     ('Asset Explorer', 'Browse existing assets and create new ones'),
+    ('Production', 'Track production progress across shots and assets'),
     ('Render', 'Headless USD rendering with husk'),
     ('Preview', 'Preview image sequences in MPlay'),
     ('Env Vars', 'View environment variables'),
@@ -996,9 +1009,9 @@ class ShotExplorerPage(QWidget):
         layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(
-            ['', 'Shot', 'Path', 'Frame Range', 'Frame Rate', 'Description', 'Working Dirs']
+            ['', 'Shot', 'Progress', 'Path', 'Frame Range', 'Frame Rate', 'Description', 'Working Dirs']
         )
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -1108,6 +1121,11 @@ class ShotExplorerPage(QWidget):
         for i, name in enumerate(shots):
             shot_path = seq_dir / name
             meta = read_shot_meta(shot_path)
+            prod = read_production(shot_path)
+            if not prod:
+                prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
+                write_production(shot_path, prod)
+            score = production_score(prod)
             working_count = sum(1 for d in shot_path.iterdir() if d.is_dir() and not d.name.startswith('_'))
             self.table.setRowHeight(i, 64)
             thumb_item = QTableWidgetItem()
@@ -1116,15 +1134,20 @@ class ShotExplorerPage(QWidget):
                 thumb_item.setIcon(QIcon(str(thumb_path)))
             self.table.setItem(i, 0, thumb_item)
             self.table.setItem(i, 1, QTableWidgetItem(name))
-            self.table.setItem(i, 2, QTableWidgetItem(str(shot_path.relative_to(self.project_root))))
-            self.table.setItem(i, 3, QTableWidgetItem(meta['frame_range']))
-            self.table.setItem(i, 4, QTableWidgetItem(meta['frame_rate']))
-            self.table.setItem(i, 5, QTableWidgetItem(meta['description']))
-            self.table.setItem(i, 6, QTableWidgetItem(f'{working_count} dirs'))
+            score_item = QTableWidgetItem(score)
+            color = _score_color(score)
+            if color:
+                score_item.setForeground(color)
+            self.table.setItem(i, 2, score_item)
+            self.table.setItem(i, 3, QTableWidgetItem(str(shot_path.relative_to(self.project_root))))
+            self.table.setItem(i, 4, QTableWidgetItem(meta['frame_range']))
+            self.table.setItem(i, 5, QTableWidgetItem(meta['frame_rate']))
+            self.table.setItem(i, 6, QTableWidgetItem(meta['description']))
+            self.table.setItem(i, 7, QTableWidgetItem(f'{working_count} dirs'))
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(0, 72)
-        self.table.setColumnWidth(2, max(self.table.columnWidth(2), 200))
-        self.table.setColumnWidth(6, max(self.table.columnWidth(6), 200))
+        self.table.setColumnWidth(3, max(self.table.columnWidth(3), 200))
+        self.table.setColumnWidth(7, max(self.table.columnWidth(7), 200))
         self.table.horizontalHeader().setStretchLastSection(False)
 
     def _context_menu(self, pos):
@@ -1134,16 +1157,37 @@ class ShotExplorerPage(QWidget):
         row = item.row()
         shot_name = self.table.item(row, 1).text()
         shot_path = self.project_root / 'sequence' / shot_name
+        prod = read_production(shot_path)
+
         menu = QMenu(self)
-        set_action = menu.addAction('Set Thumbnail...')
+
+        for cat in SHOT_CATEGORIES:
+            status = prod.get(cat, 'Not started')
+            cat_menu = menu.addMenu(f'{cat}: {status}')
+            for s in PRODUCTION_STATUSES + ['Not applicable']:
+                action = cat_menu.addAction(s)
+                action.setData((cat, s))
+                if s == status:
+                    font = action.font()
+                    font.setBold(True)
+                    action.setFont(font)
+
+        menu.addSeparator()
+        set_thumb = menu.addAction('Set Thumbnail...')
         thumb_path = shot_path / '_thumbnail.png'
-        remove_action = None
+        remove_thumb = None
         if thumb_path.exists():
-            remove_action = menu.addAction('Remove Thumbnail')
+            remove_thumb = menu.addAction('Remove Thumbnail')
+
         action = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if action == set_action:
+        if action and action.data():
+            cat, status = action.data()
+            prod[cat] = status
+            write_production(shot_path, prod)
+            self._refresh()
+        elif action == set_thumb:
             self._set_thumbnail(shot_path)
-        elif remove_action and action == remove_action:
+        elif remove_thumb and action == remove_thumb:
             thumb_path.unlink()
             self._refresh()
 
@@ -1209,8 +1253,8 @@ class AssetExplorerPage(QWidget):
         layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(['', 'Asset', 'Category', 'Path', 'Working Dirs'])
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(['', 'Asset', 'Progress', 'Category', 'Path', 'Working Dirs'])
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -1261,7 +1305,7 @@ class AssetExplorerPage(QWidget):
         if items:
             row = items[0].row()
             asset_name = self.table.item(row, 1).text()
-            cat = self.table.item(row, 2).text()
+            cat = self.table.item(row, 3).text()
             asset_path = self.project_root / 'asset' / cat / asset_name
             ctx = {'type': 'asset', 'name': asset_name, 'path': asset_path, 'category': cat}
             self._file_panel.set_directory(asset_path, context=ctx)
@@ -1285,10 +1329,16 @@ class AssetExplorerPage(QWidget):
                 continue
             for asset in sorted(cat_dir.iterdir()):
                 if asset.is_dir() and not asset.name.startswith('_'):
+                    prod = read_production(asset)
+                    if not prod:
+                        prod = {cat_name: 'Not applicable' if info == 'optional' else 'Not started'
+                                for cat_name, info in ASSET_CATEGORIES.items()}
+                        write_production(asset, prod)
+                    score = production_score(prod)
                     working_count = sum(1 for d in asset.iterdir() if d.is_dir())
-                    rows.append((asset.name, cat_dir.name, str(asset.relative_to(self.project_root)), f'{working_count} dirs'))
+                    rows.append((asset.name, cat_dir.name, str(asset.relative_to(self.project_root)), score, f'{working_count} dirs'))
         self.table.setRowCount(len(rows))
-        for i, (name, cat, path, count) in enumerate(rows):
+        for i, (name, cat, path, score, count) in enumerate(rows):
             self.table.setRowHeight(i, 64)
             thumb_item = QTableWidgetItem()
             asset_path = self.project_root / 'asset' / cat / name
@@ -1297,12 +1347,17 @@ class AssetExplorerPage(QWidget):
                 thumb_item.setIcon(QIcon(str(thumb_path)))
             self.table.setItem(i, 0, thumb_item)
             self.table.setItem(i, 1, QTableWidgetItem(name))
-            self.table.setItem(i, 2, QTableWidgetItem(cat))
-            self.table.setItem(i, 3, QTableWidgetItem(path))
-            self.table.setItem(i, 4, QTableWidgetItem(count))
+            score_item = QTableWidgetItem(score)
+            color = _score_color(score)
+            if color:
+                score_item.setForeground(color)
+            self.table.setItem(i, 2, score_item)
+            self.table.setItem(i, 3, QTableWidgetItem(cat))
+            self.table.setItem(i, 4, QTableWidgetItem(path))
+            self.table.setItem(i, 5, QTableWidgetItem(count))
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(0, 72)
-        self.table.setColumnWidth(3, max(self.table.columnWidth(3), 300))
+        self.table.setColumnWidth(4, max(self.table.columnWidth(4), 300))
 
     def _context_menu(self, pos):
         item = self.table.itemAt(pos)
@@ -1310,18 +1365,40 @@ class AssetExplorerPage(QWidget):
             return
         row = item.row()
         asset_name = self.table.item(row, 1).text()
-        cat = self.table.item(row, 2).text()
+        cat = self.table.item(row, 3).text()
         asset_path = self.project_root / 'asset' / cat / asset_name
+        prod = read_production(asset_path)
+
         menu = QMenu(self)
-        set_action = menu.addAction('Set Thumbnail...')
+
+        for cat_name, cat_type in ASSET_CATEGORIES.items():
+            status = prod.get(cat_name, 'Not started')
+            label = f'{cat_name} ({cat_type})' if cat_type == 'optional' else cat_name
+            cat_menu = menu.addMenu(f'{label}: {status}')
+            for s in PRODUCTION_STATUSES + ['Not applicable']:
+                action = cat_menu.addAction(s)
+                action.setData((cat_name, s))
+                if s == status:
+                    font = action.font()
+                    font.setBold(True)
+                    action.setFont(font)
+
+        menu.addSeparator()
+        set_thumb = menu.addAction('Set Thumbnail...')
         thumb_path = asset_path / '_thumbnail.png'
-        remove_action = None
+        remove_thumb = None
         if thumb_path.exists():
-            remove_action = menu.addAction('Remove Thumbnail')
+            remove_thumb = menu.addAction('Remove Thumbnail')
+
         action = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if action == set_action:
+        if action and action.data():
+            cat_name, status = action.data()
+            prod[cat_name] = status
+            write_production(asset_path, prod)
+            self._refresh()
+        elif action == set_thumb:
             self._set_thumbnail(asset_path)
-        elif remove_action and action == remove_action:
+        elif remove_thumb and action == remove_thumb:
             thumb_path.unlink()
             self._refresh()
 
@@ -1593,6 +1670,203 @@ class PreviewPage(QWidget):
             self.status_label.setText(f'Opened {seq["prefix"]} in MPlay')
         except Exception as e:
             self.status_label.setText(f'Failed to launch MPlay: {e}')
+
+
+class ProductionPage(QWidget):
+    def __init__(self, project_root, pipeline_dir, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self.pipeline_dir = pipeline_dir
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        title = QLabel('Production Tracking')
+        title.setObjectName('sectionTitle')
+        layout.addWidget(title)
+
+        tabs = QTabWidget()
+
+        shot_tab = QWidget()
+        shot_layout = QVBoxLayout(shot_tab)
+        self.shot_table = QTableWidget()
+        self.shot_table.setAlternatingRowColors(True)
+        self.shot_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.shot_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.shot_table.verticalHeader().setVisible(False)
+        self.shot_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.shot_table.customContextMenuRequested.connect(self._shot_context_menu)
+        shot_layout.addWidget(self.shot_table)
+        tabs.addTab(shot_tab, 'Shots')
+
+        asset_tab = QWidget()
+        asset_layout = QVBoxLayout(asset_tab)
+        self.asset_table = QTableWidget()
+        self.asset_table.setAlternatingRowColors(True)
+        self.asset_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.asset_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.asset_table.verticalHeader().setVisible(False)
+        self.asset_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.asset_table.customContextMenuRequested.connect(self._asset_context_menu)
+        asset_layout.addWidget(self.asset_table)
+        tabs.addTab(asset_tab, 'Assets')
+
+        layout.addWidget(tabs)
+
+        refresh_btn = QPushButton('Refresh')
+        refresh_btn.setCursor(Qt.PointingHandCursor)
+        refresh_btn.clicked.connect(self._refresh)
+        layout.addWidget(refresh_btn, 0, Qt.AlignRight)
+
+        self._refresh()
+
+    def _refresh(self):
+        self._refresh_shots()
+        self._refresh_assets()
+
+    def _refresh_shots(self):
+        self.shot_table.clear()
+        seq_dir = self.project_root / 'sequence'
+        if not seq_dir.exists():
+            return
+        shots = sorted(d.name for d in seq_dir.iterdir() if d.is_dir() and not d.name.startswith('_'))
+        cols = ['Shot'] + SHOT_CATEGORIES + ['Progress']
+        self.shot_table.setColumnCount(len(cols))
+        self.shot_table.setHorizontalHeaderLabels(cols)
+        self.shot_table.setRowCount(len(shots))
+        for i, name in enumerate(shots):
+            shot_path = seq_dir / name
+            prod = read_production(shot_path)
+            if not prod:
+                prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
+                write_production(shot_path, prod)
+            self.shot_table.setItem(i, 0, QTableWidgetItem(name))
+            for j, cat in enumerate(SHOT_CATEGORIES):
+                status = prod.get(cat, 'Not started')
+                item = QTableWidgetItem(status)
+                item.setData(Qt.UserRole, (name, cat))
+                item.setForeground(_status_color(status))
+                self.shot_table.setItem(i, j + 1, item)
+            score = production_score(prod)
+            score_item = QTableWidgetItem(score)
+            color = _score_color(score)
+            if color:
+                score_item.setForeground(color)
+            self.shot_table.setItem(i, len(cols) - 1, score_item)
+        self.shot_table.resizeColumnsToContents()
+
+    def _refresh_assets(self):
+        self.asset_table.clear()
+        asset_dir = self.project_root / 'asset'
+        if not asset_dir.exists():
+            return
+        all_cats = list(ASSET_CATEGORIES.keys())
+        cols = ['Asset', 'Category'] + all_cats + ['Progress']
+        self.asset_table.setColumnCount(len(cols))
+        self.asset_table.setHorizontalHeaderLabels(cols)
+        rows = []
+        for cat_dir in sorted(asset_dir.iterdir()):
+            if not cat_dir.is_dir() or cat_dir.name.startswith('_'):
+                continue
+            for asset in sorted(cat_dir.iterdir()):
+                if asset.is_dir() and not asset.name.startswith('_'):
+                    prod = read_production(asset)
+                    if not prod:
+                        prod = {cat_name: 'Not applicable' if info == 'optional' else 'Not started'
+                                for cat_name, info in ASSET_CATEGORIES.items()}
+                        write_production(asset, prod)
+                    rows.append((asset.name, cat_dir.name, prod))
+        self.asset_table.setRowCount(len(rows))
+        for i, (name, cat, prod) in enumerate(rows):
+            self.asset_table.setItem(i, 0, QTableWidgetItem(name))
+            self.asset_table.setItem(i, 1, QTableWidgetItem(cat))
+            for j, cat_name in enumerate(all_cats):
+                status = prod.get(cat_name, 'Not started')
+                item = QTableWidgetItem(status)
+                item.setData(Qt.UserRole, (name, cat, cat_name))
+                item.setForeground(_status_color(status))
+                self.asset_table.setItem(i, j + 2, item)
+            score = production_score(prod)
+            score_item = QTableWidgetItem(score)
+            color = _score_color(score)
+            if color:
+                score_item.setForeground(color)
+            self.asset_table.setItem(i, len(cols) - 1, score_item)
+        self.asset_table.resizeColumnsToContents()
+
+    def _shot_context_menu(self, pos):
+        item = self.shot_table.itemAt(pos)
+        if not item:
+            return
+        col = item.column()
+        if col == 0:
+            return
+        cat = SHOT_CATEGORIES[col - 1]
+        row = item.row()
+        shot_name = self.shot_table.item(row, 0).text()
+        shot_path = self.project_root / 'sequence' / shot_name
+        prod = read_production(shot_path)
+        current = prod.get(cat, 'Not started')
+
+        menu = QMenu(self)
+        for s in PRODUCTION_STATUSES + ['Not applicable']:
+            action = menu.addAction(s)
+            action.setData(s)
+            if s == current:
+                font = action.font()
+                font.setBold(True)
+                action.setFont(font)
+
+        action = menu.exec(self.shot_table.viewport().mapToGlobal(pos))
+        if action:
+            prod[cat] = action.data()
+            write_production(shot_path, prod)
+            self._refresh_shots()
+
+    def _asset_context_menu(self, pos):
+        item = self.asset_table.itemAt(pos)
+        if not item:
+            return
+        col = item.column()
+        if col < 2:
+            return
+        all_cats = list(ASSET_CATEGORIES.keys())
+        cat_name = all_cats[col - 2]
+        row = item.row()
+        asset_name = self.asset_table.item(row, 0).text()
+        cat = self.asset_table.item(row, 1).text()
+        asset_path = self.project_root / 'asset' / cat / asset_name
+        prod = read_production(asset_path)
+        current = prod.get(cat_name, 'Not started')
+
+        menu = QMenu(self)
+        for s in PRODUCTION_STATUSES + ['Not applicable']:
+            action = menu.addAction(s)
+            action.setData(s)
+            if s == current:
+                font = action.font()
+                font.setBold(True)
+                action.setFont(font)
+
+        action = menu.exec(self.asset_table.viewport().mapToGlobal(pos))
+        if action:
+            prod[cat_name] = action.data()
+            write_production(asset_path, prod)
+            self._refresh_assets()
+
+
+def _status_color(status):
+    colors = {
+        'Not started': QColor(180, 60, 60),
+        'Work in progress': QColor(200, 160, 40),
+        'Pending review': QColor(60, 140, 200),
+        'Finished': QColor(60, 180, 60),
+        'Not applicable': QColor(120, 120, 120),
+    }
+    return colors.get(status, QColor(180, 180, 180))
 
 
 class EnvVarsPage(QWidget):
@@ -2629,7 +2903,7 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
 
         page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
-                        AssetExplorerPage, RenderPage, PreviewPage,
+                        AssetExplorerPage, ProductionPage, RenderPage, PreviewPage,
                         EnvVarsPage, SettingsPage, LogPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
@@ -2638,12 +2912,13 @@ class MainWindow(QMainWindow):
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.pipeline_dir),
             (self.project_root, self.pipeline_dir),
+            (self.project_root, self.pipeline_dir),
             (self.env_vars,),
             (self.project_root,),
             (),
         ]
 
-        SIDEBAR_RENDER_IDX = 5
+        SIDEBAR_RENDER_IDX = 6
         for i, (label, tooltip) in enumerate(SIDEBAR_ITEMS):
             btn = SidebarButton(label, tooltip)
             btn.clicked.connect(lambda checked, idx=i: self._switch_page(idx))

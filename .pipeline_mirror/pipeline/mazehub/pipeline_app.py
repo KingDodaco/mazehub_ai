@@ -98,6 +98,44 @@ def write_shot_meta(shot_path, metadata):
         json.dump(clean, f, indent=2)
 
 
+PRODUCTION_FILENAME = '_production.json'
+
+PRODUCTION_STATUSES = ['Not started', 'Work in progress', 'Pending review', 'Finished']
+PRODUCTION_VALUES = {'Not started': 0, 'Work in progress': 33, 'Pending review': 66, 'Finished': 100}
+
+ASSET_CATEGORIES = {
+    'Modelling': 'core',
+    'Texturing': 'core',
+    'Lookdev': 'core',
+    'Rigging': 'optional',
+    'Groom': 'optional',
+    'FX Prep': 'optional',
+}
+
+SHOT_CATEGORIES = ['Tracking', 'Paint & Roto', 'Animation', 'FX', 'Lighting', 'Rendering', 'Compositing', 'Colour Grading']
+
+
+def read_production(item_path):
+    prod_path = Path(item_path) / PRODUCTION_FILENAME
+    if prod_path.exists():
+        with open(prod_path, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def write_production(item_path, data):
+    prod_path = Path(item_path) / PRODUCTION_FILENAME
+    with open(prod_path, 'w') as f:
+        json.dump(data, f, indent=2)
+
+
+def production_score(data):
+    values = [PRODUCTION_VALUES.get(v, 0) for v in data.values() if v != 'Not applicable']
+    if not values:
+        return ''
+    return f'{round(sum(values) / len(values))}%'
+
+
 def _env_ref(root_var):
     if platform.system() == 'Windows':
         return f'%{root_var}%'
