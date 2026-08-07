@@ -38,6 +38,28 @@ def _score_color(score_str):
     g = int(180 * (pct / 50)) if pct < 50 else 180
     return QColor(min(r, 220), min(g, 180), 60)
 
+
+def _status_color(status):
+    colors = {
+        'Not started': QColor(180, 60, 60),
+        'Work in progress': QColor(200, 160, 40),
+        'Pending review': QColor(60, 140, 200),
+        'Finished': QColor(60, 180, 60),
+        'Not applicable': QColor(120, 120, 120),
+    }
+    return colors.get(status, QColor(180, 180, 180))
+
+
+class _SortItem(QTableWidgetItem):
+    def __init__(self, text, sort_value=None):
+        super().__init__(text)
+        self._sort_value = sort_value
+
+    def __lt__(self, other):
+        if self._sort_value is not None and isinstance(other, _SortItem) and other._sort_value is not None:
+            return self._sort_value < other._sort_value
+        return super().__lt__(other)
+
 from recent_files import add_recent_file, get_recent_files as load_recent_files, clear_recent_files
 
 
@@ -1020,6 +1042,7 @@ class ShotExplorerPage(QWidget):
         self.table.setIconSize(QPixmap(64, 64).size())
         self.table.setColumnWidth(0, 72)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self._on_selection_change)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
@@ -1112,6 +1135,7 @@ class ShotExplorerPage(QWidget):
             self.file_browser.setVisible(False)
 
     def _refresh(self):
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         seq_dir = self.project_root / 'sequence'
         if not seq_dir.exists():
@@ -1134,7 +1158,7 @@ class ShotExplorerPage(QWidget):
                 thumb_item.setIcon(QIcon(str(thumb_path)))
             self.table.setItem(i, 0, thumb_item)
             self.table.setItem(i, 1, QTableWidgetItem(name))
-            score_item = QTableWidgetItem(score)
+            score_item = _SortItem(score, int(score.replace('%', '')) if score else None)
             color = _score_color(score)
             if color:
                 score_item.setForeground(color)
@@ -1149,6 +1173,7 @@ class ShotExplorerPage(QWidget):
         self.table.setColumnWidth(3, max(self.table.columnWidth(3), 200))
         self.table.setColumnWidth(7, max(self.table.columnWidth(7), 200))
         self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.setSortingEnabled(True)
 
     def _context_menu(self, pos):
         item = self.table.itemAt(pos)
@@ -1262,6 +1287,7 @@ class AssetExplorerPage(QWidget):
         self.table.setIconSize(QPixmap(64, 64).size())
         self.table.setColumnWidth(0, 72)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self._on_selection_change)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
@@ -1316,6 +1342,7 @@ class AssetExplorerPage(QWidget):
             self.file_browser.setVisible(False)
 
     def _refresh(self):
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         asset_dir = self.project_root / 'asset'
         if not asset_dir.exists():
@@ -1347,7 +1374,7 @@ class AssetExplorerPage(QWidget):
                 thumb_item.setIcon(QIcon(str(thumb_path)))
             self.table.setItem(i, 0, thumb_item)
             self.table.setItem(i, 1, QTableWidgetItem(name))
-            score_item = QTableWidgetItem(score)
+            score_item = _SortItem(score, int(score.replace('%', '')) if score else None)
             color = _score_color(score)
             if color:
                 score_item.setForeground(color)
@@ -1358,6 +1385,7 @@ class AssetExplorerPage(QWidget):
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(0, 72)
         self.table.setColumnWidth(4, max(self.table.columnWidth(4), 300))
+        self.table.setSortingEnabled(True)
 
     def _context_menu(self, pos):
         item = self.table.itemAt(pos)
@@ -1699,6 +1727,7 @@ class ProductionPage(QWidget):
         self.shot_table.verticalHeader().setVisible(False)
         self.shot_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.shot_table.customContextMenuRequested.connect(self._shot_context_menu)
+        self.shot_table.setSortingEnabled(True)
         shot_layout.addWidget(self.shot_table)
         tabs.addTab(shot_tab, 'Shots')
 
@@ -1711,6 +1740,7 @@ class ProductionPage(QWidget):
         self.asset_table.verticalHeader().setVisible(False)
         self.asset_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.asset_table.customContextMenuRequested.connect(self._asset_context_menu)
+        self.asset_table.setSortingEnabled(True)
         asset_layout.addWidget(self.asset_table)
         tabs.addTab(asset_tab, 'Assets')
 
@@ -1728,6 +1758,7 @@ class ProductionPage(QWidget):
         self._refresh_assets()
 
     def _refresh_shots(self):
+        self.shot_table.setSortingEnabled(False)
         self.shot_table.clear()
         seq_dir = self.project_root / 'sequence'
         if not seq_dir.exists():
@@ -1746,19 +1777,21 @@ class ProductionPage(QWidget):
             self.shot_table.setItem(i, 0, QTableWidgetItem(name))
             for j, cat in enumerate(SHOT_CATEGORIES):
                 status = prod.get(cat, 'Not started')
-                item = QTableWidgetItem(status)
+                item = _SortItem(status, PRODUCTION_VALUES.get(status, 0))
                 item.setData(Qt.UserRole, (name, cat))
                 item.setForeground(_status_color(status))
                 self.shot_table.setItem(i, j + 1, item)
             score = production_score(prod)
-            score_item = QTableWidgetItem(score)
+            score_item = _SortItem(score, int(score.replace('%', '')) if score else None)
             color = _score_color(score)
             if color:
                 score_item.setForeground(color)
             self.shot_table.setItem(i, len(cols) - 1, score_item)
         self.shot_table.resizeColumnsToContents()
+        self.shot_table.setSortingEnabled(True)
 
     def _refresh_assets(self):
+        self.asset_table.setSortingEnabled(False)
         self.asset_table.clear()
         asset_dir = self.project_root / 'asset'
         if not asset_dir.exists():
@@ -1785,17 +1818,18 @@ class ProductionPage(QWidget):
             self.asset_table.setItem(i, 1, QTableWidgetItem(cat))
             for j, cat_name in enumerate(all_cats):
                 status = prod.get(cat_name, 'Not started')
-                item = QTableWidgetItem(status)
+                item = _SortItem(status, PRODUCTION_VALUES.get(status, 0))
                 item.setData(Qt.UserRole, (name, cat, cat_name))
                 item.setForeground(_status_color(status))
                 self.asset_table.setItem(i, j + 2, item)
             score = production_score(prod)
-            score_item = QTableWidgetItem(score)
+            score_item = _SortItem(score, int(score.replace('%', '')) if score else None)
             color = _score_color(score)
             if color:
                 score_item.setForeground(color)
             self.asset_table.setItem(i, len(cols) - 1, score_item)
         self.asset_table.resizeColumnsToContents()
+        self.asset_table.setSortingEnabled(True)
 
     def _shot_context_menu(self, pos):
         item = self.shot_table.itemAt(pos)
@@ -1856,17 +1890,6 @@ class ProductionPage(QWidget):
             prod[cat_name] = action.data()
             write_production(asset_path, prod)
             self._refresh_assets()
-
-
-def _status_color(status):
-    colors = {
-        'Not started': QColor(180, 60, 60),
-        'Work in progress': QColor(200, 160, 40),
-        'Pending review': QColor(60, 140, 200),
-        'Finished': QColor(60, 180, 60),
-        'Not applicable': QColor(120, 120, 120),
-    }
-    return colors.get(status, QColor(180, 180, 180))
 
 
 class EnvVarsPage(QWidget):
