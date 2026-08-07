@@ -283,11 +283,26 @@ def discover_image_sequences(shot_path):
         pad = len(stem) - len(prefix)
         ext = files[0].suffix
         pattern = str(folder / f'{prefix}$FRAMES{ext}')
+        display = re.sub(r'_v\d+', '', prefix).rstrip('_')
+        rel = folder.relative_to(shot_path)
+        software = rel.parts[0] if rel.parts else 'unknown'
+        version = 'N/A'
+        for part in rel.parts:
+            if re.match(r'v\d+', part):
+                version = part
+                break
+        if version == 'N/A':
+            vmatch = re.search(r'_v(\d+)', prefix)
+            if vmatch:
+                version = f'v{vmatch.group(1)}'
         results.append({
             'pattern': pattern,
-            'prefix': prefix,
+            'prefix': display,
             'folder': folder,
+            'software': software,
+            'version': version,
             'count': len(files),
+            'pad': pad,
             'first_frame': files[0].name,
             'last_frame': files[-1].name,
         })
