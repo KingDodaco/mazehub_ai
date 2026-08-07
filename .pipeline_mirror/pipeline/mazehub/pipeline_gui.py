@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QDateTime, QTimer
-from PySide6.QtGui import QFont, QColor, QIcon
+from PySide6.QtGui import QFont, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QTableWidget,
@@ -996,15 +996,20 @@ class ShotExplorerPage(QWidget):
         layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
-            ['Shot', 'Path', 'Frame Range', 'Frame Rate', 'Description', 'Working Dirs']
+            ['', 'Shot', 'Path', 'Frame Range', 'Frame Rate', 'Description', 'Working Dirs']
         )
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.verticalHeader().setVisible(False)
+        self.table.setIconSize(QPixmap(64, 64).size())
+        self.table.setColumnWidth(0, 72)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.itemSelectionChanged.connect(self._on_selection_change)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.table, 1)
 
         self.file_browser = QGroupBox('Shot Files')
@@ -1083,7 +1088,7 @@ class ShotExplorerPage(QWidget):
         self.edit_btn.setEnabled(bool(items))
         if items:
             row = items[0].row()
-            shot_name = self.table.item(row, 0).text()
+            shot_name = self.table.item(row, 1).text()
             shot_path = self.project_root / 'sequence' / shot_name
             ctx = {'type': 'shot', 'name': shot_name, 'path': shot_path}
             self._file_panel.set_directory(shot_path, context=ctx)
@@ -1104,16 +1109,55 @@ class ShotExplorerPage(QWidget):
             shot_path = seq_dir / name
             meta = read_shot_meta(shot_path)
             working_count = sum(1 for d in shot_path.iterdir() if d.is_dir() and not d.name.startswith('_'))
-            self.table.setItem(i, 0, QTableWidgetItem(name))
-            self.table.setItem(i, 1, QTableWidgetItem(str(shot_path.relative_to(self.project_root))))
-            self.table.setItem(i, 2, QTableWidgetItem(meta['frame_range']))
-            self.table.setItem(i, 3, QTableWidgetItem(meta['frame_rate']))
-            self.table.setItem(i, 4, QTableWidgetItem(meta['description']))
-            self.table.setItem(i, 5, QTableWidgetItem(f'{working_count} dirs'))
+            self.table.setRowHeight(i, 64)
+            thumb_item = QTableWidgetItem()
+            thumb_path = shot_path / '_thumbnail.png'
+            if thumb_path.exists():
+                thumb_item.setIcon(QIcon(str(thumb_path)))
+            self.table.setItem(i, 0, thumb_item)
+            self.table.setItem(i, 1, QTableWidgetItem(name))
+            self.table.setItem(i, 2, QTableWidgetItem(str(shot_path.relative_to(self.project_root))))
+            self.table.setItem(i, 3, QTableWidgetItem(meta['frame_range']))
+            self.table.setItem(i, 4, QTableWidgetItem(meta['frame_rate']))
+            self.table.setItem(i, 5, QTableWidgetItem(meta['description']))
+            self.table.setItem(i, 6, QTableWidgetItem(f'{working_count} dirs'))
         self.table.resizeColumnsToContents()
-        self.table.setColumnWidth(1, max(self.table.columnWidth(1), 200))
-        self.table.setColumnWidth(5, max(self.table.columnWidth(5), 200))
+        self.table.setColumnWidth(0, 72)
+        self.table.setColumnWidth(2, max(self.table.columnWidth(2), 200))
+        self.table.setColumnWidth(6, max(self.table.columnWidth(6), 200))
         self.table.horizontalHeader().setStretchLastSection(False)
+
+    def _context_menu(self, pos):
+        item = self.table.itemAt(pos)
+        if not item:
+            return
+        row = item.row()
+        shot_name = self.table.item(row, 1).text()
+        shot_path = self.project_root / 'sequence' / shot_name
+        menu = QMenu(self)
+        set_action = menu.addAction('Set Thumbnail...')
+        thumb_path = shot_path / '_thumbnail.png'
+        remove_action = None
+        if thumb_path.exists():
+            remove_action = menu.addAction('Remove Thumbnail')
+        action = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if action == set_action:
+            self._set_thumbnail(shot_path)
+        elif remove_action and action == remove_action:
+            thumb_path.unlink()
+            self._refresh()
+
+    def _set_thumbnail(self, item_path):
+        from PySide6.QtWidgets import QFileDialog
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 'Select Thumbnail', '',
+            'Images (*.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)'
+        )
+        if not file_path:
+            return
+        import shutil
+        shutil.copy2(file_path, item_path / '_thumbnail.png')
+        self._refresh()
 
     def _status(self, msg, ok=True):
         window = self.window()
@@ -1165,14 +1209,18 @@ class AssetExplorerPage(QWidget):
         layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(['Asset', 'Category', 'Path', 'Working Dirs'])
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(['', 'Asset', 'Category', 'Path', 'Working Dirs'])
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.verticalHeader().setVisible(False)
+        self.table.setIconSize(QPixmap(64, 64).size())
+        self.table.setColumnWidth(0, 72)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.table.itemSelectionChanged.connect(self._on_selection_change)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.table, 1)
 
         self.file_browser = QGroupBox('Asset Files')
@@ -1212,8 +1260,8 @@ class AssetExplorerPage(QWidget):
         items = self.table.selectedItems()
         if items:
             row = items[0].row()
-            asset_name = self.table.item(row, 0).text()
-            cat = self.table.item(row, 1).text()
+            asset_name = self.table.item(row, 1).text()
+            cat = self.table.item(row, 2).text()
             asset_path = self.project_root / 'asset' / cat / asset_name
             ctx = {'type': 'asset', 'name': asset_name, 'path': asset_path, 'category': cat}
             self._file_panel.set_directory(asset_path, context=ctx)
@@ -1241,12 +1289,53 @@ class AssetExplorerPage(QWidget):
                     rows.append((asset.name, cat_dir.name, str(asset.relative_to(self.project_root)), f'{working_count} dirs'))
         self.table.setRowCount(len(rows))
         for i, (name, cat, path, count) in enumerate(rows):
-            self.table.setItem(i, 0, QTableWidgetItem(name))
-            self.table.setItem(i, 1, QTableWidgetItem(cat))
-            self.table.setItem(i, 2, QTableWidgetItem(path))
-            self.table.setItem(i, 3, QTableWidgetItem(count))
+            self.table.setRowHeight(i, 64)
+            thumb_item = QTableWidgetItem()
+            asset_path = self.project_root / 'asset' / cat / name
+            thumb_path = asset_path / '_thumbnail.png'
+            if thumb_path.exists():
+                thumb_item.setIcon(QIcon(str(thumb_path)))
+            self.table.setItem(i, 0, thumb_item)
+            self.table.setItem(i, 1, QTableWidgetItem(name))
+            self.table.setItem(i, 2, QTableWidgetItem(cat))
+            self.table.setItem(i, 3, QTableWidgetItem(path))
+            self.table.setItem(i, 4, QTableWidgetItem(count))
         self.table.resizeColumnsToContents()
-        self.table.setColumnWidth(2, max(self.table.columnWidth(2), 300))
+        self.table.setColumnWidth(0, 72)
+        self.table.setColumnWidth(3, max(self.table.columnWidth(3), 300))
+
+    def _context_menu(self, pos):
+        item = self.table.itemAt(pos)
+        if not item:
+            return
+        row = item.row()
+        asset_name = self.table.item(row, 1).text()
+        cat = self.table.item(row, 2).text()
+        asset_path = self.project_root / 'asset' / cat / asset_name
+        menu = QMenu(self)
+        set_action = menu.addAction('Set Thumbnail...')
+        thumb_path = asset_path / '_thumbnail.png'
+        remove_action = None
+        if thumb_path.exists():
+            remove_action = menu.addAction('Remove Thumbnail')
+        action = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if action == set_action:
+            self._set_thumbnail(asset_path)
+        elif remove_action and action == remove_action:
+            thumb_path.unlink()
+            self._refresh()
+
+    def _set_thumbnail(self, item_path):
+        from PySide6.QtWidgets import QFileDialog
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 'Select Thumbnail', '',
+            'Images (*.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)'
+        )
+        if not file_path:
+            return
+        import shutil
+        shutil.copy2(file_path, item_path / '_thumbnail.png')
+        self._refresh()
 
     def _status(self, msg, ok=True):
         window = self.window()
