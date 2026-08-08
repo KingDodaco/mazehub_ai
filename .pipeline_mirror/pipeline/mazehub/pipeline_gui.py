@@ -2484,7 +2484,6 @@ class RenderPage(QWidget):
         self._refresh_shots()
 
     def _refresh_shots(self):
-        current = self.shot_combo.currentText()
         self.shot_combo.blockSignals(True)
         self.shot_combo.clear()
         seq_dir = self.project_root / 'sequence'
@@ -2494,11 +2493,9 @@ class RenderPage(QWidget):
                 if d.is_dir() and not d.name.startswith('_')
             )
             self.shot_combo.addItems(shots)
-        idx = self.shot_combo.findText(current)
-        if idx >= 0:
-            self.shot_combo.setCurrentIndex(idx)
+        self.shot_combo.setCurrentIndex(-1)
         self.shot_combo.blockSignals(False)
-        self._on_shot_changed(self.shot_combo.currentText())
+        self._on_shot_changed('')
 
     def _on_shot_changed(self, shot_name):
         self.usd_combo.blockSignals(True)
@@ -2516,9 +2513,10 @@ class RenderPage(QWidget):
                     pass
             usd_files = discover_usd_files(shot_path)
             self.usd_combo.addItems([f.name for f in usd_files])
+        self.usd_combo.setCurrentIndex(-1)
         self.usd_combo.blockSignals(False)
         self._refresh_versions()
-        self._on_usd_changed(self.usd_combo.currentText())
+        self._on_usd_changed('')
 
     def _refresh_versions(self):
         self.version_combo.clear()
@@ -2540,7 +2538,7 @@ class RenderPage(QWidget):
         for v in versions:
             self.version_combo.addItem(f'v{v:03d}', v)
         self.version_combo.addItem(f'v{next_version:03d} (new)', next_version)
-        self.version_combo.setCurrentIndex(self.version_combo.count() - 1)
+        self.version_combo.setCurrentIndex(-1)
 
     def _refresh_usd_files(self):
         self._on_shot_changed(self.shot_combo.currentText())
