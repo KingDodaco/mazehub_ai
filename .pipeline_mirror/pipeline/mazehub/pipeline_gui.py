@@ -1765,6 +1765,12 @@ class PreviewPage(QWidget):
             return
         seq = self._sequences[idx]
 
+        if Path(seq['first_frame']).suffix.lower() in ('.mov', '.mp4'):
+            video_path = seq['folder'] / seq['first_frame']
+            os.startfile(str(video_path))
+            self.status_label.setText(f'Opened {seq["prefix"]}')
+            return
+
         mplay_path = self.pipeline_dir / 'Houdini21.0' / 'bin' / 'mplay.exe'
         if not mplay_path.exists():
             mplay_path = Path(r'C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\mplay.exe')

@@ -299,7 +299,8 @@ def discover_usd_files(shot_path):
     )
 
 
-IMAGE_EXTENSIONS = {'.exr', '.png', '.tiff', '.tif', '.jpeg', '.jpg', '.dpx', '.pic'}
+IMAGE_EXTENSIONS = {'.exr', '.png', '.tiff', '.tif', '.jpeg', '.jpg', '.dpx', '.pic', '.mov', '.mp4'}
+VIDEO_EXTENSIONS = {'.mov', '.mp4'}
 
 
 def _clean_stem(stem):
@@ -348,7 +349,7 @@ def discover_image_sequences(shot_path):
     from collections import defaultdict
     sequences = defaultdict(list)
     software_map = {}
-    FORMAT_DIRS = {'exr', 'png', 'jpg', 'jpeg', 'tiff', 'tif', 'dpx', 'pic', 'mov', 'mp4'}
+    FORMAT_DIRS = {'exr', 'png', 'jpg', 'jpeg', 'tiff', 'tif', 'dpx', 'pic'}
     for software, render_dir in render_subdirs:
         if not render_dir.exists():
             continue
@@ -370,11 +371,6 @@ def discover_image_sequences(shot_path):
     results = []
     for folder in sorted(sequences):
         files = sorted(sequences[folder])
-        if len(files) < 2:
-            continue
-        raw_stems = [f.stem for f in files]
-        cleaned = [_normalize_stem(s) for s in raw_stems]
-        unique = sorted(set(cleaned))
         rel = folder.relative_to(shot_path)
         software = software_map.get(folder, rel.parts[0] if rel.parts else 'unknown')
         version = None
@@ -391,6 +387,34 @@ def discover_image_sequences(shot_path):
                     break
         if version is None:
             version = ''
+        video_files = [f for f in files if f.suffix.lower() in VIDEO_EXTENSIONS]
+        for f in video_files:
+            _, removed = _clean_stem(f.stem)
+            v_warn = None
+            if removed:
+                v_warn = 'Duplicate files detected'
+            file_version = version
+            m = re.search(r'_v(\d+)', f.stem)
+            if m:
+                file_version = f'v{m.group(1)}'
+            results.append({
+                'pattern': str(f),
+                'prefix': f.stem,
+                'folder': folder,
+                'software': software,
+                'version': file_version,
+                'count': 1,
+                'pad': 0,
+                'first_frame': f.name,
+                'last_frame': f.name,
+                'warning': v_warn,
+            })
+        files = [f for f in files if f.suffix.lower() not in VIDEO_EXTENSIONS]
+        if len(files) < 2:
+            continue
+        raw_stems = [f.stem for f in files]
+        cleaned = [_normalize_stem(s) for s in raw_stems]
+        unique = sorted(set(cleaned))
         ext = files[0].suffix
         groups = defaultdict(list)
         removed_by_group = defaultdict(list)
@@ -398,7 +422,10 @@ def discover_image_sequences(shot_path):
         has_mixed_exts = len(set(f.suffix for f in files)) > 1
         for s, f in zip(cleaned, files):
             _, removed = _clean_stem(f.stem)
-            group_key = (s, f.suffix) if has_mixed_exts else s
+            if all_digits:
+                group_key = ('', f.suffix) if has_mixed_exts else ''
+            else:
+                group_key = (s, f.suffix) if has_mixed_exts else s
             groups[group_key].append(f)
             removed_by_group[group_key].append((f, tuple(removed)))
         for group_key, group_files in sorted(groups.items()):
