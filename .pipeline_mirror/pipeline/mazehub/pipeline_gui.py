@@ -264,7 +264,7 @@ class FileOpenThread(QThread):
                 if os.path.exists(bat_log):
                     os.unlink(bat_log)
                 proc = subprocess.Popen(
-                    [str(exec_path)],
+                    [str(exec_path), str(self.file_path)],
                     shell=True, env=launch_env,
                 )
                 proc.wait()
