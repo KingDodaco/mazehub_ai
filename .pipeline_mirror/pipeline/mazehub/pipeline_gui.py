@@ -51,6 +51,22 @@ def _status_color(status):
     return colors.get(status, QColor(180, 180, 180))
 
 
+def _open_in_explorer(path):
+    if path is None:
+        return
+    path = Path(path)
+    if path.is_file():
+        subprocess.Popen(['explorer', '/select,', str(path)])
+    elif path.is_dir():
+        os.startfile(str(path))
+
+
+def _add_explorer_action(menu, path):
+    action = menu.addAction('Open in Explorer')
+    action.triggered.connect(lambda: _open_in_explorer(path))
+    return action
+
+
 class _SortItem(QTableWidgetItem):
     def __init__(self, text, sort_value=None):
         super().__init__(text)
@@ -316,6 +332,8 @@ class FileBrowserPanel(QWidget):
         self.tree.setColumnWidth(1, 130)
         self.tree.setAlternatingRowColors(True)
         self.tree.itemDoubleClicked.connect(self._open_selected)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.tree)
 
         btn_row = QHBoxLayout()
@@ -425,6 +443,22 @@ class FileBrowserPanel(QWidget):
         window = self.window()
         if hasattr(window, 'show_status'):
             window.show_status(msg, ok)
+
+    def _context_menu(self, pos):
+        items = self.tree.selectedItems()
+        if not items:
+            return
+        item = items[0]
+        path = None
+        for idx, (app_name, fp, rel, tree_item) in self._file_map.items():
+            if tree_item is item:
+                path = fp
+                break
+        if path is None:
+            path = self._current_path
+        menu = QMenu(self)
+        _add_explorer_action(menu, path)
+        menu.exec(self.tree.viewport().mapToGlobal(pos))
 
 
 class ShotDialog(QDialog):
@@ -727,6 +761,8 @@ class DashboardPage(QWidget):
         row = item.row()
         path = self.recent_table.item(row, 0).data(Qt.UserRole)
         menu = QMenu(self)
+        _add_explorer_action(menu, path)
+        menu.addSeparator()
         remove_action = menu.addAction('Remove from History')
         remove_action.triggered.connect(lambda: self._remove_recent_file(path))
         menu.exec(self.recent_table.viewport().mapToGlobal(pos))
@@ -1186,6 +1222,8 @@ class ShotExplorerPage(QWidget):
         prod = read_production(shot_path)
 
         menu = QMenu(self)
+        _add_explorer_action(menu, shot_path)
+        menu.addSeparator()
 
         for cat in SHOT_CATEGORIES:
             status = prod.get(cat, 'Not started')
@@ -1399,6 +1437,8 @@ class AssetExplorerPage(QWidget):
         prod = read_production(asset_path)
 
         menu = QMenu(self)
+        _add_explorer_action(menu, asset_path)
+        menu.addSeparator()
 
         for cat_name, cat_type in ASSET_CATEGORIES.items():
             status = prod.get(cat_name, 'Not started')
@@ -1518,6 +1558,8 @@ class RecentFilesPage(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.itemDoubleClicked.connect(self._open_file)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.table, 1)
 
         self._refresh()
@@ -1547,6 +1589,15 @@ class RecentFilesPage(QWidget):
     def _clear_history(self):
         clear_recent_files()
         self._refresh()
+
+    def _context_menu(self, pos):
+        item = self.table.itemAt(pos)
+        if not item:
+            return
+        path = item.data(Qt.UserRole)
+        menu = QMenu(self)
+        _add_explorer_action(menu, path)
+        menu.exec(self.table.viewport().mapToGlobal(pos))
 
 
 class PreviewPage(QWidget):
@@ -1583,6 +1634,8 @@ class PreviewPage(QWidget):
         self.seq_list.setSelectionMode(QTreeWidget.SingleSelection)
         self.seq_list.setAlternatingRowColors(True)
         self.seq_list.itemDoubleClicked.connect(self._open_in_mplay)
+        self.seq_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.seq_list.customContextMenuRequested.connect(self._context_menu)
         self.seq_list.setColumnWidth(0, 320)
         self.seq_list.setColumnWidth(2, 280)
         self.seq_list.header().setStretchLastSection(False)
@@ -1660,7 +1713,6 @@ class PreviewPage(QWidget):
                 sw_item = QTreeWidgetItem(self.seq_list, [sw])
                 sw_item.setFlags(sw_item.flags() & ~Qt.ItemIsSelectable)
                 software_items[sw] = sw_item
-                sw_item.setExpanded(True)
             sw_item = software_items[sw]
             warning = seq.get('warning', None)
             base_prefix = re.sub(r'\s*\[.*?\]\s*$', '', seq['prefix'])
@@ -1668,7 +1720,6 @@ class PreviewPage(QWidget):
             if name_key not in name_items:
                 name_item = QTreeWidgetItem(sw_item, [base_prefix])
                 name_item.setFlags(name_item.flags() & ~Qt.ItemIsSelectable)
-                name_item.setExpanded(True)
                 name_items[name_key] = name_item
             name_item = name_items[name_key]
             version = seq.get('version', '')
@@ -1677,7 +1728,6 @@ class PreviewPage(QWidget):
                 if vp_key not in version_parents:
                     v_parent = QTreeWidgetItem(name_item, [version])
                     v_parent.setFlags(v_parent.flags() & ~Qt.ItemIsSelectable)
-                    v_parent.setExpanded(True)
                     version_parents[vp_key] = v_parent
                 v_parent = version_parents[vp_key]
                 if warning:
@@ -1745,6 +1795,19 @@ class PreviewPage(QWidget):
             self.status_label.setText(f'Opened {seq["prefix"]} in MPlay')
         except Exception as e:
             self.status_label.setText(f'Failed to launch MPlay: {e}')
+
+    def _context_menu(self, pos):
+        items = self.seq_list.selectedItems()
+        if not items:
+            return
+        item = items[0]
+        path = None
+        idx = item.data(0, Qt.UserRole)
+        if idx is not None and idx < len(self._sequences):
+            path = self._sequences[idx]['folder']
+        menu = QMenu(self)
+        _add_explorer_action(menu, path)
+        menu.exec(self.seq_list.viewport().mapToGlobal(pos))
 
 
 class ProductionPage(QWidget):
@@ -1882,17 +1945,22 @@ class ProductionPage(QWidget):
         item = self.shot_table.itemAt(pos)
         if not item:
             return
-        col = item.column()
-        if col == 0:
-            return
-        cat = SHOT_CATEGORIES[col - 1]
         row = item.row()
         shot_name = self.shot_table.item(row, 0).text()
         shot_path = self.project_root / 'sequence' / shot_name
+        col = item.column()
+        if col == 0:
+            menu = QMenu(self)
+            _add_explorer_action(menu, shot_path)
+            menu.exec(self.shot_table.viewport().mapToGlobal(pos))
+            return
+        cat = SHOT_CATEGORIES[col - 1]
         prod = read_production(shot_path)
         current = prod.get(cat, 'Not started')
 
         menu = QMenu(self)
+        _add_explorer_action(menu, shot_path)
+        menu.addSeparator()
         for s in PRODUCTION_STATUSES + ['Not applicable']:
             action = menu.addAction(s)
             action.setData(s)
@@ -1911,19 +1979,24 @@ class ProductionPage(QWidget):
         item = self.asset_table.itemAt(pos)
         if not item:
             return
-        col = item.column()
-        if col < 2:
-            return
-        all_cats = list(ASSET_CATEGORIES.keys())
-        cat_name = all_cats[col - 2]
         row = item.row()
         asset_name = self.asset_table.item(row, 0).text()
         cat = self.asset_table.item(row, 1).text()
         asset_path = self.project_root / 'asset' / cat / asset_name
+        col = item.column()
+        if col < 2:
+            menu = QMenu(self)
+            _add_explorer_action(menu, asset_path)
+            menu.exec(self.asset_table.viewport().mapToGlobal(pos))
+            return
+        all_cats = list(ASSET_CATEGORIES.keys())
+        cat_name = all_cats[col - 2]
         prod = read_production(asset_path)
         current = prod.get(cat_name, 'Not started')
 
         menu = QMenu(self)
+        _add_explorer_action(menu, asset_path)
+        menu.addSeparator()
         for s in PRODUCTION_STATUSES + ['Not applicable']:
             action = menu.addAction(s)
             action.setData(s)
