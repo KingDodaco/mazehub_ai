@@ -302,48 +302,205 @@ def discover_usd_files(shot_path):
 IMAGE_EXTENSIONS = {'.exr', '.png', '.tiff', '.tif', '.jpeg', '.jpg', '.dpx', '.pic'}
 
 
+def _clean_stem(stem):
+    removed = []
+    m = re.search(r'[\s_-]*WINDOWS-[A-Za-z0-9]+', stem)
+    if m:
+        removed.append(m.group().lstrip(' _-'))
+    stem = re.sub(r'[\s_-]*WINDOWS-[A-Za-z0-9]+', '', stem)
+    m = re.search(r'[\s_-]*MAC-[A-Za-z0-9]+', stem)
+    if m:
+        removed.append(m.group().lstrip(' _-'))
+    stem = re.sub(r'[\s_-]*MAC-[A-Za-z0-9]+', '', stem)
+    m = re.search(r'[\s_-]*Linux-[A-Za-z0-9]+', stem)
+    if m:
+        removed.append(m.group().lstrip(' _-'))
+    stem = re.sub(r'[\s_-]*Linux-[A-Za-z0-9]+', '', stem)
+    m = re.search(r'[\s_-]*[A-Za-z0-9]{8,}$', stem)
+    if m:
+        removed.append(m.group().lstrip(' _-'))
+    stem = re.sub(r'[\s_-]*[A-Za-z0-9]{8,}$', '', stem)
+    stem = stem.rstrip(' -_')
+    return stem, removed
+
+
+def _normalize_stem(stem):
+    stem, _ = _clean_stem(stem)
+    stem = re.sub(r'_\d{4,}$', '', stem)
+    stem = stem.rstrip('_')
+    return stem
+
+
+def _extract_prefix(stem):
+    m = re.match(r'^(.*?)_\d{4,}$', stem)
+    if m:
+        return m.group(1) + '_'
+    return stem + '_'
+
+
 def discover_image_sequences(shot_path):
-    render_dir = Path(shot_path) / 'houdini' / 'render'
-    if not render_dir.exists():
-        return []
+    render_subdirs = [
+        ('houdini', Path(shot_path) / 'houdini' / 'render'),
+        ('blender', Path(shot_path) / 'blender' / 'render'),
+        ('maya', Path(shot_path) / 'maya' / 'images'),
+    ]
     from collections import defaultdict
     sequences = defaultdict(list)
-    for f in render_dir.rglob('*'):
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
-            sequences[f.parent].append(f)
+    software_map = {}
+    for software, render_dir in render_subdirs:
+        if not render_dir.exists():
+            continue
+        for f in render_dir.rglob('*'):
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
+                sequences[f.parent].append(f)
+                software_map[f.parent] = software
     results = []
     for folder in sorted(sequences):
         files = sorted(sequences[folder])
         if len(files) < 2:
             continue
-        stem = files[0].stem
-        prefix = re.split(r'\d+$', stem)[0] if re.search(r'\d+$', stem) else stem
-        pad = len(stem) - len(prefix)
-        ext = files[0].suffix
-        pattern = str(folder / f'{prefix}$FRAMES{ext}')
-        display = re.sub(r'_v\d+', '', prefix).rstrip('_')
+        raw_stems = [f.stem for f in files]
+        cleaned = [_normalize_stem(s) for s in raw_stems]
+        unique = sorted(set(cleaned))
         rel = folder.relative_to(shot_path)
-        software = rel.parts[0] if rel.parts else 'unknown'
-        version = 'N/A'
+        software = software_map.get(folder, rel.parts[0] if rel.parts else 'unknown')
+        version = None
         for part in rel.parts:
-            if re.match(r'v\d+', part):
-                version = part
+            m = re.search(r'_v(\d+)', part)
+            if m:
+                version = f'v{m.group(1)}'
                 break
-        if version == 'N/A':
-            vmatch = re.search(r'_v(\d+)', prefix)
-            if vmatch:
-                version = f'v{vmatch.group(1)}'
-        results.append({
-            'pattern': pattern,
-            'prefix': display,
-            'folder': folder,
-            'software': software,
-            'version': version,
-            'count': len(files),
-            'pad': pad,
-            'first_frame': files[0].name,
-            'last_frame': files[-1].name,
-        })
+        if version is None and len(rel.parts) >= 2:
+            folder_name = rel.parts[-1]
+            m = re.search(r'_v(\d+)', folder_name)
+            if m:
+                version = f'v{m.group(1)}'
+        if version is None:
+            version = ''
+        ext = files[0].suffix
+        groups = defaultdict(list)
+        all_digits = all(re.match(r'^\d+$', s) for s in cleaned)
+        if all_digits and len(files) >= 2:
+            win_files = [(f, True) for f in files if re.search(r'WINDOWS', f.stem, re.IGNORECASE)]
+            norm_files = [(f, False) for f in files if not re.search(r'WINDOWS', f.stem, re.IGNORECASE)]
+            if norm_files and win_files:
+                all_grouped = norm_files + win_files
+                groups['_bareframe_'] = all_grouped
+            else:
+                groups['_bareframe_'] = [(f, False) for f in files]
+        else:
+            for s, f in zip(cleaned, files):
+                groups[s].append((f, re.search(r'WINDOWS', f.stem, re.IGNORECASE) is not None))
+        for norm_stem, group_files in sorted(groups.items()):
+            if len(group_files) < 2:
+                continue
+            is_bareframe = norm_stem == '_bareframe_'
+            if is_bareframe:
+                raw = sorted(group_files, key=lambda t: t[0].stem)[0][0].stem
+                frame_match = re.search(r'(\d{4,})$', raw)
+                pad = len(frame_match.group(1)) if frame_match else 4
+                normal_files = [f for f, is_win in group_files if not is_win]
+                windows_files = [f for f, is_win in group_files if is_win]
+                if normal_files and windows_files:
+                    pattern = str(folder / f'$FRAMES{ext}')
+                    display = folder.name
+                    results.append({
+                        'pattern': pattern,
+                        'prefix': display,
+                        'folder': folder,
+                        'software': software,
+                        'version': version,
+                        'count': len(normal_files),
+                        'pad': pad,
+                        'first_frame': sorted(normal_files, key=lambda f: f.stem)[0].name,
+                        'last_frame': sorted(normal_files, key=lambda f: f.stem)[-1].name,
+                        'warning': 'Windows duplicate files detected',
+                    })
+                    display_win = display + ' [WINDOWS]'
+                    results.append({
+                        'pattern': pattern,
+                        'prefix': display_win,
+                        'folder': folder,
+                        'software': software,
+                        'version': version,
+                        'count': len(windows_files),
+                        'pad': pad,
+                        'first_frame': sorted(windows_files, key=lambda f: f.stem)[0].name,
+                        'last_frame': sorted(windows_files, key=lambda f: f.stem)[-1].name,
+                        'warning': None,
+                    })
+                else:
+                    all_files = [f for f, _ in group_files]
+                    sorted_files = sorted(all_files, key=lambda f: f.stem)
+                    display = folder.name
+                    results.append({
+                        'pattern': str(folder / f'$FRAMES{ext}'),
+                        'prefix': display,
+                        'folder': folder,
+                        'software': software,
+                        'version': version,
+                        'count': len(all_files),
+                        'pad': pad,
+                        'first_frame': sorted_files[0].name,
+                        'last_frame': sorted_files[-1].name,
+                        'warning': None,
+                    })
+            else:
+                prefix = _extract_prefix(norm_stem)
+                raw = group_files[0][0].stem
+                frame_match = re.search(r'(\d{4,})$', raw)
+                pad = len(frame_match.group(1)) if frame_match else 4
+                normal_files = [f for f, is_win in group_files if not is_win]
+                windows_files = [f for f, is_win in group_files if is_win]
+                if normal_files and windows_files:
+                    pattern = str(folder / f'{prefix}$FRAMES{ext}')
+                    display = prefix.rstrip('_')
+                    display = re.sub(r'_v\d+', '', display).rstrip('_')
+                    if not display:
+                        display = folder.name
+                    results.append({
+                        'pattern': pattern,
+                        'prefix': display,
+                        'folder': folder,
+                        'software': software,
+                        'version': version,
+                        'count': len(normal_files),
+                        'pad': pad,
+                        'first_frame': normal_files[0].name,
+                        'last_frame': normal_files[-1].name,
+                        'warning': 'Windows duplicate files detected',
+                    })
+                    display_win = display + ' [WINDOWS]'
+                    results.append({
+                        'pattern': pattern,
+                        'prefix': display_win,
+                        'folder': folder,
+                        'software': software,
+                        'version': version,
+                        'count': len(windows_files),
+                        'pad': pad,
+                        'first_frame': windows_files[0].name,
+                        'last_frame': windows_files[-1].name,
+                        'warning': None,
+                    })
+                else:
+                    all_files = [f for f, _ in group_files]
+                    display = prefix.rstrip('_')
+                    display = re.sub(r'_v\d+', '', display).rstrip('_')
+                    if not display:
+                        display = folder.name
+                    results.append({
+                        'pattern': str(folder / f'{prefix}$FRAMES{ext}'),
+                        'prefix': display,
+                        'folder': folder,
+                        'software': software,
+                        'version': version,
+                        'count': len(all_files),
+                        'pad': pad,
+                        'first_frame': all_files[0].name,
+                        'last_frame': all_files[-1].name,
+                        'warning': None,
+                    })
     return results
 
 

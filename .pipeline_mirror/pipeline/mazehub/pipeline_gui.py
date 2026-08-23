@@ -1578,10 +1578,13 @@ class PreviewPage(QWidget):
         layout.addLayout(shot_row)
 
         self.seq_list = QTreeWidget()
-        self.seq_list.setHeaderLabels(['Name', 'Frames', 'Folder'])
+        self.seq_list.setHeaderLabels(['Name', 'Frames', 'Folder', 'Warning'])
         self.seq_list.setSelectionMode(QTreeWidget.SingleSelection)
         self.seq_list.setAlternatingRowColors(True)
         self.seq_list.itemDoubleClicked.connect(self._open_in_mplay)
+        self.seq_list.setColumnWidth(0, 320)
+        self.seq_list.setColumnWidth(2, 280)
+        self.seq_list.header().setStretchLastSection(False)
         layout.addWidget(self.seq_list, 1)
 
         btn_row = QHBoxLayout()
@@ -1632,6 +1635,7 @@ class PreviewPage(QWidget):
         self._sequences = sequences
         software_items = {}
         name_items = {}
+        name_warnings = {}
         for i, seq in enumerate(sequences):
             sw = seq['software']
             if sw not in software_items:
@@ -1640,19 +1644,42 @@ class PreviewPage(QWidget):
                 software_items[sw] = sw_item
                 sw_item.setExpanded(True)
             sw_item = software_items[sw]
-            name_key = (sw, seq['prefix'])
-            if name_key not in name_items:
-                name_item = QTreeWidgetItem(sw_item, [seq['prefix']])
-                name_item.setFlags(name_item.flags() & ~Qt.ItemIsSelectable)
-                name_item.setExpanded(True)
-                name_items[name_key] = name_item
-            name_item = name_items[name_key]
-            v_item = QTreeWidgetItem(name_item, [
-                seq['version'],
-                str(seq['count']),
-                str(seq['folder'].relative_to(shot_path)),
-            ])
+            warning = seq.get('warning', None)
+            if seq['version']:
+                base_prefix = re.sub(r'\s*\[.*?\]\s*$', '', seq['prefix'])
+                name_key = (sw, base_prefix)
+                if name_key not in name_items:
+                    name_item = QTreeWidgetItem(sw_item, [base_prefix])
+                    name_item.setFlags(name_item.flags() & ~Qt.ItemIsSelectable)
+                    name_item.setExpanded(True)
+                    name_items[name_key] = name_item
+                    name_warnings[name_key] = False
+                name_item = name_items[name_key]
+                if '[' in seq['prefix'] or warning:
+                    name_warnings[name_key] = True
+                v_item = QTreeWidgetItem(name_item, [
+                    seq['version'],
+                    str(seq['count']),
+                    str(seq['folder'].relative_to(shot_path)),
+                    warning or '',
+                ])
+            else:
+                v_item = QTreeWidgetItem(sw_item, [
+                    seq['prefix'],
+                    str(seq['count']),
+                    str(seq['folder'].relative_to(shot_path)),
+                    warning or '',
+                ])
             v_item.setData(0, Qt.UserRole, i)
+            if warning:
+                for col in range(v_item.columnCount()):
+                    v_item.setForeground(col, QColor('#ffa726'))
+        for name_key, has_warning in name_warnings.items():
+            if has_warning:
+                item = name_items[name_key]
+                item.setText(3, 'Mismatched file names')
+                for col in range(item.columnCount()):
+                    item.setForeground(col, QColor('#ffa726'))
         self.seq_list.sortItems(0, Qt.AscendingOrder)
         self.status_label.setText(
             f'{len(sequences)} sequence{"s" if len(sequences) != 1 else ""} found'
