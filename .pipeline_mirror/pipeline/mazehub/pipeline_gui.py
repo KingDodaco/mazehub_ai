@@ -6,6 +6,7 @@ import platform
 import time
 import threading
 from pathlib import Path
+from collections import defaultdict
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QDateTime, QTimer
 from PySide6.QtGui import QFont, QColor, QIcon, QPixmap
@@ -1631,11 +1632,28 @@ class PreviewPage(QWidget):
             self.status_label.setText('No shot selected')
             return
         shot_path = self.project_root / 'sequence' / shot_name
-        sequences = discover_image_sequences(shot_path)
+        try:
+            sequences = discover_image_sequences(shot_path)
+        except Exception as e:
+            self.status_label.setText(f'Error discovering sequences: {e}')
+            return
         self._sequences = sequences
+        try:
+            self._build_tree(sequences, shot_path)
+        except Exception as e:
+            self.status_label.setText(f'Error building tree: {e}')
+            return
+        self.seq_list.sortItems(0, Qt.AscendingOrder)
+        self.status_label.setText(
+            f'{len(sequences)} sequence{"s" if len(sequences) != 1 else ""} found'
+            if sequences else 'No image sequences found'
+        )
+
+    def _build_tree(self, sequences, shot_path):
         software_items = {}
         name_items = {}
-        name_warnings = {}
+        version_parents = {}
+        warned_versions = set()
         for i, seq in enumerate(sequences):
             sw = seq['software']
             if sw not in software_items:
@@ -1645,26 +1663,33 @@ class PreviewPage(QWidget):
                 sw_item.setExpanded(True)
             sw_item = software_items[sw]
             warning = seq.get('warning', None)
-            if seq['version']:
-                base_prefix = re.sub(r'\s*\[.*?\]\s*$', '', seq['prefix'])
-                name_key = (sw, base_prefix)
-                if name_key not in name_items:
-                    name_item = QTreeWidgetItem(sw_item, [base_prefix])
-                    name_item.setFlags(name_item.flags() & ~Qt.ItemIsSelectable)
-                    name_item.setExpanded(True)
-                    name_items[name_key] = name_item
-                    name_warnings[name_key] = False
-                name_item = name_items[name_key]
-                if '[' in seq['prefix'] or warning:
-                    name_warnings[name_key] = True
-                v_item = QTreeWidgetItem(name_item, [
-                    seq['version'],
+            base_prefix = re.sub(r'\s*\[.*?\]\s*$', '', seq['prefix'])
+            name_key = (sw, base_prefix)
+            if name_key not in name_items:
+                name_item = QTreeWidgetItem(sw_item, [base_prefix])
+                name_item.setFlags(name_item.flags() & ~Qt.ItemIsSelectable)
+                name_item.setExpanded(True)
+                name_items[name_key] = name_item
+            name_item = name_items[name_key]
+            version = seq.get('version', '')
+            if version:
+                vp_key = (sw, base_prefix, version)
+                if vp_key not in version_parents:
+                    v_parent = QTreeWidgetItem(name_item, [version])
+                    v_parent.setFlags(v_parent.flags() & ~Qt.ItemIsSelectable)
+                    v_parent.setExpanded(True)
+                    version_parents[vp_key] = v_parent
+                v_parent = version_parents[vp_key]
+                if warning:
+                    warned_versions.add(vp_key)
+                v_item = QTreeWidgetItem(v_parent, [
+                    seq['prefix'],
                     str(seq['count']),
                     str(seq['folder'].relative_to(shot_path)),
-                    warning or '',
+                    '',
                 ])
             else:
-                v_item = QTreeWidgetItem(sw_item, [
+                v_item = QTreeWidgetItem(name_item, [
                     seq['prefix'],
                     str(seq['count']),
                     str(seq['folder'].relative_to(shot_path)),
@@ -1674,17 +1699,12 @@ class PreviewPage(QWidget):
             if warning:
                 for col in range(v_item.columnCount()):
                     v_item.setForeground(col, QColor('#ffa726'))
-        for name_key, has_warning in name_warnings.items():
-            if has_warning:
-                item = name_items[name_key]
-                item.setText(3, 'Mismatched file names')
-                for col in range(item.columnCount()):
-                    item.setForeground(col, QColor('#ffa726'))
-        self.seq_list.sortItems(0, Qt.AscendingOrder)
-        self.status_label.setText(
-            f'{len(sequences)} sequence{"s" if len(sequences) != 1 else ""} found'
-            if sequences else 'No image sequences found'
-        )
+        for vp_key in warned_versions:
+            v_parent = version_parents[vp_key]
+            version_label = vp_key[2]
+            v_parent.setText(3, 'Duplicate files detected')
+            for col in range(v_parent.columnCount()):
+                v_parent.setForeground(col, QColor('#ffa726'))
 
     def _open_in_mplay(self, *args):
         items = self.seq_list.selectedItems()

@@ -343,10 +343,12 @@ def discover_image_sequences(shot_path):
         ('houdini', Path(shot_path) / 'houdini' / 'render'),
         ('blender', Path(shot_path) / 'blender' / 'render'),
         ('maya', Path(shot_path) / 'maya' / 'images'),
+        ('nuke', Path(shot_path) / 'nuke' / 'render'),
     ]
     from collections import defaultdict
     sequences = defaultdict(list)
     software_map = {}
+    FORMAT_DIRS = {'exr', 'png', 'jpg', 'jpeg', 'tiff', 'tif', 'dpx', 'pic', 'mov', 'mp4'}
     for software, render_dir in render_subdirs:
         if not render_dir.exists():
             continue
@@ -354,6 +356,17 @@ def discover_image_sequences(shot_path):
             if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
                 sequences[f.parent].append(f)
                 software_map[f.parent] = software
+    merged = defaultdict(list)
+    merged_software = {}
+    for folder, files in sequences.items():
+        if folder.name.lower() in FORMAT_DIRS and folder.parent is not None:
+            key = folder.parent
+        else:
+            key = folder
+        merged[key].extend(files)
+        merged_software[key] = software_map.get(folder, 'unknown')
+    sequences = merged
+    software_map = merged_software
     results = []
     for folder in sorted(sequences):
         files = sorted(sequences[folder])
@@ -370,137 +383,121 @@ def discover_image_sequences(shot_path):
             if m:
                 version = f'v{m.group(1)}'
                 break
-        if version is None and len(rel.parts) >= 2:
-            folder_name = rel.parts[-1]
-            m = re.search(r'_v(\d+)', folder_name)
-            if m:
-                version = f'v{m.group(1)}'
+        if version is None:
+            for f in files:
+                m = re.search(r'_v(\d+)', f.stem)
+                if m:
+                    version = f'v{m.group(1)}'
+                    break
         if version is None:
             version = ''
         ext = files[0].suffix
         groups = defaultdict(list)
+        removed_by_group = defaultdict(list)
         all_digits = all(re.match(r'^\d+$', s) for s in cleaned)
-        if all_digits and len(files) >= 2:
-            win_files = [(f, True) for f in files if re.search(r'WINDOWS', f.stem, re.IGNORECASE)]
-            norm_files = [(f, False) for f in files if not re.search(r'WINDOWS', f.stem, re.IGNORECASE)]
-            if norm_files and win_files:
-                all_grouped = norm_files + win_files
-                groups['_bareframe_'] = all_grouped
-            else:
-                groups['_bareframe_'] = [(f, False) for f in files]
-        else:
-            for s, f in zip(cleaned, files):
-                groups[s].append((f, re.search(r'WINDOWS', f.stem, re.IGNORECASE) is not None))
-        for norm_stem, group_files in sorted(groups.items()):
+        has_mixed_exts = len(set(f.suffix for f in files)) > 1
+        for s, f in zip(cleaned, files):
+            _, removed = _clean_stem(f.stem)
+            group_key = (s, f.suffix) if has_mixed_exts else s
+            groups[group_key].append(f)
+            removed_by_group[group_key].append((f, tuple(removed)))
+        for group_key, group_files in sorted(groups.items()):
             if len(group_files) < 2:
                 continue
-            is_bareframe = norm_stem == '_bareframe_'
-            if is_bareframe:
-                raw = sorted(group_files, key=lambda t: t[0].stem)[0][0].stem
-                frame_match = re.search(r'(\d{4,})$', raw)
-                pad = len(frame_match.group(1)) if frame_match else 4
-                normal_files = [f for f, is_win in group_files if not is_win]
-                windows_files = [f for f, is_win in group_files if is_win]
-                if normal_files and windows_files:
-                    pattern = str(folder / f'$FRAMES{ext}')
+            norm_stem = group_key[0] if isinstance(group_key, tuple) else group_key
+            ext = group_key[1] if isinstance(group_key, tuple) else files[0].suffix
+            prefix = _extract_prefix(norm_stem) if not all_digits else ''
+            raw = group_files[0].stem
+            frame_match = re.search(r'(\d{4,})$', raw)
+            pad = len(frame_match.group(1)) if frame_match else 4
+            if all_digits:
+                display = folder.name
+            else:
+                display = prefix.rstrip('_')
+                display = re.sub(r'_v\d+', '', display).rstrip('_')
+                if not display:
                     display = folder.name
+            has_mixed_exts_in_group = len(set(f.suffix for f in group_files)) > 1
+            file_dir = group_files[0].parent
+            if all_digits:
+                pattern = str(file_dir / f'$FRAMES{ext}')
+            else:
+                pattern = str(file_dir / f'{prefix}$FRAMES{ext}')
+            removed_map = dict(removed_by_group[group_key])
+            ext_groups = defaultdict(list)
+            for f in group_files:
+                ext_groups[f.suffix.lstrip('.')].append(f)
+            has_format_variants = len(ext_groups) > 1
+            has_removed_conflicts = False
+            for ext_key, ext_files in ext_groups.items():
+                ext_removed = set(removed_map.get(f, ()) for f in ext_files)
+                non_empty = [r for r in ext_removed if r]
+                if non_empty and len(ext_removed) > 1:
+                    has_removed_conflicts = True
+            if has_format_variants:
+                variant_groups = defaultdict(list)
+                for f in group_files:
+                    ext_key = f.suffix.lstrip('.')
+                    variant_groups[ext_key].append(f)
+                for ext_key in sorted(variant_groups.keys()):
+                    vf = variant_groups[ext_key]
+                    v_display = f'{display} [{ext_key.upper()}]'
+                    v_warning = None
+                    ext_removed = set(removed_map.get(f, ()) for f in vf)
+                    non_empty = [r for r in ext_removed if r]
+                    if non_empty and len(ext_removed) > 1:
+                        v_warning = 'Duplicate files detected'
+                    sorted_vf = sorted(vf, key=lambda f: f.stem)
                     results.append({
                         'pattern': pattern,
-                        'prefix': display,
+                        'prefix': v_display,
                         'folder': folder,
                         'software': software,
                         'version': version,
-                        'count': len(normal_files),
+                        'count': len(vf),
                         'pad': pad,
-                        'first_frame': sorted(normal_files, key=lambda f: f.stem)[0].name,
-                        'last_frame': sorted(normal_files, key=lambda f: f.stem)[-1].name,
-                        'warning': 'Windows duplicate files detected',
+                        'first_frame': sorted_vf[0].name,
+                        'last_frame': sorted_vf[-1].name,
+                        'warning': v_warning,
                     })
-                    display_win = display + ' [WINDOWS]'
+            elif has_removed_conflicts:
+                rm_groups = defaultdict(list)
+                for f in group_files:
+                    rm_key = removed_map.get(f, ())
+                    rm_groups[rm_key].append(f)
+                for rm_key in sorted(rm_groups.keys()):
+                    rf = rm_groups[rm_key]
+                    parts = [ext.upper().lstrip('.')]
+                    if rm_key:
+                        parts.extend(rm_key)
+                    v_display = f'{display} [{" ".join(parts)}]'
+                    sorted_rf = sorted(rf, key=lambda f: f.stem)
                     results.append({
                         'pattern': pattern,
-                        'prefix': display_win,
+                        'prefix': v_display,
                         'folder': folder,
                         'software': software,
                         'version': version,
-                        'count': len(windows_files),
+                        'count': len(rf),
                         'pad': pad,
-                        'first_frame': sorted(windows_files, key=lambda f: f.stem)[0].name,
-                        'last_frame': sorted(windows_files, key=lambda f: f.stem)[-1].name,
-                        'warning': None,
-                    })
-                else:
-                    all_files = [f for f, _ in group_files]
-                    sorted_files = sorted(all_files, key=lambda f: f.stem)
-                    display = folder.name
-                    results.append({
-                        'pattern': str(folder / f'$FRAMES{ext}'),
-                        'prefix': display,
-                        'folder': folder,
-                        'software': software,
-                        'version': version,
-                        'count': len(all_files),
-                        'pad': pad,
-                        'first_frame': sorted_files[0].name,
-                        'last_frame': sorted_files[-1].name,
+                        'first_frame': sorted_rf[0].name,
+                        'last_frame': sorted_rf[-1].name,
                         'warning': None,
                     })
             else:
-                prefix = _extract_prefix(norm_stem)
-                raw = group_files[0][0].stem
-                frame_match = re.search(r'(\d{4,})$', raw)
-                pad = len(frame_match.group(1)) if frame_match else 4
-                normal_files = [f for f, is_win in group_files if not is_win]
-                windows_files = [f for f, is_win in group_files if is_win]
-                if normal_files and windows_files:
-                    pattern = str(folder / f'{prefix}$FRAMES{ext}')
-                    display = prefix.rstrip('_')
-                    display = re.sub(r'_v\d+', '', display).rstrip('_')
-                    if not display:
-                        display = folder.name
-                    results.append({
-                        'pattern': pattern,
-                        'prefix': display,
-                        'folder': folder,
-                        'software': software,
-                        'version': version,
-                        'count': len(normal_files),
-                        'pad': pad,
-                        'first_frame': normal_files[0].name,
-                        'last_frame': normal_files[-1].name,
-                        'warning': 'Windows duplicate files detected',
-                    })
-                    display_win = display + ' [WINDOWS]'
-                    results.append({
-                        'pattern': pattern,
-                        'prefix': display_win,
-                        'folder': folder,
-                        'software': software,
-                        'version': version,
-                        'count': len(windows_files),
-                        'pad': pad,
-                        'first_frame': windows_files[0].name,
-                        'last_frame': windows_files[-1].name,
-                        'warning': None,
-                    })
-                else:
-                    all_files = [f for f, _ in group_files]
-                    display = prefix.rstrip('_')
-                    display = re.sub(r'_v\d+', '', display).rstrip('_')
-                    if not display:
-                        display = folder.name
-                    results.append({
-                        'pattern': str(folder / f'{prefix}$FRAMES{ext}'),
-                        'prefix': display,
-                        'folder': folder,
-                        'software': software,
-                        'version': version,
-                        'count': len(all_files),
-                        'pad': pad,
-                        'first_frame': all_files[0].name,
-                        'last_frame': all_files[-1].name,
-                        'warning': None,
-                    })
+                sorted_gf = sorted(group_files, key=lambda f: f.stem)
+                results.append({
+                    'pattern': pattern,
+                    'prefix': display,
+                    'folder': folder,
+                    'software': software,
+                    'version': version,
+                    'count': len(group_files),
+                    'pad': pad,
+                    'first_frame': sorted_gf[0].name,
+                    'last_frame': sorted_gf[-1].name,
+                    'warning': None,
+                })
     return results
 
 
