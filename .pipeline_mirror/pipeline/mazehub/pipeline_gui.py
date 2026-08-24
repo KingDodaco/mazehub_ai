@@ -5,6 +5,7 @@ import subprocess
 import platform
 import time
 import threading
+import webbrowser
 from pathlib import Path
 from collections import defaultdict
 
@@ -639,6 +640,13 @@ class DashboardPage(QWidget):
         stats_layout.addWidget(self._stat_card('Shots', str(seq_count)))
         stats_layout.addWidget(self._stat_card('Assets', str(asset_count)))
         stats_layout.addWidget(self._stat_card('Apps', str(len(self.apps_config))))
+        progress_score = self._calc_overall_score()
+        progress_card = self._stat_card('Progress', progress_score if progress_score else '-')
+        if progress_score:
+            color = _score_color(progress_score)
+            if color:
+                progress_card.findChild(QLabel).setStyleSheet(f'color: {color.name()};')
+        stats_layout.addWidget(progress_card)
         layout.addLayout(stats_layout)
         layout.addSpacing(16)
 
@@ -658,6 +666,12 @@ class DashboardPage(QWidget):
                 if col > 3:
                     col = 0
                     row += 1
+            self.yt_screensaver_btn = QPushButton('YT Screensaver')
+            self.yt_screensaver_btn.setMinimumHeight(48)
+            self.yt_screensaver_btn.setMinimumWidth(140)
+            self.yt_screensaver_btn.setCursor(Qt.PointingHandCursor)
+            self.yt_screensaver_btn.clicked.connect(self._open_yt_screensaver)
+            grid.addWidget(self.yt_screensaver_btn, row, col)
             quick_layout.addLayout(grid)
         else:
             quick_layout.addWidget(QLabel('No applications configured.'))
@@ -725,6 +739,36 @@ class DashboardPage(QWidget):
         l.setAlignment(Qt.AlignCenter)
         cl.addWidget(l)
         return card
+
+    def _calc_overall_score(self):
+        from pipeline_app import read_production, production_score, SHOT_CATEGORIES
+        all_scores = []
+        seq_dir = self.project_root / 'sequence'
+        if seq_dir.exists():
+            for d in sorted(seq_dir.iterdir()):
+                if d.is_dir() and not d.name.startswith('_'):
+                    prod = read_production(d)
+                    if not prod:
+                        prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
+                    vals = [PRODUCTION_VALUES.get(v, 0) for v in prod.values() if v != 'Not applicable']
+                    if vals:
+                        all_scores.append(sum(vals) / len(vals))
+        asset_dir = self.project_root / 'asset'
+        if asset_dir.exists():
+            for cat_dir in sorted(asset_dir.iterdir()):
+                if not cat_dir.is_dir() or cat_dir.name.startswith('_'):
+                    continue
+                for asset in sorted(cat_dir.iterdir()):
+                    if asset.is_dir() and not asset.name.startswith('_'):
+                        prod = read_production(asset)
+                        if not prod:
+                            continue
+                        vals = [PRODUCTION_VALUES.get(v, 0) for v in prod.values() if v != 'Not applicable']
+                        if vals:
+                            all_scores.append(sum(vals) / len(vals))
+        if all_scores:
+            return f'{round(sum(all_scores) / len(all_scores))}%'
+        return ''
 
     def _refresh_recent_files(self):
         files = load_recent_files()[:8]
@@ -857,6 +901,16 @@ class DashboardPage(QWidget):
         if hasattr(window, 'show_status'):
             window.show_status(msg, ok)
 
+    def _open_yt_screensaver(self):
+        from settings import get_setting
+        url = get_setting('yt_screensaver_url', '')
+        if url:
+            webbrowser.open(url)
+        else:
+            window = self.window()
+            if hasattr(window, 'show_status'):
+                window.show_status('No YouTube Screensaver URL configured. Set it in Settings.', False)
+
 
 class LaunchAppsPage(QWidget):
     def __init__(self, apps_config, pipeline_dir, project_root, parent=None):
@@ -940,6 +994,11 @@ class LaunchAppsPage(QWidget):
                 if col >= 2:
                     col = 0
                     row += 1
+            yt_btn = QPushButton('YT Screensaver')
+            yt_btn.setMinimumHeight(48)
+            yt_btn.setCursor(Qt.PointingHandCursor)
+            yt_btn.clicked.connect(self._open_yt_screensaver)
+            container_layout.addWidget(yt_btn, row, col)
         else:
             container_layout.addWidget(QLabel('No applications configured.'), 0, 0, 1, 2)
 
@@ -1029,6 +1088,16 @@ class LaunchAppsPage(QWidget):
         window = self.window()
         if hasattr(window, 'show_status'):
             window.show_status(msg, ok)
+
+    def _open_yt_screensaver(self):
+        from settings import get_setting
+        url = get_setting('yt_screensaver_url', '')
+        if url:
+            webbrowser.open(url)
+        else:
+            window = self.window()
+            if hasattr(window, 'show_status'):
+                window.show_status('No YouTube Screensaver URL configured. Set it in Settings.', False)
 
 
 class ShotExplorerPage(QWidget):
@@ -1855,6 +1924,67 @@ class ProductionPage(QWidget):
         title.setObjectName('sectionTitle')
         layout.addWidget(title)
 
+        summary_group = QGroupBox('Progress')
+        summary_layout = QVBoxLayout(summary_group)
+
+        overall_row = QHBoxLayout()
+        overall_row.addWidget(QLabel('Overall Progress'))
+        self.overall_progress = QProgressBar()
+        self.overall_progress.setTextVisible(False)
+        self.overall_progress.setMinimumHeight(24)
+        overall_row.addWidget(self.overall_progress, 1)
+        self.overall_label = QLabel('')
+        self.overall_label.setMinimumWidth(50)
+        overall_row.addWidget(self.overall_label)
+        summary_layout.addLayout(overall_row)
+
+        self.cat_group = QGroupBox('Progress by Category')
+        self.cat_group.setCheckable(True)
+        self.cat_group.setFlat(True)
+        self.cat_group.setChecked(False)
+        self.cat_group.toggled.connect(self._toggle_cat_bars)
+        cat_layout = QVBoxLayout(self.cat_group)
+
+        self.cat_bars = {}
+        asset_label = QLabel('Assets:')
+        asset_label.setObjectName('hint')
+        cat_layout.addWidget(asset_label)
+
+        for cat_name in ASSET_CATEGORIES:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(cat_name), 1)
+            bar = QProgressBar()
+            bar.setTextVisible(False)
+            bar.setMinimumHeight(18)
+            row.addWidget(bar, 2)
+            pct_label = QLabel('')
+            pct_label.setMinimumWidth(40)
+            row.addWidget(pct_label)
+            cat_layout.addLayout(row)
+            self.cat_bars[cat_name] = (bar, pct_label)
+
+        shot_sep = QLabel('Shots:')
+        shot_sep.setObjectName('hint')
+        cat_layout.addWidget(shot_sep)
+
+        for cat in SHOT_CATEGORIES:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(cat), 1)
+            bar = QProgressBar()
+            bar.setTextVisible(False)
+            bar.setMinimumHeight(18)
+            row.addWidget(bar, 2)
+            pct_label = QLabel('')
+            pct_label.setMinimumWidth(40)
+            row.addWidget(pct_label)
+            cat_layout.addLayout(row)
+            self.cat_bars[cat] = (bar, pct_label)
+
+        self._toggle_cat_bars(False)
+        summary_layout.addWidget(self.cat_group)
+
+        layout.addWidget(summary_group)
+
         tabs = QTabWidget()
 
         shot_tab = QWidget()
@@ -1895,6 +2025,7 @@ class ProductionPage(QWidget):
     def _refresh(self):
         self._refresh_shots()
         self._refresh_assets()
+        self._refresh_summary()
 
     def _refresh_shots(self):
         self.shot_table.setSortingEnabled(False)
@@ -1970,6 +2101,95 @@ class ProductionPage(QWidget):
         self.asset_table.resizeColumnsToContents()
         self.asset_table.setSortingEnabled(True)
 
+    def _toggle_cat_bars(self, checked):
+        layout = self.cat_group.layout()
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item and item.widget():
+                item.widget().setVisible(checked)
+            elif item and item.layout():
+                for j in range(item.layout().count()):
+                    child = item.layout().itemAt(j)
+                    if child and child.widget():
+                        child.widget().setVisible(checked)
+
+    def _refresh_summary(self):
+        all_scores = []
+        cat_values = {cat: [] for cat in SHOT_CATEGORIES}
+        asset_cat_values = {cat: [] for cat in ASSET_CATEGORIES}
+
+        seq_dir = self.project_root / 'sequence'
+        if seq_dir.exists():
+            for d in sorted(seq_dir.iterdir()):
+                if d.is_dir() and not d.name.startswith('_'):
+                    prod = read_production(d)
+                    if not prod:
+                        prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
+                    vals = [PRODUCTION_VALUES.get(v, 0) for v in prod.values() if v != 'Not applicable']
+                    if vals:
+                        all_scores.append(sum(vals) / len(vals))
+                    for cat in SHOT_CATEGORIES:
+                        status = prod.get(cat, 'Not started')
+                        if status != 'Not applicable':
+                            cat_values[cat].append(PRODUCTION_VALUES.get(status, 0))
+
+        asset_dir = self.project_root / 'asset'
+        if asset_dir.exists():
+            for cat_dir in sorted(asset_dir.iterdir()):
+                if not cat_dir.is_dir() or cat_dir.name.startswith('_'):
+                    continue
+                for asset in sorted(cat_dir.iterdir()):
+                    if asset.is_dir() and not asset.name.startswith('_'):
+                        prod = read_production(asset)
+                        if not prod:
+                            continue
+                        vals = [PRODUCTION_VALUES.get(v, 0) for v in prod.values() if v != 'Not applicable']
+                        if vals:
+                            all_scores.append(sum(vals) / len(vals))
+                        for cat_name in ASSET_CATEGORIES:
+                            status = prod.get(cat_name, 'Not started')
+                            if status != 'Not applicable':
+                                asset_cat_values[cat_name].append(PRODUCTION_VALUES.get(status, 0))
+
+        if all_scores:
+            avg = round(sum(all_scores) / len(all_scores))
+            self.overall_progress.setValue(avg)
+            self.overall_label.setText(f'{avg}%')
+            color = _score_color(f'{avg}%')
+            if color:
+                self.overall_label.setStyleSheet(f'color: {color.name()};')
+        else:
+            self.overall_progress.setValue(0)
+            self.overall_label.setText('')
+
+        for cat in SHOT_CATEGORIES:
+            bar, pct_label = self.cat_bars[cat]
+            vals = cat_values[cat]
+            if vals:
+                avg = round(sum(vals) / len(vals))
+                bar.setValue(avg)
+                pct_label.setText(f'{avg}%')
+                color = _score_color(f'{avg}%')
+                if color:
+                    pct_label.setStyleSheet(f'color: {color.name()};')
+            else:
+                bar.setValue(0)
+                pct_label.setText('')
+
+        for cat_name in ASSET_CATEGORIES:
+            bar, pct_label = self.cat_bars[cat_name]
+            vals = asset_cat_values[cat_name]
+            if vals:
+                avg = round(sum(vals) / len(vals))
+                bar.setValue(avg)
+                pct_label.setText(f'{avg}%')
+                color = _score_color(f'{avg}%')
+                if color:
+                    pct_label.setStyleSheet(f'color: {color.name()};')
+            else:
+                bar.setValue(0)
+                pct_label.setText('')
+
     def _shot_context_menu(self, pos):
         item = self.shot_table.itemAt(pos)
         if not item:
@@ -1982,6 +2202,8 @@ class ProductionPage(QWidget):
             menu = QMenu(self)
             _add_explorer_action(menu, shot_path)
             menu.exec(self.shot_table.viewport().mapToGlobal(pos))
+            return
+        if col - 1 >= len(SHOT_CATEGORIES):
             return
         cat = SHOT_CATEGORIES[col - 1]
         prod = read_production(shot_path)
@@ -1999,10 +2221,11 @@ class ProductionPage(QWidget):
                 action.setFont(font)
 
         action = menu.exec(self.shot_table.viewport().mapToGlobal(pos))
-        if action:
+        if action and action.data():
             prod[cat] = action.data()
             write_production(shot_path, prod)
             self._refresh_shots()
+            self._refresh_summary()
 
     def _asset_context_menu(self, pos):
         item = self.asset_table.itemAt(pos)
@@ -2019,6 +2242,8 @@ class ProductionPage(QWidget):
             menu.exec(self.asset_table.viewport().mapToGlobal(pos))
             return
         all_cats = list(ASSET_CATEGORIES.keys())
+        if col - 2 >= len(all_cats):
+            return
         cat_name = all_cats[col - 2]
         prod = read_production(asset_path)
         current = prod.get(cat_name, 'Not started')
@@ -2035,10 +2260,11 @@ class ProductionPage(QWidget):
                 action.setFont(font)
 
         action = menu.exec(self.asset_table.viewport().mapToGlobal(pos))
-        if action:
+        if action and action.data():
             prod[cat_name] = action.data()
             write_production(asset_path, prod)
             self._refresh_assets()
+            self._refresh_summary()
 
 
 class EnvVarsPage(QWidget):
@@ -2365,6 +2591,10 @@ class RenderProgressDialog(QDialog):
         self.cancel_btn = QPushButton('Cancel')
         self.cancel_btn.setCursor(Qt.PointingHandCursor)
         btn_row.addWidget(self.cancel_btn)
+        self.yt_screensaver_btn = QPushButton('YT Screensaver')
+        self.yt_screensaver_btn.setCursor(Qt.PointingHandCursor)
+        self.yt_screensaver_btn.clicked.connect(self._open_yt_screensaver)
+        btn_row.addWidget(self.yt_screensaver_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
@@ -2457,6 +2687,12 @@ class RenderProgressDialog(QDialog):
         else:
             thread.pause()
             self.pause_btn.setText('Resume')
+
+    def _open_yt_screensaver(self):
+        from settings import get_setting
+        url = get_setting('yt_screensaver_url', '')
+        if url:
+            webbrowser.open(url)
 
     def set_render_thread(self, thread):
         self._render_thread = thread
@@ -2930,6 +3166,31 @@ class SettingsPage(QWidget):
         husk_layout.addStretch()
         layout.addWidget(husk_group)
 
+        yt_group = QGroupBox('YouTube Screensaver')
+        yt_layout = QVBoxLayout(yt_group)
+
+        yt_layout.addWidget(QLabel(
+            'URL to open when the YT Screensaver button is clicked.'
+        ))
+
+        yt_url_row = QHBoxLayout()
+        self.yt_url_input = QLineEdit()
+        self.yt_url_input.setPlaceholderText('https://youtube.com/...')
+        yt_url_row.addWidget(self.yt_url_input, 1)
+        self.yt_save_btn = QPushButton('Save')
+        self.yt_save_btn.setCursor(Qt.PointingHandCursor)
+        self.yt_save_btn.clicked.connect(self._save_yt_url)
+        yt_url_row.addWidget(self.yt_save_btn)
+        yt_layout.addLayout(yt_url_row)
+
+        self.yt_status = QLabel('')
+        self.yt_status.setWordWrap(True)
+        self.yt_status.setObjectName('hint')
+        yt_layout.addWidget(self.yt_status)
+
+        yt_layout.addStretch()
+        layout.addWidget(yt_group)
+
         group = QGroupBox('File Structure')
         group_layout = QVBoxLayout(group)
 
@@ -2953,6 +3214,7 @@ class SettingsPage(QWidget):
         layout.addStretch()
 
         self._load_husk_path()
+        self._load_yt_url()
 
     def _load_husk_path(self):
         from settings import get_setting, find_husk
@@ -3004,6 +3266,28 @@ class SettingsPage(QWidget):
             return
         set_setting('husk_path', path)
         self._load_husk_path()
+
+    def _save_yt_url(self):
+        from settings import set_setting
+        url = self.yt_url_input.text().strip()
+        set_setting('yt_screensaver_url', url)
+        if url:
+            self.yt_status.setText(f'Saved: {url}')
+            self.yt_status.setStyleSheet('color: #00c853;')
+        else:
+            self.yt_status.setText('URL cleared.')
+            self.yt_status.setStyleSheet('')
+
+    def _load_yt_url(self):
+        from settings import get_setting
+        url = get_setting('yt_screensaver_url', '')
+        self.yt_url_input.setText(url)
+        if url:
+            self.yt_status.setText(f'Current: {url}')
+            self.yt_status.setStyleSheet('')
+        else:
+            self.yt_status.setText('No URL configured.')
+            self.yt_status.setStyleSheet('color: #ffa726;')
 
     def _repair(self):
         from make_folders import repair_project_structure

@@ -6,7 +6,7 @@ import subprocess
 import platform
 from pathlib import Path
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 
 
 APP_FILE_EXTENSIONS = {
@@ -101,7 +101,7 @@ def write_shot_meta(shot_path, metadata):
 PRODUCTION_FILENAME = '_production.json'
 
 PRODUCTION_STATUSES = ['Not started', 'Work in progress', 'Pending review', 'Finished']
-PRODUCTION_VALUES = {'Not started': 0, 'Work in progress': 33, 'Pending review': 66, 'Finished': 100}
+PRODUCTION_VALUES = {'Not started': 0, 'Work in progress': 50, 'Pending review': 50, 'Finished': 100}
 
 ASSET_CATEGORIES = {
     'Modelling': 'core',
