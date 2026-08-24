@@ -6,7 +6,7 @@ import subprocess
 import platform
 from pathlib import Path
 
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.4.0"
 
 
 APP_FILE_EXTENSIONS = {
@@ -332,6 +332,14 @@ def _normalize_stem(stem):
     return stem
 
 
+def _normalize_stem_nuke(stem):
+    stem, _ = _clean_stem(stem)
+    stem = re.sub(r'\.\d{4,}$', '', stem)
+    stem = re.sub(r'_\d{4,}$', '', stem)
+    stem = stem.rstrip('_')
+    return stem
+
+
 def _extract_prefix(stem):
     m = re.match(r'^(.*?)_\d{4,}$', stem)
     if m:
@@ -397,12 +405,17 @@ def discover_image_sequences(shot_path):
             m = re.search(r'_v(\d+)', f.stem)
             if m:
                 file_version = f'v{m.group(1)}'
+            v_display = f.stem
+            v_display = re.sub(r'_v\d+', '', v_display).rstrip('_')
+            if not v_display:
+                v_display = folder.name
             results.append({
                 'pattern': str(f),
-                'prefix': f.stem,
+                'prefix': v_display,
                 'folder': folder,
                 'software': software,
                 'version': file_version,
+                'format': f.suffix.lstrip('.').upper(),
                 'count': 1,
                 'pad': 0,
                 'first_frame': f.name,
@@ -413,7 +426,10 @@ def discover_image_sequences(shot_path):
         if len(files) < 2:
             continue
         raw_stems = [f.stem for f in files]
-        cleaned = [_normalize_stem(s) for s in raw_stems]
+        if software == 'nuke':
+            cleaned = [_normalize_stem_nuke(s) for s in raw_stems]
+        else:
+            cleaned = [_normalize_stem(s) for s in raw_stems]
         unique = sorted(set(cleaned))
         ext = files[0].suffix
         groups = defaultdict(list)
@@ -445,11 +461,6 @@ def discover_image_sequences(shot_path):
                 if not display:
                     display = folder.name
             has_mixed_exts_in_group = len(set(f.suffix for f in group_files)) > 1
-            file_dir = group_files[0].parent
-            if all_digits:
-                pattern = str(file_dir / f'$FRAMES{ext}')
-            else:
-                pattern = str(file_dir / f'{prefix}$FRAMES{ext}')
             removed_map = dict(removed_by_group[group_key])
             ext_groups = defaultdict(list)
             for f in group_files:
@@ -468,7 +479,6 @@ def discover_image_sequences(shot_path):
                     variant_groups[ext_key].append(f)
                 for ext_key in sorted(variant_groups.keys()):
                     vf = variant_groups[ext_key]
-                    v_display = f'{display} [{ext_key.upper()}]'
                     v_warning = None
                     ext_removed = set(removed_map.get(f, ()) for f in vf)
                     non_empty = [r for r in ext_removed if r]
@@ -476,11 +486,11 @@ def discover_image_sequences(shot_path):
                         v_warning = 'Duplicate files detected'
                     sorted_vf = sorted(vf, key=lambda f: f.stem)
                     results.append({
-                        'pattern': pattern,
-                        'prefix': v_display,
+                        'prefix': display,
                         'folder': folder,
                         'software': software,
                         'version': version,
+                        'format': ext_key.upper(),
                         'count': len(vf),
                         'pad': pad,
                         'first_frame': sorted_vf[0].name,
@@ -494,17 +504,14 @@ def discover_image_sequences(shot_path):
                     rm_groups[rm_key].append(f)
                 for rm_key in sorted(rm_groups.keys()):
                     rf = rm_groups[rm_key]
-                    parts = [ext.upper().lstrip('.')]
-                    if rm_key:
-                        parts.extend(rm_key)
-                    v_display = f'{display} [{" ".join(parts)}]'
                     sorted_rf = sorted(rf, key=lambda f: f.stem)
+                    fmt = rf[0].suffix.lstrip('.').upper()
                     results.append({
-                        'pattern': pattern,
-                        'prefix': v_display,
+                        'prefix': display,
                         'folder': folder,
                         'software': software,
                         'version': version,
+                        'format': fmt,
                         'count': len(rf),
                         'pad': pad,
                         'first_frame': sorted_rf[0].name,
@@ -513,12 +520,13 @@ def discover_image_sequences(shot_path):
                     })
             else:
                 sorted_gf = sorted(group_files, key=lambda f: f.stem)
+                fmt = group_files[0].suffix.lstrip('.').upper()
                 results.append({
-                    'pattern': pattern,
                     'prefix': display,
                     'folder': folder,
                     'software': software,
                     'version': version,
+                    'format': fmt,
                     'count': len(group_files),
                     'pad': pad,
                     'first_frame': sorted_gf[0].name,

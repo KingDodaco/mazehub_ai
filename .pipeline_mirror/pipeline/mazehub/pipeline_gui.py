@@ -1630,14 +1630,15 @@ class PreviewPage(QWidget):
         layout.addLayout(shot_row)
 
         self.seq_list = QTreeWidget()
-        self.seq_list.setHeaderLabels(['Name', 'Frames', 'Folder', 'Warning'])
+        self.seq_list.setHeaderLabels(['Name', 'Format', 'Frames', 'Folder', 'Warning'])
         self.seq_list.setSelectionMode(QTreeWidget.SingleSelection)
         self.seq_list.setAlternatingRowColors(True)
         self.seq_list.itemDoubleClicked.connect(self._open_in_mplay)
         self.seq_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.seq_list.customContextMenuRequested.connect(self._context_menu)
-        self.seq_list.setColumnWidth(0, 320)
-        self.seq_list.setColumnWidth(2, 280)
+        self.seq_list.setColumnWidth(0, 280)
+        self.seq_list.setColumnWidth(2, 60)
+        self.seq_list.setColumnWidth(3, 280)
         self.seq_list.header().setStretchLastSection(False)
         layout.addWidget(self.seq_list, 1)
 
@@ -1715,7 +1716,7 @@ class PreviewPage(QWidget):
                 software_items[sw] = sw_item
             sw_item = software_items[sw]
             warning = seq.get('warning', None)
-            base_prefix = re.sub(r'\s*\[.*?\]\s*$', '', seq['prefix'])
+            base_prefix = seq['prefix']
             name_key = (sw, base_prefix)
             if name_key not in name_items:
                 name_item = QTreeWidgetItem(sw_item, [base_prefix])
@@ -1723,6 +1724,7 @@ class PreviewPage(QWidget):
                 name_items[name_key] = name_item
             name_item = name_items[name_key]
             version = seq.get('version', '')
+            fmt = seq.get('format', '')
             if version:
                 vp_key = (sw, base_prefix, version)
                 if vp_key not in version_parents:
@@ -1734,6 +1736,7 @@ class PreviewPage(QWidget):
                     warned_versions.add(vp_key)
                 v_item = QTreeWidgetItem(v_parent, [
                     seq['prefix'],
+                    fmt,
                     str(seq['count']),
                     str(seq['folder'].relative_to(shot_path)),
                     '',
@@ -1741,6 +1744,7 @@ class PreviewPage(QWidget):
             else:
                 v_item = QTreeWidgetItem(name_item, [
                     seq['prefix'],
+                    fmt,
                     str(seq['count']),
                     str(seq['folder'].relative_to(shot_path)),
                     warning or '',
@@ -1751,8 +1755,7 @@ class PreviewPage(QWidget):
                     v_item.setForeground(col, QColor('#ffa726'))
         for vp_key in warned_versions:
             v_parent = version_parents[vp_key]
-            version_label = vp_key[2]
-            v_parent.setText(3, 'Duplicate files detected')
+            v_parent.setText(4, 'Duplicate files detected')
             for col in range(v_parent.columnCount()):
                 v_parent.setForeground(col, QColor('#ffa726'))
 
@@ -1793,9 +1796,23 @@ class PreviewPage(QWidget):
             launch_env['OCIO_ACTIVE_DISPLAYS'] = 'arri709 - Display:sRGB - Display'
             launch_env['OCIO_ACTIVE_VIEWS'] = 'arri709 - View:Raw'
 
-        pattern = seq['pattern'].replace('$FRAMES', f'$F{seq["pad"]}')
-        start_frame = int(re.search(r'(\d+)(?=\.\w+$)', seq['first_frame']).group(1))
-        end_frame = int(re.search(r'(\d+)(?=\.\w+$)', seq['last_frame']).group(1))
+        first = seq['first_frame']
+        last = seq['last_frame']
+        frame_match = re.search(r'(\d+)(?=\.\w+$)', first)
+        if not frame_match:
+            self.status_label.setText('Could not detect frame number')
+            return
+        start_frame = int(frame_match.group(1))
+        pad = len(frame_match.group(1))
+        end_frame = int(re.search(r'(\d+)(?=\.\w+$)', last).group(1))
+        actual_name = first[:frame_match.start()] + f'$F{pad}' + first[frame_match.end():]
+        seq_folder = seq['folder']
+        fmt = seq.get('format', '').lower()
+        if fmt:
+            fmt_dir = seq_folder / fmt
+            if fmt_dir.is_dir():
+                seq_folder = fmt_dir
+        pattern = str(seq_folder / actual_name)
         try:
             subprocess.Popen([str(mplay_path), '-f', str(start_frame), str(end_frame), '1', pattern], env=launch_env)
             self.status_label.setText(f'Opened {seq["prefix"]} in MPlay')
@@ -1810,7 +1827,13 @@ class PreviewPage(QWidget):
         path = None
         idx = item.data(0, Qt.UserRole)
         if idx is not None and idx < len(self._sequences):
-            path = self._sequences[idx]['folder']
+            seq = self._sequences[idx]
+            path = seq['folder']
+            fmt = seq.get('format', '').lower()
+            if fmt:
+                fmt_dir = path / fmt
+                if fmt_dir.is_dir():
+                    path = fmt_dir
         menu = QMenu(self)
         _add_explorer_action(menu, path)
         menu.exec(self.seq_list.viewport().mapToGlobal(pos))
