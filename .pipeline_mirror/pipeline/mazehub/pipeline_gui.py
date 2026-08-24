@@ -1327,7 +1327,7 @@ class ShotExplorerPage(QWidget):
     def _set_thumbnail(self, item_path):
         from PySide6.QtWidgets import QFileDialog
         file_path, _ = QFileDialog.getOpenFileName(
-            self, 'Select Thumbnail', '',
+            self, 'Select Thumbnail', str(item_path),
             'Images (*.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)'
         )
         if not file_path:
@@ -1543,7 +1543,7 @@ class AssetExplorerPage(QWidget):
     def _set_thumbnail(self, item_path):
         from PySide6.QtWidgets import QFileDialog
         file_path, _ = QFileDialog.getOpenFileName(
-            self, 'Select Thumbnail', '',
+            self, 'Select Thumbnail', str(item_path),
             'Images (*.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)'
         )
         if not file_path:
