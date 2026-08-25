@@ -4,9 +4,75 @@ import re
 import json
 import subprocess
 import platform
+import urllib.request
 from pathlib import Path
 
 APP_VERSION = "0.4.1"
+
+
+def _get_display_name():
+    if platform.system() == 'Windows':
+        try:
+            import ctypes
+            import ctypes.wintypes
+            size = ctypes.wintypes.DWORD()
+            ctypes.windll.secur32.GetUserNameExW(3, None, ctypes.byref(size))
+            if size.value > 0:
+                buf = ctypes.create_unicode_buffer(size.value)
+                ctypes.windll.secur32.GetUserNameExW(3, buf, ctypes.byref(size))
+                if buf.value:
+                    return buf.value
+        except Exception:
+            pass
+        return os.environ.get('USERNAME', 'unknown')
+    return os.environ.get('USER', os.environ.get('USERNAME', 'unknown'))
+
+
+def convert_exr_to_png(exr_path, png_path, max_size=512):
+    try:
+        import OpenEXR
+        import Imath
+        from PIL import Image
+        import numpy as np
+
+        exr = OpenEXR.InputFile(str(exr_path))
+        header = exr.header()
+        dw = header['dataWindow']
+        width = dw.max.x - dw.min.x + 1
+        height = dw.max.y - dw.min.y + 1
+
+        channel_names = list(header['channels'].keys())
+        if 'A' in channel_names:
+            pixel_type = Imath.PixelType(Imath.PixelType.FLOAT)
+            channels = ['R', 'G', 'B', 'A']
+        elif all(c in channel_names for c in ['R', 'G', 'B']):
+            pixel_type = Imath.PixelType(Imath.PixelType.FLOAT)
+            channels = ['R', 'G', 'B']
+        else:
+            pixel_type = Imath.PixelType(Imath.PixelType.FLOAT)
+            channels = channel_names[:4]
+
+        raw = exr.channel(','.join(channels), pixel_type)
+        exr.close()
+
+        num_channels = len(channels)
+        img_array = np.frombuffer(raw, dtype=np.float32).reshape(height, width, num_channels)
+
+        img_array = np.clip(img_array, 0, 1)
+        img_array = (img_array * 255).astype(np.uint8)
+
+        if num_channels == 4:
+            img = Image.fromarray(img_array, 'RGBA')
+        else:
+            img = Image.fromarray(img_array, 'RGB')
+
+        if max(width, height) > max_size:
+            img.thumbnail((max_size, max_size), Image.LANCZOS)
+
+        img.save(str(png_path), 'PNG')
+        return True
+    except Exception:
+        return False
 
 
 APP_FILE_EXTENSIONS = {
@@ -705,6 +771,84 @@ def main():
             break
         else:
             print('  Invalid option.')
+
+def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
+                            end_frame, interval, version, render_engine,
+                            exit_code, render_time, project_root='',
+                            cancelled=False, start_time='', end_time=''):
+    if not webhook_url:
+        return False
+
+    if cancelled:
+        status = 'Cancelled'
+        color = 'F39C12'
+    elif exit_code == 0:
+        status = 'Succeeded'
+        color = '2ECC71'
+    else:
+        status = 'Failed'
+        color = 'E74C3C'
+
+    frames = list(range(start_frame, end_frame + 1, max(interval, 1)))
+    total_frames = len(frames) * len(passes)
+
+    summary_facts = [
+        {'name': 'Shot', 'value': shot},
+        {'name': 'Status', 'value': status},
+        {'name': 'Passes', 'value': ', '.join(passes)},
+        {'name': 'Frame Range', 'value': f'{start_frame} - {end_frame}'},
+        {'name': 'Version', 'value': f'v{version:03d}'},
+        {'name': 'Started By', 'value': _get_display_name()},
+    ]
+
+    detail_facts = [
+        {'name': 'USD File', 'value': usd_file},
+        {'name': 'Interval', 'value': str(interval)},
+        {'name': 'Total Frames', 'value': str(total_frames)},
+        {'name': 'Engine', 'value': f'Karma {render_engine.upper()}'},
+        {'name': 'Render Time', 'value': render_time},
+    ]
+    if start_time:
+        detail_facts.append({'name': 'Start Time', 'value': start_time})
+    if end_time:
+        detail_facts.append({'name': 'End Time', 'value': end_time})
+
+    card = {
+        '@type': 'MessageCard',
+        '@context': 'http://schema.org/extensions',
+        'themeColor': color,
+        'summary': f'Render {status}: {shot}',
+        'sections': [{
+            'activityTitle': f'Render {status}',
+            'activitySubtitle': f'{shot} — {usd_file}',
+            'facts': summary_facts,
+            'markdown': True,
+        }, {
+            'title': 'Details',
+            'facts': detail_facts,
+            'markdown': True,
+        }],
+    }
+
+    if project_root:
+        card['potentialAction'] = [{
+            '@type': 'OpenUri',
+            'name': 'Open in MazeHub',
+            'targets': [{'os': 'default', 'uri': str(project_root)}],
+        }]
+
+    data = json.dumps(card).encode('utf-8')
+    req = urllib.request.Request(
+        webhook_url,
+        data=data,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception:
+        return False
 
 
 if __name__ == '__main__':

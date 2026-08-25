@@ -1196,7 +1196,7 @@ class ShotExplorerPage(QWidget):
         if not items:
             return
         row = items[0].row()
-        shot_name = self.table.item(row, 0).text()
+        shot_name = self.table.item(row, 1).text()
         shot_path = self.project_root / 'sequence' / shot_name
         meta = read_shot_meta(shot_path)
 
@@ -3052,6 +3052,19 @@ class RenderPage(QWidget):
         self.render_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
 
+        self._render_meta = {
+            'shot': shot_name,
+            'usd_file': usd_name,
+            'passes': passes,
+            'start_frame': start,
+            'end_frame': end,
+            'interval': interval,
+            'version': version,
+            'render_engine': render_engine,
+            'start_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'end_time': '',
+        }
+
         render_env = {
             'MAZE_CONTEXT_NAME': shot_name,
             'MAZE_CONTEXT_TYPE': 'shot',
@@ -3081,6 +3094,8 @@ class RenderPage(QWidget):
 
     def _cancel_render(self):
         if self._render_thread:
+            if hasattr(self, '_render_meta'):
+                self._render_meta['cancelled'] = True
             self._render_thread.cancel()
 
     def _on_render_output(self, line):
@@ -3091,8 +3106,17 @@ class RenderPage(QWidget):
     def _on_render_finished(self, exit_code):
         self.render_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+
+        render_time = ''
         if self._render_dialog:
+            if self._render_dialog._render_start:
+                elapsed = time.monotonic() - self._render_dialog._render_start
+                h = int(elapsed) // 3600
+                m = (int(elapsed) % 3600) // 60
+                s = int(elapsed) % 60
+                render_time = f'{h}:{m:02d}:{s:02d}'
             self._render_dialog.finish_render()
+
         if exit_code == 0:
             self.log_output.append('')
             self.log_output.append('[render complete]')
@@ -3101,6 +3125,31 @@ class RenderPage(QWidget):
             self.log_output.append('')
             self.log_output.append(f'[render finished with errors (exit code {exit_code})]')
             self._status(f'Render finished with errors', False)
+
+        meta = getattr(self, '_render_meta', None)
+        if meta:
+            meta['end_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
+            from settings import get_setting
+            from pipeline_app import send_teams_notification
+            webhook_url = get_setting('teams_webhook_url', '')
+            if webhook_url:
+                send_teams_notification(
+                    webhook_url=webhook_url,
+                    shot=meta['shot'],
+                    usd_file=meta['usd_file'],
+                    passes=meta['passes'],
+                    start_frame=meta['start_frame'],
+                    end_frame=meta['end_frame'],
+                    interval=meta['interval'],
+                    version=meta['version'],
+                    render_engine=meta['render_engine'],
+                    exit_code=exit_code,
+                    render_time=render_time,
+                    project_root=self.project_root,
+                    cancelled=meta.get('cancelled', False),
+                    start_time=meta.get('start_time', ''),
+                    end_time=meta.get('end_time', ''),
+                )
 
     def _status(self, msg, ok=True):
         window = self.window()
@@ -3191,6 +3240,31 @@ class SettingsPage(QWidget):
         yt_layout.addStretch()
         layout.addWidget(yt_group)
 
+        teams_group = QGroupBox('Microsoft Teams Notifications')
+        teams_layout = QVBoxLayout(teams_group)
+
+        teams_layout.addWidget(QLabel(
+            'Webhook URL for render notifications. Send a notification when a render completes or fails.'
+        ))
+
+        teams_url_row = QHBoxLayout()
+        self.teams_url_input = QLineEdit()
+        self.teams_url_input.setPlaceholderText('https://outlook.office.com/webhook/...')
+        teams_url_row.addWidget(self.teams_url_input, 1)
+        self.teams_save_btn = QPushButton('Save')
+        self.teams_save_btn.setCursor(Qt.PointingHandCursor)
+        self.teams_save_btn.clicked.connect(self._save_teams_url)
+        teams_url_row.addWidget(self.teams_save_btn)
+        teams_layout.addLayout(teams_url_row)
+
+        self.teams_status = QLabel('')
+        self.teams_status.setWordWrap(True)
+        self.teams_status.setObjectName('hint')
+        teams_layout.addWidget(self.teams_status)
+
+        teams_layout.addStretch()
+        layout.addWidget(teams_group)
+
         group = QGroupBox('File Structure')
         group_layout = QVBoxLayout(group)
 
@@ -3215,6 +3289,7 @@ class SettingsPage(QWidget):
 
         self._load_husk_path()
         self._load_yt_url()
+        self._load_teams_url()
 
     def _load_husk_path(self):
         from settings import get_setting, find_husk
@@ -3288,6 +3363,28 @@ class SettingsPage(QWidget):
         else:
             self.yt_status.setText('No URL configured.')
             self.yt_status.setStyleSheet('color: #ffa726;')
+
+    def _save_teams_url(self):
+        from settings import set_setting
+        url = self.teams_url_input.text().strip()
+        set_setting('teams_webhook_url', url)
+        if url:
+            self.teams_status.setText(f'Saved: {url}')
+            self.teams_status.setStyleSheet('color: #00c853;')
+        else:
+            self.teams_status.setText('URL cleared.')
+            self.teams_status.setStyleSheet('')
+
+    def _load_teams_url(self):
+        from settings import get_setting
+        url = get_setting('teams_webhook_url', '')
+        self.teams_url_input.setText(url)
+        if url:
+            self.teams_status.setText(f'Current: {url}')
+            self.teams_status.setStyleSheet('')
+        else:
+            self.teams_status.setText('No webhook URL configured.')
+            self.teams_status.setStyleSheet('color: #ffa726;')
 
     def _repair(self):
         from make_folders import repair_project_structure
