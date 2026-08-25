@@ -81,7 +81,9 @@ def convert_exr_to_png(exr_path, png_path, max_size=512):
 
         img.save(str(png_path), 'PNG')
         return True
-    except Exception:
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -849,6 +851,51 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
             'name': 'Open in MazeHub',
             'targets': [{'os': 'default', 'uri': str(project_root)}],
         }]
+
+    data = json.dumps(card).encode('utf-8')
+    req = urllib.request.Request(
+        webhook_url,
+        data=data,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception:
+        return False
+
+
+def send_dailies_notification(webhook_url, shot, artist, file_path,
+                              frame_range='', notes=''):
+    if not webhook_url:
+        return False
+
+    facts = [
+        {'name': 'Shot', 'value': shot},
+        {'name': 'Artist', 'value': artist},
+    ]
+    if frame_range:
+        facts.append({'name': 'Frame Range', 'value': frame_range})
+    if notes:
+        facts.append({'name': 'Notes', 'value': notes})
+
+    card = {
+        '@type': 'MessageCard',
+        '@context': 'http://schema.org/extensions',
+        'themeColor': '3498DB',
+        'summary': f'Dailies: {shot}',
+        'sections': [{
+            'activityTitle': f'Dailies: {shot}',
+            'facts': facts,
+            'markdown': True,
+        }],
+        'potentialAction': [{
+            '@type': 'OpenUri',
+            'name': 'Open File',
+            'targets': [{'os': 'default', 'uri': str(file_path)}],
+        }],
+    }
 
     data = json.dumps(card).encode('utf-8')
     req = urllib.request.Request(

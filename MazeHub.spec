@@ -1,10 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('.pipeline_mirror\\pipeline', 'pipeline'), ('make_folders.py', '.')]
-binaries = []
-hiddenimports = ['pipeline_gui', 'pipeline_app', 'recent_files']
+datas = [('.pipeline_mirror\\pipeline', 'pipeline'), ('make_folders.py', '.'), ('.venv\\Lib\\site-packages\\Imath.py', '.')]
+binaries = [('.venv\\Lib\\site-packages\\OpenEXR.cp312-win_amd64.pyd', '.')]
+hiddenimports = ['pipeline_gui', 'pipeline_app', 'recent_files', 'OpenEXR', 'Imath', 'numpy']
 tmp_ret = collect_all('PySide6')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('numpy')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('PIL')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 

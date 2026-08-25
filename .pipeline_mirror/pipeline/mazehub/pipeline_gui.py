@@ -3285,6 +3285,31 @@ class SettingsPage(QWidget):
         teams_layout.addStretch()
         layout.addWidget(teams_group)
 
+        dailies_group = QGroupBox('Dailies Channel')
+        dailies_layout = QVBoxLayout(dailies_group)
+
+        dailies_layout.addWidget(QLabel(
+            'Webhook URL for the dailies channel. Used by Houdini playblast tools.'
+        ))
+
+        dailies_url_row = QHBoxLayout()
+        self.dailies_url_input = QLineEdit()
+        self.dailies_url_input.setPlaceholderText('https://outlook.office.com/webhook/...')
+        dailies_url_row.addWidget(self.dailies_url_input, 1)
+        self.dailies_save_btn = QPushButton('Save')
+        self.dailies_save_btn.setCursor(Qt.PointingHandCursor)
+        self.dailies_save_btn.clicked.connect(self._save_dailies_url)
+        dailies_url_row.addWidget(self.dailies_save_btn)
+        dailies_layout.addLayout(dailies_url_row)
+
+        self.dailies_status = QLabel('')
+        self.dailies_status.setWordWrap(True)
+        self.dailies_status.setObjectName('hint')
+        dailies_layout.addWidget(self.dailies_status)
+
+        dailies_layout.addStretch()
+        layout.addWidget(dailies_group)
+
         group = QGroupBox('File Structure')
         group_layout = QVBoxLayout(group)
 
@@ -3310,6 +3335,7 @@ class SettingsPage(QWidget):
         self._load_husk_path()
         self._load_yt_url()
         self._load_teams_url()
+        self._load_dailies_url()
 
     def _load_husk_path(self):
         from settings import get_setting, find_husk
@@ -3399,6 +3425,22 @@ class SettingsPage(QWidget):
         from settings import get_setting
         url = get_setting('teams_webhook_url', '')
         self.teams_url_input.setText(url)
+
+    def _save_dailies_url(self):
+        from settings import set_setting
+        url = self.dailies_url_input.text().strip()
+        set_setting('dailies_webhook_url', url)
+        if url:
+            self.dailies_status.setText(f'Saved: {url}')
+            self.dailies_status.setStyleSheet('color: #00c853;')
+        else:
+            self.dailies_status.setText('URL cleared.')
+            self.dailies_status.setStyleSheet('')
+
+    def _load_dailies_url(self):
+        from settings import get_setting
+        url = get_setting('dailies_webhook_url', '')
+        self.dailies_url_input.setText(url)
         if url:
             self.teams_status.setText(f'Current: {url}')
             self.teams_status.setStyleSheet('')

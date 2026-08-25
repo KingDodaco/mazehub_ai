@@ -38,6 +38,7 @@ version = "0.3.2"
 source = { virtual = "." }
 dependencies = [
     { name = "git-filter-repo" },
+    { name = "numpy" },
     { name = "openexr" },
     { name = "pillow" },
     { name = "pyinstaller" },
@@ -47,6 +48,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "git-filter-repo", specifier = ">=2.47.0" },
+    { name = "numpy", specifier = ">=1.24" },
     { name = "openexr", specifier = ">=3.2" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pyinstaller", specifier = ">=6.21.0" },

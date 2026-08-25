@@ -55,10 +55,17 @@ echo Building %APP_NAME% (console mode for debugging)...
     --name "%APP_NAME%" ^
     --add-data ".pipeline_mirror\pipeline;pipeline" ^
     --add-data "make_folders.py;." ^
+    --add-data ".venv\Lib\site-packages\Imath.py;." ^
+    --add-binary ".venv\Lib\site-packages\OpenEXR.cp312-win_amd64.pyd;." ^
     --collect-all PySide6 ^
+    --collect-all numpy ^
+    --collect-all PIL ^
     --hidden-import pipeline_gui ^
     --hidden-import pipeline_app ^
     --hidden-import recent_files ^
+    --hidden-import OpenEXR ^
+    --hidden-import Imath ^
+    --hidden-import numpy ^
     "%ROOT%main.py"
 
 if errorlevel 1 (
