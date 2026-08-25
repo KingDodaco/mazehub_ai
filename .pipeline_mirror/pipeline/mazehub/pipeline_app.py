@@ -43,28 +43,38 @@ def convert_exr_to_png(exr_path, png_path, max_size=512):
 
         channel_names = list(header['channels'].keys())
         if 'A' in channel_names:
-            pixel_type = Imath.PixelType(Imath.PixelType.FLOAT)
             channels = ['R', 'G', 'B', 'A']
         elif all(c in channel_names for c in ['R', 'G', 'B']):
-            pixel_type = Imath.PixelType(Imath.PixelType.FLOAT)
             channels = ['R', 'G', 'B']
+        elif len(channel_names) >= 3:
+            channels = channel_names[:3]
         else:
-            pixel_type = Imath.PixelType(Imath.PixelType.FLOAT)
-            channels = channel_names[:4]
+            channels = channel_names[:1]
 
-        raw = exr.channel(','.join(channels), pixel_type)
+        pixel_type = Imath.PixelType(Imath.PixelType.FLOAT)
+        channel_data = []
+        for ch in channels:
+            raw = exr.channel(ch, pixel_type)
+            arr = np.frombuffer(raw, dtype=np.float32)
+            channel_data.append(arr.reshape(height, width))
         exr.close()
 
-        num_channels = len(channels)
-        img_array = np.frombuffer(raw, dtype=np.float32).reshape(height, width, num_channels)
+        img_array = np.stack(channel_data, axis=-1)
+        img_array = np.clip(img_array, 0, None)
 
-        img_array = np.clip(img_array, 0, 1)
-        img_array = (img_array * 255).astype(np.uint8)
+        # Apply sRGB OETF (linear to sRGB)
+        srgb = np.where(
+            img_array <= 0.0031308,
+            img_array * 12.92,
+            1.055 * np.power(img_array, 1.0 / 2.4) - 0.055
+        )
+        srgb = np.clip(srgb, 0, 1)
+        img_array = (srgb * 255).astype(np.uint8)
 
-        if num_channels == 4:
+        if img_array.shape[-1] == 4:
             img = Image.fromarray(img_array, 'RGBA')
         else:
-            img = Image.fromarray(img_array, 'RGB')
+            img = Image.fromarray(img_array[:, :, :3], 'RGB')
 
         if max(width, height) > max_size:
             img.thumbnail((max_size, max_size), Image.LANCZOS)
@@ -775,7 +785,8 @@ def main():
 def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
                             end_frame, interval, version, render_engine,
                             exit_code, render_time, project_root='',
-                            cancelled=False, start_time='', end_time=''):
+                            cancelled=False, start_time='', end_time='',
+                            first_frame_path=''):
     if not webhook_url:
         return False
 
@@ -812,6 +823,8 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
         detail_facts.append({'name': 'Start Time', 'value': start_time})
     if end_time:
         detail_facts.append({'name': 'End Time', 'value': end_time})
+    if first_frame_path:
+        detail_facts.append({'name': 'First Frame', 'value': first_frame_path})
 
     card = {
         '@type': 'MessageCard',

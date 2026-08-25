@@ -1328,12 +1328,18 @@ class ShotExplorerPage(QWidget):
         from PySide6.QtWidgets import QFileDialog
         file_path, _ = QFileDialog.getOpenFileName(
             self, 'Select Thumbnail', str(item_path),
-            'Images (*.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)'
+            'Images (*.png *.jpg *.jpeg *.bmp *.tiff *.exr);;All Files (*)'
         )
         if not file_path:
             return
-        import shutil
-        shutil.copy2(file_path, item_path / '_thumbnail.png')
+        from pipeline_app import convert_exr_to_png
+        if file_path.lower().endswith('.exr'):
+            if not convert_exr_to_png(file_path, item_path / '_thumbnail.png'):
+                self._status('Failed to convert EXR file', False)
+                return
+        else:
+            import shutil
+            shutil.copy2(file_path, item_path / '_thumbnail.png')
         self._refresh()
 
     def _status(self, msg, ok=True):
@@ -1544,12 +1550,18 @@ class AssetExplorerPage(QWidget):
         from PySide6.QtWidgets import QFileDialog
         file_path, _ = QFileDialog.getOpenFileName(
             self, 'Select Thumbnail', str(item_path),
-            'Images (*.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)'
+            'Images (*.png *.jpg *.jpeg *.bmp *.tiff *.exr);;All Files (*)'
         )
         if not file_path:
             return
-        import shutil
-        shutil.copy2(file_path, item_path / '_thumbnail.png')
+        from pipeline_app import convert_exr_to_png
+        if file_path.lower().endswith('.exr'):
+            if not convert_exr_to_png(file_path, item_path / '_thumbnail.png'):
+                self._status('Failed to convert EXR file', False)
+                return
+        else:
+            import shutil
+            shutil.copy2(file_path, item_path / '_thumbnail.png')
         self._refresh()
 
     def _status(self, msg, ok=True):
@@ -3129,6 +3141,13 @@ class RenderPage(QWidget):
         meta = getattr(self, '_render_meta', None)
         if meta:
             meta['end_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
+            first_frame_path = ''
+            if meta['passes']:
+                shot_path = self.project_root / 'sequence' / meta['shot']
+                pass_name = meta['passes'][0].split('/')[-1]
+                version_dir = f'{meta["shot"]}_v{meta["version"]:03d}'
+                first_frame = f'{meta["shot"]}_{pass_name}_v{meta["version"]:03d}_{meta["start_frame"]:04d}.exr'
+                first_frame_path = str(shot_path / 'houdini' / 'render' / version_dir / pass_name / first_frame)
             from settings import get_setting
             from pipeline_app import send_teams_notification
             webhook_url = get_setting('teams_webhook_url', '')
@@ -3149,6 +3168,7 @@ class RenderPage(QWidget):
                     cancelled=meta.get('cancelled', False),
                     start_time=meta.get('start_time', ''),
                     end_time=meta.get('end_time', ''),
+                    first_frame_path=first_frame_path,
                 )
 
     def _status(self, msg, ok=True):
