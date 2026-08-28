@@ -146,6 +146,11 @@ def _show_export_dialog(*args):
     cmds.showWindow(win)
 
 
+def _show_autorigger(*args):
+    from autorigger import gui
+    gui.show()
+
+
 def create_maze_menu():
     if cmds.menu("maze_menu", exists=True):
         cmds.deleteUI("maze_menu")
@@ -160,6 +165,14 @@ def create_maze_menu():
     cmds.menuItem(
         label="Export Selection as USD",
         command=_show_export_dialog,
+        parent="maze_menu",
+    )
+
+    cmds.menuItem(divider=True, parent="maze_menu")
+
+    cmds.menuItem(
+        label="Autorigger",
+        command=_show_autorigger,
         parent="maze_menu",
     )
 
