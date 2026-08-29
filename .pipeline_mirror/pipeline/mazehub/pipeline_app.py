@@ -911,5 +911,66 @@ def send_dailies_notification(webhook_url, shot, artist, file_path,
         return False
 
 
+def send_production_notification(webhook_url, item_type, item_name, category,
+                               task, from_status, to_status, user=''):
+    if not webhook_url:
+        return False
+    if to_status == 'Not applicable':
+        return False
+
+    if not user:
+        user = _get_display_name()
+
+    # Color by new status
+    color_map = {
+        'Not started': 'E74C3C',
+        'Work in progress': 'F39C12',
+        'Pending review': '3498DB',
+        'Finished': '2ECC71',
+        'Not applicable': '95A5A6',
+    }
+    color = color_map.get(to_status, '3498DB')
+
+    label = f'{item_type.title()}: {item_name}' if item_type else item_name
+
+    facts = [
+        {'name': 'Item', 'value': label},
+        {'name': 'Task', 'value': task},
+        {'name': 'Status', 'value': f'{from_status} → {to_status}'},
+        {'name': 'Updated By', 'value': user},
+    ]
+    if category and category != item_name:
+        # Only add extra context if useful; for assets include category prefix already in label?
+        # Keep category as separate fact for assets
+        if item_type == 'asset':
+            facts.insert(1, {'name': 'Category', 'value': category})
+
+    card = {
+        '@type': 'MessageCard',
+        '@context': 'http://schema.org/extensions',
+        'themeColor': color,
+        'summary': f'Production: {label} — {task} {from_status} → {to_status}',
+        'sections': [{
+            'activityTitle': f'Production Update — {task}',
+            'activitySubtitle': label,
+            'facts': facts,
+            'markdown': True,
+        }],
+    }
+
+    data = json.dumps(card).encode('utf-8')
+    req = urllib.request.Request(
+        webhook_url,
+        data=data,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception:
+        return False
+
+
 if __name__ == '__main__':
     main()

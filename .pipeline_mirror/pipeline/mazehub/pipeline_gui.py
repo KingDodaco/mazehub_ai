@@ -2234,10 +2234,31 @@ class ProductionPage(QWidget):
 
         action = menu.exec(self.shot_table.viewport().mapToGlobal(pos))
         if action and action.data():
-            prod[cat] = action.data()
-            write_production(shot_path, prod)
-            self._refresh_shots()
-            self._refresh_summary()
+            new_status = action.data()
+            if new_status != current:
+                prod[cat] = new_status
+                write_production(shot_path, prod)
+                self._refresh_shots()
+                self._refresh_summary()
+                self._send_production_webhook('shot', shot_name, '', cat, current, new_status)
+
+    def _send_production_webhook(self, item_type, item_name, category, task, from_status, to_status):
+        if to_status == 'Not applicable':
+            return
+        try:
+            from settings import get_setting
+            url = get_setting('production_webhook_url', '')
+            if not url:
+                return
+            from pipeline_app import send_production_notification
+            import threading
+            threading.Thread(
+                target=send_production_notification,
+                args=(url, item_type, item_name, category, task, from_status, to_status),
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
 
     def _asset_context_menu(self, pos):
         item = self.asset_table.itemAt(pos)
@@ -2273,10 +2294,13 @@ class ProductionPage(QWidget):
 
         action = menu.exec(self.asset_table.viewport().mapToGlobal(pos))
         if action and action.data():
-            prod[cat_name] = action.data()
-            write_production(asset_path, prod)
-            self._refresh_assets()
-            self._refresh_summary()
+            new_status = action.data()
+            if new_status != current:
+                prod[cat_name] = new_status
+                write_production(asset_path, prod)
+                self._refresh_assets()
+                self._refresh_summary()
+                self._send_production_webhook('asset', asset_name, cat, cat_name, current, new_status)
 
 
 class EnvVarsPage(QWidget):
@@ -3187,7 +3211,20 @@ class SettingsPage(QWidget):
         self._build()
 
     def _build(self):
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        outer.addWidget(scroll)
+
+        container = QWidget()
+        scroll.setWidget(container)
+
+        layout = QVBoxLayout(container)
         layout.setContentsMargins(24, 24, 24, 24)
 
         title = QLabel('Settings')
@@ -3260,13 +3297,19 @@ class SettingsPage(QWidget):
         yt_layout.addStretch()
         layout.addWidget(yt_group)
 
-        teams_group = QGroupBox('Microsoft Teams Notifications')
+        teams_group = QGroupBox('Teams Notifications')
         teams_layout = QVBoxLayout(teams_group)
+        teams_layout.setSpacing(16)
 
+        # — Render Notifications —
+        render_label = QLabel('Render Channel')
+        rf = QFont()
+        rf.setBold(True)
+        render_label.setFont(rf)
+        teams_layout.addWidget(render_label)
         teams_layout.addWidget(QLabel(
-            'Webhook URL for render notifications. Send a notification when a render completes or fails.'
+            'Notifies when a render completes or fails.'
         ))
-
         teams_url_row = QHBoxLayout()
         self.teams_url_input = QLineEdit()
         self.teams_url_input.setPlaceholderText('https://outlook.office.com/webhook/...')
@@ -3276,22 +3319,25 @@ class SettingsPage(QWidget):
         self.teams_save_btn.clicked.connect(self._save_teams_url)
         teams_url_row.addWidget(self.teams_save_btn)
         teams_layout.addLayout(teams_url_row)
-
         self.teams_status = QLabel('')
         self.teams_status.setWordWrap(True)
         self.teams_status.setObjectName('hint')
         teams_layout.addWidget(self.teams_status)
 
-        teams_layout.addStretch()
-        layout.addWidget(teams_group)
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.HLine)
+        sep1.setStyleSheet('color: #444;')
+        teams_layout.addWidget(sep1)
 
-        dailies_group = QGroupBox('Dailies Channel')
-        dailies_layout = QVBoxLayout(dailies_group)
-
-        dailies_layout.addWidget(QLabel(
-            'Webhook URL for the dailies channel. Used by Houdini playblast tools.'
+        # — Dailies Channel —
+        dailies_label = QLabel('Dailies Channel')
+        df = QFont()
+        df.setBold(True)
+        dailies_label.setFont(df)
+        teams_layout.addWidget(dailies_label)
+        teams_layout.addWidget(QLabel(
+            'Used by Houdini playblast tools.'
         ))
-
         dailies_url_row = QHBoxLayout()
         self.dailies_url_input = QLineEdit()
         self.dailies_url_input.setPlaceholderText('https://outlook.office.com/webhook/...')
@@ -3300,15 +3346,41 @@ class SettingsPage(QWidget):
         self.dailies_save_btn.setCursor(Qt.PointingHandCursor)
         self.dailies_save_btn.clicked.connect(self._save_dailies_url)
         dailies_url_row.addWidget(self.dailies_save_btn)
-        dailies_layout.addLayout(dailies_url_row)
-
+        teams_layout.addLayout(dailies_url_row)
         self.dailies_status = QLabel('')
         self.dailies_status.setWordWrap(True)
         self.dailies_status.setObjectName('hint')
-        dailies_layout.addWidget(self.dailies_status)
+        teams_layout.addWidget(self.dailies_status)
 
-        dailies_layout.addStretch()
-        layout.addWidget(dailies_group)
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.HLine)
+        sep2.setStyleSheet('color: #444;')
+        teams_layout.addWidget(sep2)
+
+        # — Production Tracking Channel —
+        prod_label = QLabel('Production Tracking Channel')
+        pf = QFont()
+        pf.setBold(True)
+        prod_label.setFont(pf)
+        teams_layout.addWidget(prod_label)
+        teams_layout.addWidget(QLabel(
+            'Notifies when a task status is changed in the Production tab.'
+        ))
+        production_url_row = QHBoxLayout()
+        self.production_url_input = QLineEdit()
+        self.production_url_input.setPlaceholderText('https://outlook.office.com/webhook/...')
+        production_url_row.addWidget(self.production_url_input, 1)
+        self.production_save_btn = QPushButton('Save')
+        self.production_save_btn.setCursor(Qt.PointingHandCursor)
+        self.production_save_btn.clicked.connect(self._save_production_url)
+        production_url_row.addWidget(self.production_save_btn)
+        teams_layout.addLayout(production_url_row)
+        self.production_status = QLabel('')
+        self.production_status.setWordWrap(True)
+        self.production_status.setObjectName('hint')
+        teams_layout.addWidget(self.production_status)
+
+        layout.addWidget(teams_group)
 
         group = QGroupBox('File Structure')
         group_layout = QVBoxLayout(group)
@@ -3336,6 +3408,7 @@ class SettingsPage(QWidget):
         self._load_yt_url()
         self._load_teams_url()
         self._load_dailies_url()
+        self._load_production_url()
 
     def _load_husk_path(self):
         from settings import get_setting, find_husk
@@ -3425,6 +3498,12 @@ class SettingsPage(QWidget):
         from settings import get_setting
         url = get_setting('teams_webhook_url', '')
         self.teams_url_input.setText(url)
+        if url:
+            self.teams_status.setText('')
+            self.teams_status.setStyleSheet('')
+        else:
+            self.teams_status.setText('No webhook URL configured.')
+            self.teams_status.setStyleSheet('color: #ffa726;')
 
     def _save_dailies_url(self):
         from settings import set_setting
@@ -3442,11 +3521,33 @@ class SettingsPage(QWidget):
         url = get_setting('dailies_webhook_url', '')
         self.dailies_url_input.setText(url)
         if url:
-            self.teams_status.setText(f'Current: {url}')
-            self.teams_status.setStyleSheet('')
+            self.dailies_status.setText('')
+            self.dailies_status.setStyleSheet('')
         else:
-            self.teams_status.setText('No webhook URL configured.')
-            self.teams_status.setStyleSheet('color: #ffa726;')
+            self.dailies_status.setText('No webhook URL configured.')
+            self.dailies_status.setStyleSheet('color: #ffa726;')
+
+    def _save_production_url(self):
+        from settings import set_setting
+        url = self.production_url_input.text().strip()
+        set_setting('production_webhook_url', url)
+        if url:
+            self.production_status.setText(f'Saved: {url}')
+            self.production_status.setStyleSheet('color: #00c853;')
+        else:
+            self.production_status.setText('URL cleared.')
+            self.production_status.setStyleSheet('')
+
+    def _load_production_url(self):
+        from settings import get_setting
+        url = get_setting('production_webhook_url', '')
+        self.production_url_input.setText(url)
+        if url:
+            self.production_status.setText('')
+            self.production_status.setStyleSheet('')
+        else:
+            self.production_status.setText('No webhook URL configured.')
+            self.production_status.setStyleSheet('color: #ffa726;')
 
     def _repair(self):
         from make_folders import repair_project_structure
