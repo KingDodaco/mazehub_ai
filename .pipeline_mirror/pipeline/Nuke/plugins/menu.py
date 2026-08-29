@@ -1,5 +1,11 @@
 import nuke
 
+# MAZE flipbook (port of Houdini MZE changes)
+try:
+    import maze_flipbook
+except Exception as e:
+    print(f"[MAZE] Failed to load maze_flipbook: {e}")
+
 toolbar = nuke.menu('Nodes').addMenu('Gizmos')
 
 toolbar.addCommand('FlareFactory', "nuke.createNode('FlareFactory')")

@@ -353,7 +353,7 @@ def post_flipbook(output, comment=""):
                 "type": "AdaptiveCard", "version": "1.5",
                 "body": [
                     {"type": "Container", "items": [
-                        {"type": "TextBlock", "text": title_text, "wrap": True, "weight": "Bolder", "size": "Large", "color": "Accent"},
+                        {"type": "TextBlock", "text": title_text, "wrap": True, "weight": "Bolder", "size": "Large"},
                         {"type": "TextBlock", "text": hip_text, "wrap": True, "spacing": "None", "size": "Small", "isSubtle": True, "fontType": "Monospace"} if hip_text else {"type": "TextBlock", "text": "", "wrap": True, "spacing": "None", "isVisible": False},
                         {"type": "TextBlock", "text": current_time, "wrap": True, "spacing": "Small"},
                         {"type": "TextBlock", "text": message, "wrap": True, "spacing": "Small"},
