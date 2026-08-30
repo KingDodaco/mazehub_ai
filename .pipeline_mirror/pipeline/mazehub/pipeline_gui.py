@@ -92,6 +92,7 @@ SIDEBAR_ITEMS = [
     ('Env Vars', 'View environment variables'),
     ('Settings', 'Repair file structure and configure options'),
     ('Log', 'View application and launch output'),
+    ('Help', 'Complete user guide for MazeHub'),
 ]
 
 
@@ -2428,6 +2429,138 @@ class LogPage(QWidget):
         pass
 
 
+class HelpPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build()
+
+    def _add_section(self, layout, title, html, expanded=False):
+        box = QGroupBox(title)
+        box.setCheckable(True)
+        box.setChecked(expanded)
+        box.setFlat(False)
+        inner = QVBoxLayout(box)
+        inner.setContentsMargins(12, 12, 12, 12)
+        label = QLabel(html)
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.RichText)
+        label.setOpenExternalLinks(False)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
+        inner.addWidget(label)
+        # toggle visibility of contents via groupbox checked state (Qt handles checkable groupbox content enabled)
+        # Use visiblity of inner widget
+        def _toggled(checked, b=box):
+            for i in range(b.layout().count()):
+                w = b.layout().itemAt(i).widget()
+                if w:
+                    w.setVisible(checked)
+            b.setFlat(not checked)
+        # init visibility
+        _toggled(expanded, box)
+        box.toggled.connect(lambda c, b=box: _toggled(c, b))
+        layout.addWidget(box)
+
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer.addWidget(scroll)
+        container = QWidget()
+        scroll.setWidget(container)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+
+        title = QLabel('MazeHub User Guide')
+        tf = QFont()
+        tf.setPointSize(16)
+        tf.setBold(True)
+        title.setFont(tf)
+        layout.addWidget(title)
+        hint = QLabel('Click a section header to expand or collapse it.')
+        hint.setWordWrap(True)
+        hint.setObjectName('hint')
+        layout.addWidget(hint)
+        layout.addSpacing(8)
+
+        self._add_section(layout, '1 — Overview', """
+        <p><b>MazeHub</b> is your hub for the whole MAZE project. Open it to see your shots and assets, launch Houdini, Maya, Nuke and more with the right shot already loaded, and keep track of progress.</p>
+        <p>Everything is organised by <b>Shots</b> (like SH010, SH020) and <b>Assets</b> (characters, props). MazeHub makes sure each app opens in the right place with the right settings, so you don't have to hunt for files.</p>
+        """, expanded=True)
+
+        self._add_section(layout, '2 — Home', """
+        <p>Your landing page. At the top you see how many shots and assets you have and how much is done overall.</p>
+        <p><b>Quick Launch</b> — click a button to open an app quickly. <b>Recent Files</b> — double-click any file you opened recently to jump straight back in. Right-click to show it in Windows Explorer or remove it from the list.</p>
+        """)
+
+        self._add_section(layout, '3 — Launching Apps', """
+        <p>Want to work on a specific shot or asset? Choose <b>Shot</b> or <b>Asset</b> at the top, pick the name from the list, then click the app you need.</p>
+        <p>MazeHub opens the app with that shot/asset already set as the working area, with the correct frame range and colour settings. You can also choose <b>None</b> to just open an app without a shot.</p>
+        <p>The file list below shows you what's already in that folder and lets you open a file directly.</p>
+        """)
+
+        self._add_section(layout, '4 — Shots & Assets', """
+        <p>See all your shots and assets in a table with a preview image, progress and basic info. Click a row to see the files inside that shot/asset.</p>
+        <p><b>New Shot / New Asset</b> — give it a name, frame range and description. MazeHub creates all the folders you need.<br>
+        <b>Edit</b> — change the name or frame settings.<br>
+        <b>Right-click</b> a shot/asset to set a thumbnail image (you can pick a PNG, JPG or an EXR render) or to open its folder in Windows Explorer.<br>
+        Double-click a file below to open it in the right app.</p>
+        """)
+
+        self._add_section(layout, '5 — Production Tracking', """
+        <p>Keep track of where everything is. There are two tabs: <b>Shots</b> and <b>Assets</b>.</p>
+        <p>Each column is a task - for shots that's things like Animation, Lighting, Compositing; for assets it's Modelling, Texturing, Lookdev, etc. Colours show the state: red = Not started, amber = Work in progress, blue = Pending review, green = Finished, grey = Not applicable.</p>
+        <p><b>To update:</b> right-click a task cell and pick a new status. The progress bars at the top update automatically. If your team has set up Teams notifications, everyone will get a message like "SH010 — Animation: Not started → Work in progress by Alex".</p>
+        """)
+
+        self._add_section(layout, '6 — Rendering', """
+        <p>Render your USD scenes without opening Houdini.</p>
+        <p><b>How to:</b> pick a Shot, pick the USD file, choose a version (it suggests the next one), choose Karma XPU or CPU, tick the passes you need, set the frame range and press <b>Render Selected Passes</b>.</p>
+        <p>You'll see progress for each frame and pass, with time estimates. You can pause or cancel at any time. When it finishes you get a notification, and if Teams is set up the channel is notified too.</p>
+        """)
+
+        self._add_section(layout, '7 — Preview', """
+        <p>Want to check a render? Pick a shot and MazeHub finds all the image sequences and videos for you.</p>
+        <p>They're grouped by app, name and version. Double-click or press <b>Open in MPlay</b> to view them. Right-click to show the files in Windows Explorer.</p>
+        """)
+
+        self._add_section(layout, '8 — Environment Info', """
+        <p>This page is just for reference. It shows the paths and shot settings MazeHub sets up for your apps (like where to find files and what frame range you're on). You don't need to change anything here - it's there if you need to check what MazeHub is doing behind the scenes.</p>
+        """)
+
+        self._add_section(layout, '9 — Settings', """
+        <p><b>Where is the Husk renderer?</b> Usually found automatically. If not, use Browse or Auto-Detect.</p>
+        <p><b>YouTube Screensaver:</b> paste a YouTube link for the Home page button.</p>
+        <p><b>Teams Notifications:</b> paste your Teams webhook links for<br>
+        &bull; <b>Render</b> — get notified when renders finish<br>
+        &bull; <b>Dailies</b> — share playblasts/flipbooks<br>
+        &bull; <b>Production</b> — get notified when someone updates a task<br>
+        Leave empty if you don't need it. Click Save after pasting.</p>
+        <p><b>Repair File Structure:</b> if folders are missing, click this to recreate them.</p>
+        """)
+
+        self._add_section(layout, '10 — Playblasts & Flipbooks (Houdini / Maya / Nuke)', """
+        <p><b>Houdini:</b> open a shot, make a flipbook. It saves to the shot's flipbooks folder. Then in MPlay click <b>MAZE > Send to Dailies</b>, add a comment and it will be posted to Teams with your name.</p>
+        <p><b>Maya:</b> open a shot, then <b>MAZE > Playblast</b>. Choose a comment and it renders a playblast and posts it for you.</p>
+        <p><b>Nuke:</b> use <b>MAZE > Playblast</b> in the top menu or the Nodes toolbar to create a flipbook node, set the frame range and press <b>Create Flipbook</b>. It renders and posts to Teams. Make sure your script is saved first.</p>
+        <p>The video needs to be in your project folder so Teams can link to it.</p>
+        """)
+
+        self._add_section(layout, '11 — Tips', """
+        <p><b>No preview?</b> Try refreshing the page or check you picked the right shot.<br>
+        <b>Can't post to Teams?</b> Make sure your scene/script is saved inside the project and that the Teams links are pasted in Settings.<br>
+        <b>Houdini menu not showing?</b> Restart Houdini through MazeHub.<br>
+        <b>Progress looks wrong?</b> Tasks set to "Not applicable" don't count - set them properly for the right percentage.</p>
+        """)
+
+        layout.addStretch()
+
+    def _refresh(self):
+        pass
+
+
 class RenderThread(QThread):
     output = Signal(str)
     finished = Signal(int)
@@ -3618,7 +3751,7 @@ class MainWindow(QMainWindow):
 
         page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
                         AssetExplorerPage, ProductionPage, RenderPage, PreviewPage,
-                        EnvVarsPage, SettingsPage, LogPage]
+                        EnvVarsPage, SettingsPage, LogPage, HelpPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
             (self.apps_config, self.pipeline_dir, self.project_root),
@@ -3630,10 +3763,17 @@ class MainWindow(QMainWindow):
             (self.env_vars,),
             (self.project_root,),
             (),
+            (),
         ]
 
         SIDEBAR_RENDER_IDX = 6
         for i, (label, tooltip) in enumerate(SIDEBAR_ITEMS):
+            if label == 'Help':
+                sidebar_layout.addStretch()
+                sep = QFrame()
+                sep.setFrameShape(QFrame.Shape.HLine)
+                sep.setStyleSheet('color: #444; margin: 4px 12px;')
+                sidebar_layout.addWidget(sep)
             btn = SidebarButton(label, tooltip)
             btn.clicked.connect(lambda checked, idx=i: self._switch_page(idx))
             self.sidebar_buttons.append(btn)
@@ -3647,8 +3787,6 @@ class MainWindow(QMainWindow):
 
             page = page_classes[i](*page_args[i])
             self.pages.addWidget(page)
-
-        sidebar_layout.addStretch()
 
         main_layout.addWidget(self.sidebar)
         main_layout.addWidget(self.pages, 1)
