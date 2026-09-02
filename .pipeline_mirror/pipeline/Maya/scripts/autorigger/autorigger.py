@@ -77,8 +77,6 @@ class Rig:
 
             cmds.joint(j, e=1, oj="xyz",  secondaryAxisOrient='yup', zeroScaleOrient=True, ch=1)
 
-            
-
     def set_skeleton_rest(self):
         self.find_joints()
         '''
@@ -115,7 +113,6 @@ class Rig:
             cmds.setAttr(j + ".rotate", 0,0,0)
             cmds.setAttr(j + ".scale", 1,1,1)
         
-
     def initialize_rig_folders(self):
 
         if(cmds.objExists("main")):
@@ -177,8 +174,13 @@ class Rig:
             raise RuntimeError(f" No scapula joint named: {joint_name} found")
         
         return joint
-    
+
+    # ----------------------------------------------------
+    # main rigging functions
+    # ----------------------------------------------------
     def rig_root(self):
+        print("Rigging root controls")
+
         global_ctrl = "global_ctrl"
         cmds.circle(n=global_ctrl, radius=10, nr=(0,1,0))
         global_ctrl_grp = cmds.group(global_ctrl, n=global_ctrl+"_grp")
@@ -194,6 +196,7 @@ class Rig:
         self.local_control = local_ctrl
 
     def rig_spine(self):
+        print("Rigging spine controls")
         spine_joints = []
         for joint in self.joints:
             if self.joint_map['spine'] in joint:
@@ -230,6 +233,27 @@ class Rig:
         cmds.parent(chest_ctrl_grp, self.controls_group)
         cmds.matchTransform(chest_ctrl, spine_tip_joint, pos=1)
 
+        # Add rest position offset so hip/chest can be frozen (translate zeroed at rest)
+        # This allows Freeze Transform on hip_ctrl/chest_ctrl without breaking the spine
+        hip_rest_add = cmds.createNode("plusMinusAverage", n="hip_ctrl_rest_add")
+        cmds.setAttr(hip_rest_add + ".operation", 1)
+        cmds.setAttr(hip_rest_add + ".input3D[1]", spine_root_pos.x, spine_root_pos.y, spine_root_pos.z, type="double3")
+        cmds.connectAttr(hip_ctrl + ".translate", hip_rest_add + ".input3D[0]", f=1)
+
+        chest_rest_add = cmds.createNode("plusMinusAverage", n="chest_ctrl_rest_add")
+        cmds.setAttr(chest_rest_add + ".operation", 1)
+        cmds.setAttr(chest_rest_add + ".input3D[1]", spine_tip_pos.x, spine_tip_pos.y, spine_tip_pos.z, type="double3")
+        cmds.connectAttr(chest_ctrl + ".translate", chest_rest_add + ".input3D[0]", f=1)
+
+        # Freeze hip/chest controls: move rest position into parent groups so translate is zero at rest
+        # Node network above adds rest position back, so spine drivers see correct world position
+        cmds.setAttr(hip_ctrl_grp + ".translate", spine_root_pos.x, spine_root_pos.y, spine_root_pos.z)
+        cmds.setAttr(chest_ctrl_grp + ".translate", spine_tip_pos.x, spine_tip_pos.y, spine_tip_pos.z)
+        cmds.setAttr(hip_ctrl + ".translate", 0, 0, 0)
+        cmds.setAttr(chest_ctrl + ".translate", 0, 0, 0)
+        cmds.makeIdentity(hip_ctrl, apply=True, t=1, r=1, s=1, n=0)
+        cmds.makeIdentity(chest_ctrl, apply=True, t=1, r=1, s=1, n=0)
+
         #centre control
         centre_ctrl = "centre_ctrl"
         cmds.polyCube(n=centre_ctrl,w=1, d=1, h=1)
@@ -240,6 +264,8 @@ class Rig:
 
         cmds.parent(centre_ctrl_grp, self.local_control)
 
+        cmds.makeIdentity(centre_ctrl, apply=True, t=1, r=1, s=1, n=0)
+
         cmds.parentConstraint(centre_ctrl, hip_ctrl_grp, mo=1)
         cmds.parentConstraint(centre_ctrl, chest_ctrl_grp, mo=1)
 
@@ -248,6 +274,8 @@ class Rig:
         cmds.move(spine_middle_pos.x,spine_middle_pos.y, spine_middle_pos.z, a=1)
         spine_mid_ctrl_grp = cmds.group(spine_mid_ctrl, n=spine_mid_ctrl+"_grp")
         cmds.parent(spine_mid_ctrl_grp, self.controls_group)
+
+        cmds.makeIdentity(spine_mid_ctrl, apply=True, t=1, r=1, s=1, n=0)
 
 
         #create spine drivers
@@ -270,6 +298,7 @@ class Rig:
         cmds.setAttr(spine_driver_tip+".scaleX",.9)
         self.chest_driver = spine_driver_tip
 
+
         #parent the centre control to the driver joints
         cmds.pointConstraint(spine_driver_root_helper, spine_driver_tip_helper, spine_mid_ctrl_grp, w=.5, mo=1)
         cmds.orientConstraint(spine_driver_root, spine_mid_ctrl_grp, w=1, mo=1)
@@ -280,8 +309,8 @@ class Rig:
         spine_control_subtract = cmds.createNode("plusMinusAverage")
         spine_control_distance = cmds.createNode("length")
         cmds.setAttr(spine_control_subtract+".op", 2)
-        cmds.connectAttr(hip_ctrl+ ".translate", spine_control_subtract+".input3D[0]",f=1)
-        cmds.connectAttr(chest_ctrl+ ".translate", spine_control_subtract+".input3D[1]",f=1)
+        cmds.connectAttr(hip_rest_add + ".output3D", spine_control_subtract+".input3D[0]",f=1)
+        cmds.connectAttr(chest_rest_add + ".output3D", spine_control_subtract+".input3D[1]",f=1)
         cmds.connectAttr(spine_control_subtract+".output3D", spine_control_distance+".input",f=1)
 
         spine_control_divide = cmds.createNode("divide")
@@ -319,12 +348,13 @@ class Rig:
 
         chest_constraint_aim = "chest_constraint_aim"
         cmds.aimConstraint(spine_driver_root_grp, spine_driver_tip, n=chest_constraint_aim, w=1, mo=1)
-        cmds.connectAttr(chest_ctrl + ".rotateX", chest_constraint_aim + ".offsetX", f=True)
+        # X/Z switched, Z inverted
+        cmds.connectAttr(chest_ctrl + ".rotateX", chest_constraint_aim + ".offsetZ", f=True)
         cmds.connectAttr(chest_ctrl + ".rotateY", chest_constraint_aim + ".offsetY", f=True)
         spine_chest_invert_z = cmds.createNode("multiplyDivide", n="spine_chest_invert_z")
         cmds.setAttr(spine_chest_invert_z + ".input2Z", -1)
         cmds.connectAttr(chest_ctrl + ".rotateZ", spine_chest_invert_z + ".input1Z", f=True)
-        cmds.connectAttr(spine_chest_invert_z + ".outputZ", chest_constraint_aim + ".offsetZ", f=True)
+        cmds.connectAttr(spine_chest_invert_z + ".outputZ", chest_constraint_aim + ".offsetX", f=True)
 
         #spline solver
         spine_solver = "spine_solver"
@@ -376,6 +406,7 @@ class Rig:
         pelvis_ctrl = "pelvis_ctrl"
         cmds.circle(n=pelvis_ctrl, r=1, nr=(0,1,0))
         cmds.matchTransform(pelvis_ctrl, self.pelvis_joint, pos=1)
+        cmds.makeIdentity(pelvis_ctrl, apply=True, t=1, r=1, s=1, n=0)
 
         pelvis_ctrl_grp = cmds.group(pelvis_ctrl, n=pelvis_ctrl+"_grp")
 
@@ -392,7 +423,8 @@ class Rig:
         side_prefixes = [self.side_prefixes["left"], self.side_prefixes["right"]]
 
         for prefix in side_prefixes:
-            
+            print(f"Rigging front legs for {prefix}")
+
             control_colour = self.left_colour_index
 
             if(prefix == self.side_prefixes["left"]):
@@ -415,6 +447,8 @@ class Rig:
             scapula_ctrl_grp = cmds.group(scapula_ctrl, n= scapula_ctrl+"_grp")
             cmds.parent(scapula_ctrl_grp, self.chest_driver)
 
+            cmds.makeIdentity(scapula_ctrl, apply=True, t=1, r=1, s=1, n=0)
+
             shoulder_ctrl = prefix + "shoulder_ctrl"
             cmds.circle(n=shoulder_ctrl, r = .5, nr = (1,0,0))
             cmds.matchTransform(shoulder_ctrl, shoulder_joint, pos=1)
@@ -424,6 +458,9 @@ class Rig:
             shoulder_ctrl_grp = cmds.group(shoulder_ctrl, n= shoulder_ctrl+"_grp")
             cmds.parent(shoulder_ctrl_grp, self.local_control)
 
+            cmds.makeIdentity(shoulder_ctrl, apply=True, t=1, r=1, s=1, n=0)
+
+            #Wrist Control
             wrist_ctrl = prefix + "wrist_ctrl"
             cmds.polySphere(n=wrist_ctrl, r = .1,)
             cmds.matchTransform(wrist_ctrl, wrist_joint, pos=1)
@@ -434,6 +471,24 @@ class Rig:
             cmds.parent(wrist_ctrl_grp, self.controls_group)
             cmds.select(cl=1)
 
+            cmds.makeIdentity(wrist_ctrl, apply=True, t=1, r=1, s=1, n=0)
+
+            #Elbow Pole Vector
+            elbow_pole_vector = prefix + "elbow_pole_vector"
+            cmds.polySphere(n=elbow_pole_vector, r = .1,)
+            cmds.matchTransform(elbow_pole_vector, elbow_joint, pos=1)
+            cmds.move(0, 0, -2, r=1)
+            cmds.setAttr(elbow_pole_vector + ".overrideEnabled",1)
+            cmds.setAttr(elbow_pole_vector+ ".overrideColor", control_colour)
+            cmds.setAttr(elbow_pole_vector + ".overrideShading",0)
+            elbow_pole_vector_grp = cmds.group(elbow_pole_vector, n= elbow_pole_vector+"_grp")
+            cmds.parent(elbow_pole_vector_grp, self.controls_group)
+            cmds.select(cl=1)
+
+            cmds.makeIdentity(elbow_pole_vector, apply=True, t=1, r=1, s=1, n=0)
+
+            cmds.parentConstraint(wrist_ctrl, shoulder_ctrl, elbow_pole_vector_grp, mo=1)
+
             #IK
             ikDriver_joints = []
             limb_joints = [shoulder_joint, elbow_joint, wrist_joint]
@@ -443,15 +498,19 @@ class Rig:
                 cmds.matchTransform(driver_joint, joint)
                 cmds.makeIdentity(driver_joint)
                 ikDriver_joints.append(driver_joint)
+                #disable the visibility of the fk driver joints
+                cmds.setAttr(driver_joint + ".visibility", 0)
             cmds.select(cl=1)
             cmds.parent(ikDriver_joints[0], self.driver_skeleton_group)
 
             ik_solver = prefix + "_arm_IKHandle"
             cmds.ikHandle(n=ik_solver, sol = "ikRPsolver", sj=ikDriver_joints[0], ee=ikDriver_joints[2])
+            cmds.poleVectorConstraint(elbow_pole_vector, ik_solver)
             cmds.parentConstraint(wrist_ctrl, ik_solver)
             cmds.parentConstraint(shoulder_ctrl,shoulder_joint+"_ikDriver")
             cmds.parent(ik_solver, self.driver_skeleton_group)
-
+            #Hide the ik solver
+            cmds.setAttr(ik_solver + ".visibility", 0)
 
 
             fkDriver_joints = []
@@ -461,9 +520,12 @@ class Rig:
                 cmds.matchTransform(driver_joint, joint)
                 cmds.makeIdentity(driver_joint)
                 fkDriver_joints.append(driver_joint)
+                #disable the visibility of the fk driver joints
+                cmds.setAttr(driver_joint + ".visibility", 0)
 
             cmds.select(cl=1)
             cmds.parent(fkDriver_joints[0], self.driver_skeleton_group)
+            cmds.parentConstraint(shoulder_ctrl, fkDriver_joints[0])
 
             #constrain to ik/fk
             ik_parentConstraints = self.fk_ik_switch(limb_joints=limb_joints, fkDriver_joints=fkDriver_joints, ikDriver_joints=ikDriver_joints, chain_length=3, limb_name="leg_front", prefix=prefix)
@@ -482,11 +544,16 @@ class Rig:
             scapula_xform_tm = om.MTransformationMatrix(scapula_xform)
 
             
-            scapula_aim_vector = scapula_xform_tm.translation(om.MSpace.kTransform).normal()
-            cmds.aimConstraint(scapula_ctrl, shoulder_joint, mo=0, wut = "objectrotation", sk="y")
+            #scapula_aim_vector = scapula_xform_tm.translation(om.MSpace.kTransform).normal()
+            #cmds.aimConstraint(scapula_ctrl, shoulder_joint, mo=0, wut = "objectrotation", sk="y")
+
+            cmds.ikHandle(n=prefix + "_scapula_ikHandle", sol = "ikSCsolver", sj=shoulder_joint, ee=scapula_joint)
+            cmds.parent(prefix + "_scapula_ikHandle", self.driver_skeleton_group)
+            cmds.parentConstraint(scapula_ctrl, prefix + "_scapula_ikHandle", mo=1)
+            cmds.setAttr(prefix + "_scapula_ikHandle" + ".visibility", 0)
 
             shoulder_parentConstraint = prefix + "shoulder_parentConstraint"
-            cmds.parentConstraint(wrist_ctrl, self.chest_driver, shoulder_ctrl, n= shoulder_parentConstraint, mo=1)
+            cmds.parentConstraint(wrist_ctrl, self.chest_driver, shoulder_ctrl_grp, n= shoulder_parentConstraint, mo=1)
             source_attr_0 = cmds.listConnections(shoulder_parentConstraint + ".tg[0].tw", plugs=1, source=1, destination=0)
             cmds.disconnectAttr(source_attr_0[0], shoulder_parentConstraint + ".tg[0].tw")
             source_attr_1 = cmds.listConnections(shoulder_parentConstraint + ".tg[1].tw", plugs=1, source=1, destination=0)
@@ -502,12 +569,12 @@ class Rig:
 
             cmds.pointConstraint(reverse_joints[-1], wrist_ctrl)
 
-
     def rig_rear_legs(self):
 
         side_prefixes = [self.side_prefixes["left"], self.side_prefixes["right"]]
 
         for prefix in side_prefixes:
+            print(f"Rigging rear legs for {prefix}")
             
             control_colour = self.left_colour_index
 
@@ -532,6 +599,21 @@ class Rig:
             cmds.parent(ankle_ctrl_grp, self.controls_group)
             cmds.select(cl=1)
 
+            #Pole Vector
+            knee_pole_vector = prefix + "knee_pole_vector"
+            cmds.polySphere(n=knee_pole_vector, r = .1,)
+            cmds.matchTransform(knee_pole_vector, tibia_joint, pos=1)
+            cmds.move(0, 0, 1, r=1)
+            cmds.setAttr(knee_pole_vector + ".overrideEnabled",1)
+            cmds.setAttr(knee_pole_vector+ ".overrideColor", control_colour)
+            cmds.setAttr(knee_pole_vector + ".overrideShading",0)
+            knee_pole_vector_grp = cmds.group(knee_pole_vector, n= knee_pole_vector+"_grp")
+            cmds.parent(knee_pole_vector_grp, self.controls_group)
+            cmds.select(cl=1)
+            cmds.makeIdentity(knee_pole_vector, apply=True, t=1, r=1, s=1, n=0)
+
+            cmds.parentConstraint(ankle_ctrl, knee_pole_vector_grp, mo=1)
+
             #IK
             ikDriver_joints = []
             limb_joints = [femur_joint, tibia_joint, metatarsus_joint, ankle_joint]
@@ -541,14 +623,19 @@ class Rig:
                 cmds.matchTransform(driver_joint, joint)
                 cmds.makeIdentity(driver_joint)
                 ikDriver_joints.append(driver_joint)
+                #disable the visibility of the fk driver joints
+                cmds.setAttr(driver_joint + ".visibility", 0)
             cmds.select(cl=1)
             cmds.parent(ikDriver_joints[0], self.driver_skeleton_group)
 
             ik_solver = prefix + "_leg_IKHandle"
             cmds.ikHandle(n=ik_solver, sol = "ikRPsolver", sj=ikDriver_joints[0], ee=ikDriver_joints[3])
+            cmds.poleVectorConstraint(knee_pole_vector, ik_solver)
             cmds.parentConstraint(ankle_ctrl, ik_solver)
             cmds.parentConstraint(self.pelvis_joint, femur_joint + "_ikDriver", mo=1)
             cmds.parent(ik_solver, self.driver_skeleton_group)
+            #Hide the ik solver
+            cmds.setAttr(ik_solver + ".visibility", 0)
 
             #FK
             fkDriver_joints = []
@@ -558,9 +645,12 @@ class Rig:
                 cmds.matchTransform(driver_joint, joint)
                 cmds.makeIdentity(driver_joint)
                 fkDriver_joints.append(driver_joint)
+                #disable the visibility of the fk driver joints
+                cmds.setAttr(driver_joint + ".visibility", 0)
 
             cmds.select(cl=1)
             cmds.parent(fkDriver_joints[0], self.driver_skeleton_group)
+            cmds.parentConstraint(self.pelvis_joint, fkDriver_joints[0], mo=1)
 
             #constrain to ik/fk
             ik_parentConstraints = self.fk_ik_switch(limb_joints=limb_joints, fkDriver_joints=fkDriver_joints, ikDriver_joints=ikDriver_joints, chain_length=4, limb_name="leg_rear", prefix=prefix)
@@ -570,8 +660,9 @@ class Rig:
 
             cmds.pointConstraint(reverse_joints[-1], ankle_ctrl)
 
-
     def rig_reverse_foot(self, ankle_joint, prefix, name, ankletarget):
+
+        print(f"Rigging reverse foot for {prefix}")
         
         ball_joint = cmds.listRelatives(ankle_joint, c=1)[0]
         toe_joint = cmds.listRelatives(ball_joint, c=1)[0]
@@ -635,9 +726,38 @@ class Rig:
         cmds.setAttr(main_ctrl + ".overrideShading",0)
         cmds.parent(main_ctrl, self.local_control)
 
-        cmds.parentConstraint(main_ctrl, reverse_root_joint, mo=1)
+        cmds.makeIdentity(main_ctrl, apply=True, t=1, r=1, s=1, n=0)
 
-        cmds.aimConstraint(ankletarget,reverse_ball_joint, mo=1, w=.3, wut="none")
+        main_parent_constraint = f"{prefix}_{name}_main_parentConstraint"
+        cmds.parentConstraint(main_ctrl, reverse_root_joint, mo=1, n=main_parent_constraint)
+        #cmds.aimConstraint(ankletarget,reverse_ball_joint, mo=1, w=.3, wut="none")
+
+        cmds.ikHandle(n=f"{prefix}_{name}_foot_ik", sol = "ikSCsolver", sj=ankle_joint, ee=ball_joint)
+        cmds.parentConstraint(reverse_ball_joint,f"{prefix}_{name}_foot_ik", mo=1)
+        cmds.parent(f"{prefix}_{name}_foot_ik", self.driver_skeleton_group)
+
+        cmds.ikHandle(n=f"{prefix}_{name}_toe_ik", sol = "ikSCsolver", sj=ball_joint, ee=toe_joint)
+        cmds.parentConstraint(reverse_toe_joint, f"{prefix}_{name}_toe_ik", mo=1)
+        cmds.parent(f"{prefix}_{name}_toe_ik", self.driver_skeleton_group)
+
+        cmds.setAttr(f"{prefix}_{name}_foot_ik" + ".visibility", 0)
+        cmds.setAttr(f"{prefix}_{name}_toe_ik" + ".visibility", 0)
+
+        cmds.addAttr(main_ctrl, ln="bank_in", defaultValue=0.0, minValue = -90, maxValue = 90, k=1, at="float")
+        cmds.addAttr(main_ctrl, ln="bank_out", defaultValue=0.0, minValue = -90, maxValue = 90, k=1, at="float")
+        cmds.addAttr(main_ctrl, ln="toe", defaultValue=0.0, minValue = -90, maxValue = 90, k=1, at="float")
+        cmds.addAttr(main_ctrl, ln="heel", defaultValue=0.0, minValue = -90, maxValue = 90, k=1, at="float")
+        cmds.addAttr(main_ctrl, ln="ball", defaultValue=0.0, minValue = -90, maxValue = 90, k=1, at="float")
+
+        cmds.createNode("plusMinusAverage", n=f"{prefix}_{name}_add_heel_rotate", ss=1)
+        cmds.connectAttr(main_ctrl + ".heel", f"{prefix}_{name}_add_heel_rotate.input1D[0]")
+        cmds.connectAttr(main_parent_constraint + ".constraintRotateZ", f"{prefix}_{name}_add_heel_rotate.input1D[1]")
+
+        cmds.connectAttr(main_ctrl + ".bank_in", reverse_bank_in_joint + ".rotateZ")
+        cmds.connectAttr(main_ctrl + ".bank_out", reverse_bank_out_joint + ".rotateZ")
+        cmds.connectAttr(main_ctrl + ".toe", reverse_toe_joint + ".rotateZ")
+        cmds.connectAttr(main_ctrl + ".ball", reverse_ball_joint + ".rotateZ")
+        cmds.connectAttr(f"{prefix}_{name}_add_heel_rotate" + ".output1D", reverse_root_joint + ".rotateZ", f=1)
 
         return reverse_joint_chain
     
@@ -694,6 +814,8 @@ class Rig:
         return ik_parentConstraints
     
     def rig_tail(self):
+        print("Rigging tail controls")
+
         prefix = self.side_prefixes["center"]
 
         tail_root = self.find_joint(prefix=prefix, joint=self.joint_map["tail"])
@@ -718,6 +840,9 @@ class Rig:
             cmds.setAttr(control_name + ".overrideEnabled",1)
             cmds.group(n = control_name + "_grp")
             tail_ctrls.append(control_name)
+
+            cmds.makeIdentity(control_name, apply=True, t=1, r=1, s=1, n=0)
+
             if(i == 0):
                 cmds.parentConstraint( self.pelvis_joint, control_name + "_grp", mo=1)
                 cmds.parent(control_name + "_grp", self.controls_group)
@@ -727,6 +852,8 @@ class Rig:
             cmds.parentConstraint(control_name, joint, mo=1)
 
     def rig_head(self):
+        print("Rigging head controls")
+
         prefix = self.side_prefixes["center"]
         head_ctrl = prefix + self.joint_map["head"] + "_ctrl"
         head_joint = self.find_joint(prefix=prefix, joint=self.joint_map["head"])
@@ -738,11 +865,15 @@ class Rig:
 
         head_ctrl_grp = cmds.group(head_ctrl, n=head_ctrl + "_grp")
 
+        cmds.makeIdentity(head_ctrl, apply=True, t=1, r=1, s=1, n=0)
+
         cmds.parent(head_ctrl_grp, self.controls_group)
 
         cmds.pointConstraint(self.chest_driver, head_ctrl_grp, mo=1)
 
     def rig_neck(self):
+        print("Rigging neck controls")
+
         prefix = self.side_prefixes["center"]
         neck_ctrl = prefix + self.joint_map["neck"] + "_ctrl"
         neck_joint = self.find_joint(prefix=prefix, joint=self.joint_map["neck"])
