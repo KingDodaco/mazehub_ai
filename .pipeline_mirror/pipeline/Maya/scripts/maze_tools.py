@@ -179,7 +179,15 @@ def _long_path(p):
 
 
 def _get_default_playblast_output():
-    job = os.environ.get('JOB') or os.environ.get('MAYA_PROJECT') or os.environ.get('MAZE_CONTEXT_PATH') or ""
+    # Prefer explicit maya context folder, never write to asset/shot root
+    ctx = os.environ.get('MAZE_CONTEXT_PATH') or ""
+    if ctx:
+        job = os.path.join(ctx, "maya")
+    else:
+        job = os.environ.get('JOB') or os.environ.get('MAYA_PROJECT') or ""
+        # If JOB is a Houdini working dir (ends with houdini), switch to maya
+        if job and os.path.basename(job).lower() == "houdini":
+            job = os.path.join(os.path.dirname(job), "maya")
     scene = cmds.file(q=True, sn=True) or ""
     hip_name = os.path.splitext(os.path.basename(scene))[0] if scene else "playblast"
     if not hip_name or hip_name.lower().startswith("untitled"):

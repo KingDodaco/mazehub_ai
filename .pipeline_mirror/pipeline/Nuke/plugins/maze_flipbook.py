@@ -55,21 +55,25 @@ def _long_path(p):
 
 
 def _ensure_flip_dir(script_path):
-    # Prefer $JOB/flipbooks, fallback to MAZE_CONTEXT_PATH, then script dir
-    job = os.environ.get('JOB') or os.environ.get('MAZE_CONTEXT_PATH') or ""
-    if job:
-        # JOB for shot is .../sequence/SHOT/houdini -> for Nuke use .../nuke/flipbooks or .../flipbooks?
-        # Keep consistent with Houdini: $JOB is .../houdini, so parent is shot root
-        # For Nuke we want <script_dir>/flipbooks or <context>/nuke/flipbooks
-        # If JOB looks like .../houdini, use parent/nuke/flipbooks
-        job_p = Path(job)
-        if job_p.name.lower() == "houdini":
-            flipdir = str(job_p.parent / "nuke" / "flipbooks")
-        else:
-            flipdir = os.path.join(job, "flipbooks")
+    # Always use <context>/nuke/flipbooks when context is set, otherwise fallback
+    ctx = os.environ.get('MAZE_CONTEXT_PATH') or ""
+    if ctx:
+        flipdir = os.path.join(ctx, "nuke", "flipbooks")
     else:
-        dirpath = os.path.dirname(script_path) if script_path and script_path != "Root" else ""
-        flipdir = os.path.join(dirpath, "flipbooks") if dirpath else os.path.join(os.path.expanduser("~"), "flipbooks")
+        job = os.environ.get('JOB') or ""
+        if job:
+            job_p = Path(job)
+            if job_p.name.lower() == "houdini":
+                flipdir = str(job_p.parent / "nuke" / "flipbooks")
+            else:
+                # JOB is already a nuke-adjacent dir? ensure nuke subfolder
+                if "nuke" in job_p.parts:
+                    flipdir = os.path.join(job, "flipbooks")
+                else:
+                    flipdir = os.path.join(job, "nuke", "flipbooks")
+        else:
+            dirpath = os.path.dirname(script_path) if script_path and script_path != "Root" else ""
+            flipdir = os.path.join(dirpath, "flipbooks") if dirpath else os.path.join(os.path.expanduser("~"), "flipbooks")
     flipdir = _long_path(flipdir)
     if not os.path.exists(flipdir):
         os.makedirs(flipdir, exist_ok=True)
