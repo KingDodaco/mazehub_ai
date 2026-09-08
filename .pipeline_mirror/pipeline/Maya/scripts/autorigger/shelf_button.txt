@@ -1,3 +1,0 @@
-import MAZE_Autorigger.gui as gui
-
-gui.show()

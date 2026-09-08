@@ -30,10 +30,10 @@ if not defined BLEND_FILE if defined MAZE_CONTEXT_PATH (
 
 if defined BLEND_FILE (
     echo Opening: %BLEND_FILE%
-    start "" "C:\Program Files\Blender Foundation\Blender 4.5\blender.exe" "%BLEND_FILE%" --python "%SAFE_SCRIPT%"
+    start "" "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" "%BLEND_FILE%" --python "%SAFE_SCRIPT%"
 ) else (
     echo No .blend file specified, starting fresh
-    start "" "C:\Program Files\Blender Foundation\Blender 4.5\blender.exe" --python "%SAFE_SCRIPT%"
+    start "" "C:\Program Files\Blender Foundation\Blender 5.1\blender.exe" --python "%SAFE_SCRIPT%"
 )
 
 endlocal
