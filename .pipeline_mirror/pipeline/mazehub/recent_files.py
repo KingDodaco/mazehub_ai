@@ -1,22 +1,36 @@
 import json
 import os
 import time
+import getpass
 from pathlib import Path
 
 
-RECENT_FILES_PATH = Path.home() / '.config' / 'mazehub' / 'recent_files.json'
 MAX_RECENT = 100
 
 
-def _ensure_dir():
-    RECENT_FILES_PATH.parent.mkdir(parents=True, exist_ok=True)
+def _get_recent_files_path():
+    """Get the recent files path - per-user in project folder, or fallback to home."""
+    try:
+        from settings import _get_project_root
+        project_root = _get_project_root()
+        if project_root:
+            username = getpass.getuser()
+            return project_root / 'pipeline' / 'mazehub' / f'recent_files_{username}.json'
+    except Exception:
+        pass
+    return Path.home() / '.config' / 'mazehub' / 'recent_files.json'
+
+
+def _ensure_dir(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def load_recent_files():
-    _ensure_dir()
-    if RECENT_FILES_PATH.exists():
+    path = _get_recent_files_path()
+    _ensure_dir(path)
+    if path.exists():
         try:
-            with open(RECENT_FILES_PATH, 'r') as f:
+            with open(path, 'r') as f:
                 return json.load(f)
         except Exception:
             return []
@@ -24,9 +38,10 @@ def load_recent_files():
 
 
 def save_recent_files(files):
-    _ensure_dir()
+    path = _get_recent_files_path()
+    _ensure_dir(path)
     try:
-        with open(RECENT_FILES_PATH, 'w') as f:
+        with open(path, 'w') as f:
             json.dump(files, f, indent=2)
     except Exception:
         pass

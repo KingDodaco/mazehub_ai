@@ -4,35 +4,81 @@ import platform
 from pathlib import Path
 
 
-SETTINGS_PATH = Path.home() / '.config' / 'mazehub' / 'settings.json'
+def _get_project_root():
+    """Find the project root by walking up from this file."""
+    this_file = Path(__file__).resolve()
+    for parent in [this_file] + list(this_file.parents):
+        marker = parent / 'pipeline' / 'mazehub' / 'apps.json'
+        if marker.exists():
+            return parent
+    return None
 
 
-def _ensure_dir():
-    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+SHARED_SETTINGS_PATH = _get_project_root() / 'pipeline' / 'mazehub' / 'shared_settings.json' if _get_project_root() else None
+USER_SETTINGS_PATH = Path.home() / '.config' / 'mazehub' / 'user_settings.json'
+
+# Keys that should be shared globally (project-level)
+SHARED_KEYS = {
+    'teams_webhook_url',
+    'dailies_webhook_url',
+    'production_webhook_url',
+    'husk_path',
+}
 
 
-def load_settings():
-    _ensure_dir()
-    if SETTINGS_PATH.exists():
+def _ensure_dir(path):
+    if path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _load_json(path):
+    if path and path.exists():
         try:
-            with open(SETTINGS_PATH, 'r') as f:
+            with open(path, 'r') as f:
                 return json.load(f)
         except Exception:
             return {}
     return {}
 
 
+def _save_json(path, data):
+    if path:
+        _ensure_dir(path)
+        try:
+            with open(path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+
+def _merge_settings(shared, user):
+    """Merge shared and user settings (shared takes precedence for shared keys)."""
+    result = {}
+    result.update(user)
+    result.update(shared)
+    return result
+
+
+def load_settings():
+    """Load all settings (shared + user)."""
+    shared = _load_json(SHARED_SETTINGS_PATH)
+    user = _load_json(USER_SETTINGS_PATH)
+    return _merge_settings(shared, user)
+
+
 def save_settings(settings):
-    _ensure_dir()
-    try:
-        with open(SETTINGS_PATH, 'w') as f:
-            json.dump(settings, f, indent=2)
-    except Exception:
-        pass
+    """Save settings, splitting into shared and user files."""
+    shared = {k: v for k, v in settings.items() if k in SHARED_KEYS}
+    user = {k: v for k, v in settings.items() if k not in SHARED_KEYS}
+    existing_user = _load_json(USER_SETTINGS_PATH)
+    existing_user.update(user)
+    _save_json(SHARED_SETTINGS_PATH, shared)
+    _save_json(USER_SETTINGS_PATH, existing_user)
 
 
 def get_setting(key, default=None):
-    return load_settings().get(key, default)
+    settings = load_settings()
+    return settings.get(key, default)
 
 
 def set_setting(key, value):

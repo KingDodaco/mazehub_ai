@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/test/path/file.hip",
+    "display_name": "file.hip",
+    "app_name": "Houdini",
+    "app_key": "",
+    "context_type": "shot",
+    "context_name": "SH010",
+    "context_category": "Animation",
+    "timestamp": 1788871138.8641295
+  }
+]
