@@ -614,12 +614,20 @@ class DashboardPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
 
+        header = QHBoxLayout()
         title = QLabel('Welcome to MazeHub Pipeline')
         title_font = QFont()
         title_font.setPointSize(18)
         title_font.setBold(True)
         title.setFont(title_font)
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.setMinimumHeight(32)
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.clicked.connect(self._refresh_all)
+        header.addWidget(self.refresh_btn)
+        layout.addLayout(header)
 
         subtitle = QLabel(f'Project: {self.project_root.name}')
         subtitle_font = QFont()
@@ -770,6 +778,9 @@ class DashboardPage(QWidget):
         if all_scores:
             return f'{round(sum(all_scores) / len(all_scores))}%'
         return ''
+
+    def _refresh_all(self):
+        self._refresh_recent_files()
 
     def _refresh_recent_files(self):
         files = load_recent_files()[:8]
@@ -926,12 +937,20 @@ class LaunchAppsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
 
+        header = QHBoxLayout()
         title = QLabel('Launch Application')
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
         title.setFont(title_font)
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.setMinimumHeight(32)
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.clicked.connect(self._refresh)
+        header.addWidget(self.refresh_btn)
+        layout.addLayout(header)
         layout.addSpacing(8)
 
         ctx_group = QGroupBox('Context (optional)')
@@ -1113,12 +1132,20 @@ class ShotExplorerPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
 
+        header = QHBoxLayout()
         title = QLabel('Shot Explorer')
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
         title.setFont(title_font)
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.setMinimumHeight(32)
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.clicked.connect(self._refresh)
+        header.addWidget(self.refresh_btn)
+        layout.addLayout(header)
         layout.addSpacing(8)
 
         toolbar = QHBoxLayout()
@@ -1361,12 +1388,20 @@ class AssetExplorerPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
 
+        header = QHBoxLayout()
         title = QLabel('Asset Explorer')
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
         title.setFont(title_font)
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.setMinimumHeight(32)
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.clicked.connect(self._refresh)
+        header.addWidget(self.refresh_btn)
+        layout.addLayout(header)
         layout.addSpacing(8)
 
         toolbar = QHBoxLayout()
@@ -1383,11 +1418,6 @@ class AssetExplorerPage(QWidget):
         self.filter_combo.addItems(['All'] + list(NEW_ASSET_CATEGORY_LIST))
         self.filter_combo.currentTextChanged.connect(self._refresh)
         filter_row.addWidget(self.filter_combo)
-
-        self.refresh_btn = QPushButton('Refresh')
-        self.refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.refresh_btn.clicked.connect(self._refresh)
-        filter_row.addWidget(self.refresh_btn)
         toolbar.addLayout(filter_row)
         toolbar.addStretch()
         layout.addLayout(toolbar)
@@ -1624,6 +1654,11 @@ class RecentFilesPage(QWidget):
         title.setFont(title_font)
         header.addWidget(title)
         header.addStretch()
+        refresh_btn = QPushButton('Refresh')
+        refresh_btn.setMinimumHeight(32)
+        refresh_btn.setCursor(Qt.PointingHandCursor)
+        refresh_btn.clicked.connect(self._refresh)
+        header.addWidget(refresh_btn)
         clear_btn = QPushButton('Clear History')
         clear_btn.setCursor(Qt.PointingHandCursor)
         clear_btn.clicked.connect(self._clear_history)
@@ -1695,9 +1730,17 @@ class PreviewPage(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
+        header = QHBoxLayout()
         title = QLabel('Preview')
         title.setObjectName('sectionTitle')
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.setMinimumHeight(32)
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.clicked.connect(self._refresh_shots)
+        header.addWidget(self.refresh_btn)
+        layout.addLayout(header)
 
         shot_row = QHBoxLayout()
         shot_row.addWidget(QLabel('Shot:'))
@@ -1705,10 +1748,6 @@ class PreviewPage(QWidget):
         self.shot_combo.setMinimumWidth(260)
         self.shot_combo.currentTextChanged.connect(self._on_shot_changed)
         shot_row.addWidget(self.shot_combo, 1)
-        self.shot_refresh_btn = QPushButton('Refresh')
-        self.shot_refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.shot_refresh_btn.clicked.connect(self._refresh_shots)
-        shot_row.addWidget(self.shot_refresh_btn)
         layout.addLayout(shot_row)
 
         self.seq_list = QTreeWidget()
@@ -1933,9 +1972,17 @@ class ProductionPage(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
+        header = QHBoxLayout()
         title = QLabel('Production Tracking')
         title.setObjectName('sectionTitle')
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        refresh_btn = QPushButton('Refresh')
+        refresh_btn.setMinimumHeight(32)
+        refresh_btn.setCursor(Qt.PointingHandCursor)
+        refresh_btn.clicked.connect(self._refresh)
+        header.addWidget(refresh_btn)
+        layout.addLayout(header)
 
         summary_group = QGroupBox('Progress')
         summary_layout = QVBoxLayout(summary_group)
@@ -2027,11 +2074,6 @@ class ProductionPage(QWidget):
         tabs.addTab(asset_tab, 'Assets')
 
         layout.addWidget(tabs)
-
-        refresh_btn = QPushButton('Refresh')
-        refresh_btn.setCursor(Qt.PointingHandCursor)
-        refresh_btn.clicked.connect(self._refresh)
-        layout.addWidget(refresh_btn, 0, Qt.AlignRight)
 
         self._refresh()
 
@@ -2895,12 +2937,20 @@ class RenderPage(QWidget):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(24, 24, 24, 24)
 
+        header = QHBoxLayout()
         title = QLabel('Render')
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
         title.setFont(title_font)
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch()
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.setMinimumHeight(32)
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.clicked.connect(self._refresh_all)
+        header.addWidget(self.refresh_btn)
+        layout.addLayout(header)
         layout.addSpacing(8)
 
         shot_row = QHBoxLayout()
@@ -2909,10 +2959,6 @@ class RenderPage(QWidget):
         self.shot_combo.setMinimumWidth(260)
         self.shot_combo.currentTextChanged.connect(self._on_shot_changed)
         shot_row.addWidget(self.shot_combo, 1)
-        self.shot_refresh_btn = QPushButton('Refresh')
-        self.shot_refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.shot_refresh_btn.clicked.connect(self._refresh_shots)
-        shot_row.addWidget(self.shot_refresh_btn)
         layout.addLayout(shot_row)
 
         usd_row = QHBoxLayout()
@@ -2921,10 +2967,6 @@ class RenderPage(QWidget):
         self.usd_combo.setMinimumWidth(260)
         self.usd_combo.currentTextChanged.connect(self._on_usd_changed)
         usd_row.addWidget(self.usd_combo, 1)
-        self.usd_refresh_btn = QPushButton('Refresh')
-        self.usd_refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.usd_refresh_btn.clicked.connect(self._refresh_usd_files)
-        usd_row.addWidget(self.usd_refresh_btn)
         layout.addLayout(usd_row)
 
         version_row = QHBoxLayout()
@@ -2952,10 +2994,12 @@ class RenderPage(QWidget):
 
         passes_toolbar = QHBoxLayout()
         self.select_all_btn = QPushButton('Select All')
+        self.select_all_btn.setMinimumHeight(32)
         self.select_all_btn.setCursor(Qt.PointingHandCursor)
         self.select_all_btn.clicked.connect(self._select_all_passes)
         passes_toolbar.addWidget(self.select_all_btn)
         self.deselect_all_btn = QPushButton('Deselect All')
+        self.deselect_all_btn.setMinimumHeight(32)
         self.deselect_all_btn.setCursor(Qt.PointingHandCursor)
         self.deselect_all_btn.clicked.connect(self._deselect_all_passes)
         passes_toolbar.addWidget(self.deselect_all_btn)
@@ -3037,6 +3081,10 @@ class RenderPage(QWidget):
         scroll.setWidget(container)
         self._refresh_shots()
 
+    def _refresh_all(self):
+        self._refresh_shots()
+        self._refresh_usd_files()
+
     def _refresh_shots(self):
         self.shot_combo.blockSignals(True)
         self.shot_combo.clear()
@@ -3098,7 +3146,18 @@ class RenderPage(QWidget):
         self._on_shot_changed(self.shot_combo.currentText())
 
     def _on_usd_changed(self, usd_name):
+        self._refresh_passes()
+
+    def _clear_passes(self):
+        while self.passes_layout.count():
+            item = self.passes_layout.takeAt()
+            if item.widget():
+                item.widget().deleteLater()
+        self.no_passes_label.setVisible(True)
+
+    def _refresh_passes(self):
         self._clear_passes()
+        usd_name = self.usd_combo.currentText()
         shot_name = self.shot_combo.currentText()
         if not shot_name or not usd_name:
             return
@@ -3119,13 +3178,6 @@ class RenderPage(QWidget):
             cb = QCheckBox(p)
             cb.setChecked(True)
             self.passes_layout.addWidget(cb)
-
-    def _clear_passes(self):
-        while self.passes_layout.count():
-            item = self.passes_layout.takeAt()
-            if item.widget():
-                item.widget().deleteLater()
-        self.no_passes_label.setVisible(True)
 
     def _get_selected_passes(self):
         passes = []
