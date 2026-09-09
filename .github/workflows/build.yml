@@ -1,0 +1,49 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build EXE
+        run: |
+          python -m PyInstaller `
+            --onefile `
+            --windowed `
+            --name "MazeHub" `
+            --add-data ".pipeline_mirror\pipeline;pipeline" `
+            --add-data "make_folders.py;." `
+            --collect-all PySide6 `
+            --collect-all numpy `
+            --collect-all PIL `
+            --hidden-import pipeline_gui `
+            --hidden-import pipeline_app `
+            --hidden-import recent_files `
+            --hidden-import settings `
+            --hidden-import numpy `
+            main.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MazeHub-windows
+          path: dist/MazeHub.exe

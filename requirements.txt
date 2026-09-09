@@ -1,0 +1,4 @@
+pyinstaller
+pyside6
+numpy
+pillow
