@@ -47,7 +47,7 @@ if exist "%DIST%" rmdir /s /q "%DIST%"
 rem Build with --windowed so no console window appears
 set "WINDOW_FLAG=--windowed"
 
-echo Building %APP_NAME% (console mode for debugging)...
+echo Building %APP_NAME%...
 "%PY_EXE%" -m PyInstaller ^
     --onefile ^
     %WINDOW_FLAG% ^
@@ -63,6 +63,7 @@ echo Building %APP_NAME% (console mode for debugging)...
     --hidden-import pipeline_gui ^
     --hidden-import pipeline_app ^
     --hidden-import recent_files ^
+    --hidden-import settings ^
     --hidden-import OpenEXR ^
     --hidden-import Imath ^
     --hidden-import numpy ^

@@ -5,16 +5,19 @@ from pathlib import Path
 
 
 def _get_project_root():
-    """Find the project root by walking up from this file."""
-    this_file = Path(__file__).resolve()
-    for parent in [this_file] + list(this_file.parents):
-        marker = parent / 'pipeline' / 'mazehub' / 'apps.json'
-        if marker.exists():
-            return parent
+    """Find the project root from MAZE_PROJECT_ROOT env var."""
+    root = os.environ.get('MAZE_PROJECT_ROOT')
+    if root:
+        return Path(root)
     return None
 
 
-SHARED_SETTINGS_PATH = _get_project_root() / 'pipeline' / 'mazehub' / 'shared_settings.json' if _get_project_root() else None
+def _get_shared_settings_path():
+    """Lazy getter for shared settings path."""
+    root = _get_project_root()
+    if root:
+        return root / 'pipeline' / 'mazehub' / 'shared_settings.json'
+    return None
 USER_SETTINGS_PATH = Path.home() / '.config' / 'mazehub' / 'user_settings.json'
 
 # Keys that should be shared globally (project-level)
@@ -61,7 +64,7 @@ def _merge_settings(shared, user):
 
 def load_settings():
     """Load all settings (shared + user)."""
-    shared = _load_json(SHARED_SETTINGS_PATH)
+    shared = _load_json(_get_shared_settings_path())
     user = _load_json(USER_SETTINGS_PATH)
     return _merge_settings(shared, user)
 
@@ -72,7 +75,7 @@ def save_settings(settings):
     user = {k: v for k, v in settings.items() if k not in SHARED_KEYS}
     existing_user = _load_json(USER_SETTINGS_PATH)
     existing_user.update(user)
-    _save_json(SHARED_SETTINGS_PATH, shared)
+    _save_json(_get_shared_settings_path(), shared)
     _save_json(USER_SETTINGS_PATH, existing_user)
 
 
