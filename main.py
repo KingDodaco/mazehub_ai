@@ -6,7 +6,10 @@ import traceback
 
 def _debug_log(msg):
     try:
-        log_path = Path(tempfile.gettempdir()) / 'mazehub_debug.log'
+        if getattr(sys, 'frozen', False):
+            log_path = Path(sys.executable).resolve().parent / 'mazehub_debug.log'
+        else:
+            log_path = Path(tempfile.gettempdir()) / 'mazehub_debug.log'
         with open(log_path, 'a') as f:
             f.write(msg + '\n')
     except Exception:
@@ -17,43 +20,42 @@ def _find_app_dir():
     this_dir = Path(__file__).resolve().parent
     _debug_log(f"this_dir: {this_dir}")
     _debug_log(f"frozen: {getattr(sys, 'frozen', False)}")
-    paths = []
 
     if getattr(sys, 'frozen', False):
         exe_dir = Path(sys.executable).resolve().parent
-        meipass = Path(getattr(sys, '_MEIPASS', ''))
+        meipass = Path(getattr(sys, '_MEIPASS', '')) if getattr(sys, '_MEIPASS', '') else None
         _debug_log(f"exe_dir: {exe_dir}")
         _debug_log(f"meipass: {meipass}")
-        paths.extend([
-            meipass / 'pipeline' / 'mazehub' if meipass else None,
-            meipass / 'mazehub' if meipass else None,
+
+        candidates = []
+        if meipass:
+            candidates += [
+                meipass / 'pipeline' / 'mazehub',
+                meipass / 'mazehub',
+            ]
+        candidates += [
+            exe_dir / '_internal' / 'pipeline' / 'mazehub',
             exe_dir / 'pipeline' / 'mazehub',
             exe_dir / 'mazehub',
             exe_dir,
-            this_dir / 'pipeline' / 'mazehub',
-            this_dir / '.pipeline_mirror' / 'pipeline' / 'mazehub',
-        ])
+        ]
+
+        for p in candidates:
+            _debug_log(f"checking: {p} exists={p.exists()}")
+            if p.exists() and (p / 'pipeline_app.py').exists() and (p / 'pipeline_gui.py').exists():
+                _debug_log(f"FOUND app_dir: {p}")
+                return p
     else:
-        paths.extend([
+        candidates = [
             this_dir / 'pipeline' / 'mazehub',
             this_dir / '.pipeline_mirror' / 'pipeline' / 'mazehub',
             this_dir,
-        ])
-
-    for p in paths:
-        if p is None:
-            continue
-        _debug_log(f"checking: {p} exists={p.exists()}")
-        if p.exists() and (p / 'pipeline_app.py').exists() and (p / 'pipeline_gui.py').exists():
-            _debug_log(f"FOUND app_dir: {p}")
-            return p
-
-    if getattr(sys, 'frozen', False):
-        bundled_dir = Path(sys.executable).resolve().parent / '_internal' / 'pipeline' / 'mazehub'
-        _debug_log(f"checking bundled_dir: {bundled_dir}")
-        if bundled_dir.exists() and (bundled_dir / 'pipeline_app.py').exists():
-            _debug_log(f"FOUND app_dir: {bundled_dir}")
-            return bundled_dir
+        ]
+        for p in candidates:
+            _debug_log(f"checking: {p} exists={p.exists()}")
+            if p.exists() and (p / 'pipeline_app.py').exists() and (p / 'pipeline_gui.py').exists():
+                _debug_log(f"FOUND app_dir: {p}")
+                return p
 
     _debug_log("ERROR: app_dir not found")
     return None
