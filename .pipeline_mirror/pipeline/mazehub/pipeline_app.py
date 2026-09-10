@@ -626,21 +626,26 @@ def discover_husk_passes(husk_path, usd_file):
             capture_output=True, text=True, timeout=30,
         )
         passes = []
+        in_passes = False
         for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line or len(line) > 80:
+            raw = line.strip()
+            if not raw:
                 continue
-            if line.startswith('#') or line.startswith('['):
+            lower = raw.lower()
+            if 'available render passes' in lower or 'render passes found' in lower:
+                in_passes = True
                 continue
-            if any(kw in line.lower() for kw in (
-                'husk', 'arnold', 'karma', 'render pass', 'found',
-                'error', 'warning', 'info', 'shutdown', 'startup',
-                'loading', 'reading', 'writing', 'processing',
-            )):
+            if in_passes:
+                if raw.startswith(('[', '#', '//')) or len(raw) > 80 or '://' in raw:
+                    continue
+                passes.append(raw)
                 continue
-            if ' ' in line:
+            if raw.startswith('[') or raw.startswith('#') or len(raw) > 80:
                 continue
-            passes.append(line)
+            if '://' in raw:
+                continue
+            if not any(c in raw for c in (' ', '\t')) and len(raw) < 80:
+                passes.append(raw)
         return passes
     except Exception:
         return []

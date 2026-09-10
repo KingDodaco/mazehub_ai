@@ -74,9 +74,11 @@ def save_settings(settings):
     """Save settings, splitting into shared and user files."""
     shared = {k: v for k, v in settings.items() if k in SHARED_KEYS}
     user = {k: v for k, v in settings.items() if k not in SHARED_KEYS}
+    existing_shared = _load_json(_get_shared_settings_path())
+    existing_shared.update(shared)
     existing_user = _load_json(USER_SETTINGS_PATH)
     existing_user.update(user)
-    _save_json(_get_shared_settings_path(), shared)
+    _save_json(_get_shared_settings_path(), existing_shared)
     _save_json(USER_SETTINGS_PATH, existing_user)
 
 

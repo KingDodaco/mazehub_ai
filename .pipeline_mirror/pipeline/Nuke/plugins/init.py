@@ -2,14 +2,57 @@ import os
 import nuke
 
 
-MZE_VAR = 'MZE'
-MZE_ENV_TAG = '%' + MZE_VAR + '%'
-
-_saving = False
-
-
 def _get_mze_path():
-    return os.environ.get(MZE_VAR, '').replace('\\', '/')
+    return os.environ.get('MZE', '').replace('\\', '/')
+
+
+def _get_project_name():
+    name = os.environ.get('MAZE_PROJECT', '')
+    if not name:
+        mze = _get_mze_path()
+        if mze:
+            name = mze.rstrip('/').rsplit('/', 1)[-1]
+    return name
+
+
+def _resolve_path(val):
+    mze = _get_mze_path()
+    project_name = _get_project_name()
+    if not mze or not project_name or not val:
+        return val
+    normalized = val.replace('\\', '/')
+    marker = '/' + project_name + '/'
+    idx = normalized.lower().find(marker.lower())
+    if idx == -1:
+        idx = normalized.lower().find(project_name.lower() + '/')
+        if idx != 0:
+            return val
+        relative = normalized[len(project_name):].lstrip('/')
+        return mze + '/' + relative
+    relative = normalized[idx + len(marker):]
+    return mze + '/' + relative
+
+
+def _resolve_all_file_knobs():
+    for node in nuke.allNodes(recurseGroups=True):
+        for knob_name in ('file', 'proxy'):
+            k = node.knob(knob_name)
+            if k:
+                val = k.value()
+                if val:
+                    resolved = _resolve_path(val)
+                    if resolved != val:
+                        k.setValue(resolved)
+
+
+def _resolve_env_on_edit():
+    knob = nuke.thisKnob()
+    if knob.name() in ('file', 'proxy'):
+        val = knob.value()
+        if val:
+            resolved = _resolve_path(val)
+            if resolved != val:
+                knob.setValue(resolved)
 
 
 def set_project_from_env():
@@ -37,68 +80,5 @@ nuke.pluginAddPath('./plugins/FlareSim/Nuke15_2')
 nuke.pluginAddPath('./plugins/pixelfudger3')
 nuke.pluginAddPath('./gizmos')
 
-
-def _resolve_all_file_knobs():
-    mze = _get_mze_path()
-    if not mze:
-        return
-    for node in nuke.allNodes(recurseGroups=True):
-        for knob_name in ('file', 'proxy'):
-            k = node.knob(knob_name)
-            if k:
-                val = k.value()
-                if MZE_ENV_TAG in val:
-                    k.setValue(val.replace(MZE_ENV_TAG, mze))
-
-
-def _reverse_map_all_file_knobs():
-    mze = _get_mze_path()
-    if not mze:
-        return
-    mze_norm = mze.rstrip('/').rstrip('\\').lower()
-    for node in nuke.allNodes(recurseGroups=True):
-        for knob_name in ('file', 'proxy'):
-            k = node.knob(knob_name)
-            if k:
-                val = k.value()
-                if MZE_ENV_TAG not in val:
-                    normalized = val.replace('\\', '/')
-                    if normalized.lower().startswith(mze_norm):
-                        k.setValue(MZE_ENV_TAG + normalized[len(mze):])
-
-
-def _resolve_env_on_edit():
-    mze = _get_mze_path()
-    if not mze:
-        return
-    knob = nuke.thisKnob()
-    if knob.name() in ('file', 'proxy'):
-        val = knob.value()
-        if MZE_ENV_TAG in val:
-            knob.setValue(val.replace(MZE_ENV_TAG, mze))
-
-
-def _on_save_callback():
-    global _saving
-    if _saving:
-        return
-    _saving = True
-    _reverse_map_all_file_knobs()
-    _saving = False
-
-
-def _save_with_tags():
-    global _saving
-    _saving = True
-    _reverse_map_all_file_knobs()
-    nuke.scriptSave(nuke.root().name())
-    _saving = False
-    _resolve_all_file_knobs()
-
-
 nuke.addKnobChanged(_resolve_env_on_edit, nodeClass='Node')
 nuke.addOnScriptLoad(_resolve_all_file_knobs)
-nuke.addOnScriptSave(_on_save_callback)
-nuke.menu('Nuke').addCommand('File/Save with MZE Tags', _save_with_tags, 'Ctrl+Alt+Shift+S')
-nuke.menu('Nuke').addCommand('File/Save', _save_with_tags, 'Ctrl+S')
-
