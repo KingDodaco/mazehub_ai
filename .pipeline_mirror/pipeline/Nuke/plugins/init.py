@@ -5,6 +5,8 @@ import nuke
 MZE_VAR = 'MZE'
 MZE_ENV_TAG = '%' + MZE_VAR + '%'
 
+_saving = False
+
 
 def _get_mze_path():
     return os.environ.get(MZE_VAR, '').replace('\\', '/')
@@ -53,6 +55,7 @@ def _reverse_map_all_file_knobs():
     mze = _get_mze_path()
     if not mze:
         return
+    mze_norm = mze.rstrip('/').rstrip('\\').lower()
     for node in nuke.allNodes(recurseGroups=True):
         for knob_name in ('file', 'proxy'):
             k = node.knob(knob_name)
@@ -60,7 +63,7 @@ def _reverse_map_all_file_knobs():
                 val = k.value()
                 if MZE_ENV_TAG not in val:
                     normalized = val.replace('\\', '/')
-                    if normalized.startswith(mze):
+                    if normalized.lower().startswith(mze_norm):
                         k.setValue(MZE_ENV_TAG + normalized[len(mze):])
 
 
@@ -75,8 +78,28 @@ def _resolve_env_on_edit():
             knob.setValue(val.replace(MZE_ENV_TAG, mze))
 
 
+def _on_save_callback():
+    global _saving
+    if _saving:
+        return
+    _saving = True
+    _resolve_all_file_knobs()
+    _saving = False
+
+
+def _save_with_tags():
+    global _saving
+    _saving = True
+    _reverse_map_all_file_knobs()
+    nuke.scriptSave(nuke.root().name())
+    _saving = False
+    _resolve_all_file_knobs()
+
+
 nuke.addFilenameFilter(lambda f: f.replace(MZE_ENV_TAG, _get_mze_path()) if f and MZE_ENV_TAG in f else f)
 nuke.addKnobChanged(_resolve_env_on_edit, nodeClass='Node')
 nuke.addOnScriptLoad(_resolve_all_file_knobs)
-nuke.addOnScriptSave(_reverse_map_all_file_knobs)
-nuke.addOnScriptSave(_resolve_all_file_knobs)
+nuke.addOnScriptSave(_on_save_callback)
+nuke.menu('Nuke').addCommand('File/Save with MZE Tags', _save_with_tags, 'Ctrl+Alt+Shift+S')
+nuke.menu('Nuke').addCommand('File/Save', _save_with_tags, 'Ctrl+S')
+
