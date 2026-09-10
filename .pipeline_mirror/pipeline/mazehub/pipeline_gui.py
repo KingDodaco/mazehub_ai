@@ -3150,9 +3150,11 @@ class RenderPage(QWidget):
 
     def _clear_passes(self):
         while self.passes_layout.count():
-            item = self.passes_layout.takeAt()
-            if item.widget():
-                item.widget().deleteLater()
+            item = self.passes_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
         self.no_passes_label.setVisible(True)
 
     def _refresh_passes(self):

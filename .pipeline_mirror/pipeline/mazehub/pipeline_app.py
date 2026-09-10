@@ -32,6 +32,9 @@ def convert_exr_to_png(exr_path, png_path, max_size=512):
     try:
         import OpenEXR
         import Imath
+    except ImportError:
+        return False
+    try:
         from PIL import Image
         import numpy as np
 
@@ -625,16 +628,19 @@ def discover_husk_passes(husk_path, usd_file):
         passes = []
         for line in result.stdout.splitlines():
             line = line.strip()
-            if not line or line.startswith('#') or line.startswith('husk'):
+            if not line or len(line) > 80:
                 continue
-            if 'render passes found' in line.lower():
+            if line.startswith('#') or line.startswith('['):
                 continue
-            if line.startswith('['):
-                end = line.find(']')
-                if end != -1:
-                    line = line[end + 1:].strip()
-            if line:
-                passes.append(line)
+            if any(kw in line.lower() for kw in (
+                'husk', 'arnold', 'karma', 'render pass', 'found',
+                'error', 'warning', 'info', 'shutdown', 'startup',
+                'loading', 'reading', 'writing', 'processing',
+            )):
+                continue
+            if ' ' in line:
+                continue
+            passes.append(line)
         return passes
     except Exception:
         return []

@@ -83,7 +83,7 @@ def _on_save_callback():
     if _saving:
         return
     _saving = True
-    _resolve_all_file_knobs()
+    _reverse_map_all_file_knobs()
     _saving = False
 
 
@@ -96,7 +96,6 @@ def _save_with_tags():
     _resolve_all_file_knobs()
 
 
-nuke.addFilenameFilter(lambda f: f.replace(MZE_ENV_TAG, _get_mze_path()) if f and MZE_ENV_TAG in f else f)
 nuke.addKnobChanged(_resolve_env_on_edit, nodeClass='Node')
 nuke.addOnScriptLoad(_resolve_all_file_knobs)
 nuke.addOnScriptSave(_on_save_callback)

@@ -27,6 +27,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Find OpenEXR paths
+        id: openexr
+        shell: bash
+        run: |
+          python -c "
+          import site, pathlib, glob
+          sp = pathlib.Path(site.getsitepackages()[0])
+          imath = sp / 'Imath.py'
+          openexr = glob.glob(str(sp / 'OpenEXR.*.pyd'))
+          print(f'IMATH={imath}')
+          print(f'OPENEXR={openexr[0] if openexr else \"\"}')
+          " >> "$GITHUB_OUTPUT"
+
       - name: Build EXE
         run: |
           python -m PyInstaller `
@@ -36,6 +49,8 @@ jobs:
             --icon "MazeHub_Logo.ico" `
             --add-data ".pipeline_mirror\pipeline;pipeline" `
             --add-data "make_folders.py;." `
+            --add-data "${{ steps.openexr.outputs.IMATH }};." `
+            --add-binary "${{ steps.openexr.outputs.OPENEXR }};." `
             --collect-all PySide6 `
             --collect-all numpy `
             --collect-all PIL `
@@ -43,6 +58,8 @@ jobs:
             --hidden-import pipeline_app `
             --hidden-import recent_files `
             --hidden-import settings `
+            --hidden-import OpenEXR `
+            --hidden-import Imath `
             --hidden-import numpy `
             main.py
 
