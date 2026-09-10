@@ -6,10 +6,7 @@ import traceback
 
 def _debug_log(msg):
     try:
-        if getattr(sys, 'frozen', False):
-            log_path = Path(sys.executable).resolve().parent / 'mazehub_debug.log'
-        else:
-            log_path = Path(tempfile.gettempdir()) / 'mazehub_debug.log'
+        log_path = Path(tempfile.gettempdir()) / 'mazehub_debug.log'
         with open(log_path, 'a') as f:
             f.write(msg + '\n')
     except Exception:

@@ -26,6 +26,7 @@ SHARED_KEYS = {
     'dailies_webhook_url',
     'production_webhook_url',
     'husk_path',
+    'yt_screensaver_url',
 }
 
 
