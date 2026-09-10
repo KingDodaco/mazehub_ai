@@ -33,6 +33,7 @@ jobs:
             --onefile `
             --windowed `
             --name "MazeHub" `
+            --icon "MazeHub_Logo.ico" `
             --add-data ".pipeline_mirror\pipeline;pipeline" `
             --add-data "make_folders.py;." `
             --collect-all PySide6 `
@@ -58,4 +59,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MazeHub-pipeline
-          path: publish/pipeline/
+          path: publish/

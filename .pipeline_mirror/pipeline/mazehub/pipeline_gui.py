@@ -1019,10 +1019,10 @@ class LaunchAppsPage(QWidget):
             yt_btn.setCursor(Qt.PointingHandCursor)
             yt_btn.clicked.connect(self._open_yt_screensaver)
             container_layout.addWidget(yt_btn, row, col)
+            container_layout.setRowStretch(row + 1, 1)
         else:
             container_layout.addWidget(QLabel('No applications configured.'), 0, 0, 1, 2)
-
-        container_layout.setRowStretch(row + 1, 1)
+            container_layout.setRowStretch(1, 1)
         scroll.setWidget(container)
         body.addWidget(scroll, 1)
         layout.addLayout(body, 1)
