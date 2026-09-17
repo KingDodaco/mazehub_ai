@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
 
 from pipeline_app import (
     find_project_root, setup_environment, load_apps_config,
-    read_shot_meta, write_shot_meta, APP_FILE_EXTENSIONS,
+    read_shot_meta, write_shot_meta, DEFAULT_SHOT_META,
+    APP_FILE_EXTENSIONS,
     build_context_env, _app_dir, APP_VERSION,
     discover_usd_files, discover_husk_passes,
     discover_image_sequences,
@@ -464,11 +465,23 @@ class FileBrowserPanel(QWidget):
 
 
 class ShotDialog(QDialog):
-    def __init__(self, parent=None, shot_name='', frame_start='1001', frame_end='1240', frame_rate='24', description=''):
+    def __init__(self, parent=None, shot_name='', meta=None):
         super().__init__(parent)
         self.setWindowTitle('New Shot' if not shot_name else f'Edit Shot: {shot_name}')
         self.setMinimumWidth(500)
         self._result = None
+
+        if meta is None:
+            meta = DEFAULT_SHOT_META
+
+        fr = meta.get('frame_range', DEFAULT_SHOT_META['frame_range'])
+        parts = fr.split('-')
+        frame_start = parts[0] if parts else ''
+        frame_end = parts[1] if len(parts) > 1 else parts[0]
+
+        focal = meta.get('focal_length', DEFAULT_SHOT_META['focal_length'])
+        if focal.endswith('mm'):
+            focal = focal[:-2]
 
         layout = QVBoxLayout(self)
 
@@ -478,20 +491,32 @@ class ShotDialog(QDialog):
         form.addRow('Shot Name:', self.name_edit)
 
         range_row = QHBoxLayout()
-        self.fr_start = QLineEdit(str(frame_start))
+        self.fr_start = QLineEdit(frame_start)
         self.fr_start.setPlaceholderText('Start')
         range_row.addWidget(self.fr_start)
         range_row.addWidget(QLabel('—'))
-        self.fr_end = QLineEdit(str(frame_end))
+        self.fr_end = QLineEdit(frame_end)
         self.fr_end.setPlaceholderText('End')
         range_row.addWidget(self.fr_end)
         form.addRow('Frame Range:', range_row)
 
-        self.fps_edit = QLineEdit(str(frame_rate))
+        self.fps_edit = QLineEdit(meta.get('frame_rate', DEFAULT_SHOT_META['frame_rate']))
         self.fps_edit.setPlaceholderText('e.g. 24')
         form.addRow('Frame Rate:', self.fps_edit)
 
-        self.desc_edit = QLineEdit(description)
+        self.focal_edit = QLineEdit(focal)
+        self.focal_edit.setPlaceholderText('e.g. 50')
+        form.addRow('Focal Length (mm):', self.focal_edit)
+
+        self.iso_edit = QLineEdit(meta.get('iso', DEFAULT_SHOT_META['iso']))
+        self.iso_edit.setPlaceholderText('e.g. 800')
+        form.addRow('ISO:', self.iso_edit)
+
+        self.nd_edit = QLineEdit(meta.get('nd_filter', DEFAULT_SHOT_META['nd_filter']))
+        self.nd_edit.setPlaceholderText('e.g. 6')
+        form.addRow('ND Filter (stops):', self.nd_edit)
+
+        self.desc_edit = QLineEdit(meta.get('description', DEFAULT_SHOT_META['description']))
         self.desc_edit.setPlaceholderText('e.g. Establishing wide shot')
         form.addRow('Description:', self.desc_edit)
         layout.addLayout(form)
@@ -531,10 +556,16 @@ class ShotDialog(QDialog):
             self.error_label.setText(f'Required: {", ".join(errors)}')
             self.error_label.setVisible(True)
             return
+        focal = self.focal_edit.text().strip()
+        if focal and not focal.endswith('mm'):
+            focal = f'{focal}mm'
         self._result = {
             'name': name,
             'frame_range': f'{start}-{end}',
             'frame_rate': fps,
+            'focal_length': focal,
+            'iso': self.iso_edit.text().strip(),
+            'nd_filter': self.nd_edit.text().strip(),
             'description': self.desc_edit.text().strip(),
         }
         self.accept()
@@ -1165,9 +1196,9 @@ class ShotExplorerPage(QWidget):
         layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(11)
         self.table.setHorizontalHeaderLabels(
-            ['', 'Shot', 'Progress', 'Path', 'Frame Range', 'Frame Rate', 'Description', 'Working Dirs']
+            ['', 'Shot', 'Progress', 'Path', 'Frame Range', 'Frame Rate', 'Focal Length', 'ISO', 'ND Filter', 'Description', 'Working Dirs']
         )
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -1212,6 +1243,9 @@ class ShotExplorerPage(QWidget):
             write_shot_meta(shot_path, {
                 'frame_range': data['frame_range'],
                 'frame_rate': data['frame_rate'],
+                'focal_length': data['focal_length'],
+                'iso': data['iso'],
+                'nd_filter': data['nd_filter'],
                 'description': data['description'],
             })
             self._refresh()
@@ -1228,19 +1262,7 @@ class ShotExplorerPage(QWidget):
         shot_path = self.project_root / 'sequence' / shot_name
         meta = read_shot_meta(shot_path)
 
-        fr = meta.get('frame_range', '1001-1240')
-        parts = fr.split('-')
-        frame_start = parts[0] if parts else '1001'
-        frame_end = parts[1] if len(parts) > 1 else parts[0]
-
-        dialog = ShotDialog(
-            self,
-            shot_name=shot_name,
-            frame_start=frame_start,
-            frame_end=frame_end,
-            frame_rate=meta.get('frame_rate', '24'),
-            description=meta.get('description', ''),
-        )
+        dialog = ShotDialog(self, shot_name=shot_name, meta=meta)
         if dialog.exec() != QDialog.Accepted:
             return
         data = dialog.result_data()
@@ -1248,6 +1270,9 @@ class ShotExplorerPage(QWidget):
         write_shot_meta(shot_path, {
             'frame_range': data['frame_range'],
             'frame_rate': data['frame_rate'],
+            'focal_length': data['focal_length'],
+            'iso': data['iso'],
+            'nd_filter': data['nd_filter'],
             'description': data['description'],
         })
         self._refresh()
@@ -1300,12 +1325,15 @@ class ShotExplorerPage(QWidget):
             self.table.setItem(i, 3, QTableWidgetItem(str(shot_path.relative_to(self.project_root))))
             self.table.setItem(i, 4, QTableWidgetItem(meta['frame_range']))
             self.table.setItem(i, 5, QTableWidgetItem(meta['frame_rate']))
-            self.table.setItem(i, 6, QTableWidgetItem(meta['description']))
-            self.table.setItem(i, 7, QTableWidgetItem(f'{working_count} dirs'))
+            self.table.setItem(i, 6, QTableWidgetItem(meta['focal_length']))
+            self.table.setItem(i, 7, QTableWidgetItem(meta['iso']))
+            self.table.setItem(i, 8, QTableWidgetItem(meta['nd_filter']))
+            self.table.setItem(i, 9, QTableWidgetItem(meta['description']))
+            self.table.setItem(i, 10, QTableWidgetItem(f'{working_count} dirs'))
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(0, 72)
         self.table.setColumnWidth(3, max(self.table.columnWidth(3), 200))
-        self.table.setColumnWidth(7, max(self.table.columnWidth(7), 200))
+        self.table.setColumnWidth(10, max(self.table.columnWidth(10), 200))
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.setSortingEnabled(True)
 
@@ -3169,12 +3197,16 @@ class RenderPage(QWidget):
         from settings import find_husk
         husk_path = find_husk()
         if not husk_path:
+            self.log_output.append('[info] husk not found — configure in Settings')
             return
 
+        self.log_output.append(f'[info] Discovering passes: {husk_path} --list-passes {usd_file.name}')
         passes = discover_husk_passes(husk_path, usd_file)
         if not passes:
+            self.log_output.append('[info] No passes found')
             self.no_passes_label.setVisible(True)
             return
+        self.log_output.append(f'[info] Found {len(passes)} passes: {", ".join(passes)}')
         self.no_passes_label.setVisible(False)
         for p in passes:
             cb = QCheckBox(p)

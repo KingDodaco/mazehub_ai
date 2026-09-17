@@ -1,6 +1,8 @@
 {
   "frame_range": "1001-1100",
   "frame_rate": "24",
-  "resolution": "1920x1080",
+  "focal_length": "24mm",
+  "iso": "800",
+  "nd_filter": "6",
   "description": "Test shot"
 }

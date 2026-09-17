@@ -155,8 +155,11 @@ def find_project_root():
 SHOT_META_FILENAME = '_metadata.json'
 
 DEFAULT_SHOT_META = {
-    'frame_range': '',
-    'frame_rate': '',
+    'frame_range': '1001-1240',
+    'frame_rate': '24',
+    'focal_length': '50mm',
+    'iso': '800',
+    'nd_filter': '6',
     'description': '',
 }
 
@@ -625,9 +628,10 @@ def discover_husk_passes(husk_path, usd_file):
             [husk_path, '--list-passes', str(usd_file)],
             capture_output=True, text=True, timeout=30,
         )
+        output = (result.stdout or '') + '\n' + (result.stderr or '')
         passes = []
         in_passes = False
-        for line in result.stdout.splitlines():
+        for line in output.splitlines():
             raw = line.strip()
             if not raw:
                 continue
