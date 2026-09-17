@@ -192,6 +192,8 @@ DEFAULT_LIGHT_RIG_META = {
     'time_of_day': '',
     'lighting_description': '',
     'hdri_path': '',
+    'photogrammetry_path': '',
+    'usd_scene_path': '',
 }
 
 

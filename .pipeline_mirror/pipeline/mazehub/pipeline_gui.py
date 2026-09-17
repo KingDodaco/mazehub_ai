@@ -706,6 +706,28 @@ class LightRigDialog(QDialog):
         self.hdri_browse_btn.clicked.connect(self._browse_hdri)
         hdri_row.addWidget(self.hdri_browse_btn)
         form.addRow('HDRI:', hdri_row)
+
+        photogrammetry_row = QHBoxLayout()
+        self.photogrammetry_edit = QLineEdit(meta.get('photogrammetry_path', ''))
+        self.photogrammetry_edit.setPlaceholderText('No photogrammetry selected')
+        self.photogrammetry_edit.setReadOnly(True)
+        photogrammetry_row.addWidget(self.photogrammetry_edit, 1)
+        self.photogrammetry_browse_btn = QPushButton('Browse')
+        self.photogrammetry_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.photogrammetry_browse_btn.clicked.connect(self._browse_photogrammetry)
+        photogrammetry_row.addWidget(self.photogrammetry_browse_btn)
+        form.addRow('Photogrammetry:', photogrammetry_row)
+
+        usd_row = QHBoxLayout()
+        self.usd_scene_edit = QLineEdit(meta.get('usd_scene_path', ''))
+        self.usd_scene_edit.setPlaceholderText('No USD scene selected')
+        self.usd_scene_edit.setReadOnly(True)
+        usd_row.addWidget(self.usd_scene_edit, 1)
+        self.usd_scene_browse_btn = QPushButton('Browse')
+        self.usd_scene_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.usd_scene_browse_btn.clicked.connect(self._browse_usd_scene)
+        usd_row.addWidget(self.usd_scene_browse_btn)
+        form.addRow('USD Scene:', usd_row)
         layout.addLayout(form)
 
         self.error_label = QLabel('')
@@ -735,6 +757,26 @@ class LightRigDialog(QDialog):
         if path:
             self.hdri_edit.setText(path)
 
+    def _browse_photogrammetry(self):
+        from PySide6.QtWidgets import QFileDialog
+        start_dir = str(self._project_root) if self._project_root else ''
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select Photogrammetry File', start_dir,
+            '3D Files (*.obj *.fbx *.ply *.stl *.scn);;All Files (*)'
+        )
+        if path:
+            self.photogrammetry_edit.setText(path)
+
+    def _browse_usd_scene(self):
+        from PySide6.QtWidgets import QFileDialog
+        start_dir = str(self._project_root) if self._project_root else ''
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select USD Scene File', start_dir,
+            'USD Files (*.usd *.usda *.usdc);;All Files (*)'
+        )
+        if path:
+            self.usd_scene_edit.setText(path)
+
     def _accept(self):
         name = self.name_edit.text().strip()
         if not name:
@@ -747,6 +789,8 @@ class LightRigDialog(QDialog):
             'time_of_day': self.time_edit.text().strip(),
             'lighting_description': self.desc_edit.text().strip(),
             'hdri_path': self.hdri_edit.text().strip(),
+            'photogrammetry_path': self.photogrammetry_edit.text().strip(),
+            'usd_scene_path': self.usd_scene_edit.text().strip(),
         }
         self.accept()
 
@@ -1582,9 +1626,9 @@ class LightRigsPage(QWidget):
         layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(
-            ['', 'Name', 'Date', 'Time of Day', 'Description', 'HDRI']
+            ['', 'Name', 'Date', 'Time of Day', 'Description', 'HDRI', 'Photogrammetry', 'USD Scene']
         )
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -1629,12 +1673,30 @@ class LightRigsPage(QWidget):
                     from pipeline_app import convert_exr_to_png
                     thumb_path = rig_path / '_thumbnail.png'
                     convert_exr_to_png(hdri_src, str(thumb_path))
+            photogrammetry_src = data.get('photogrammetry_path', '')
+            photogrammetry_rel = ''
+            if photogrammetry_src and os.path.isfile(photogrammetry_src):
+                photogrammetry_dir = rig_path / 'photogrammetry'
+                photogrammetry_filename = os.path.basename(photogrammetry_src)
+                photogrammetry_dest = photogrammetry_dir / photogrammetry_filename
+                shutil.copy2(photogrammetry_src, str(photogrammetry_dest))
+                photogrammetry_rel = f'photogrammetry/{photogrammetry_filename}'
+            usd_src = data.get('usd_scene_path', '')
+            usd_rel = ''
+            if usd_src and os.path.isfile(usd_src):
+                usd_dir = rig_path / 'usd_scene'
+                usd_filename = os.path.basename(usd_src)
+                usd_dest = usd_dir / usd_filename
+                shutil.copy2(usd_src, str(usd_dest))
+                usd_rel = f'usd_scene/{usd_filename}'
             write_light_rig_meta(rig_path, {
                 'name': name,
                 'date': data['date'],
                 'time_of_day': data['time_of_day'],
                 'lighting_description': data['lighting_description'],
                 'hdri_path': hdri_rel,
+                'photogrammetry_path': photogrammetry_rel,
+                'usd_scene_path': usd_rel,
             })
             self._refresh()
             self._status(f'Light rig created: {name}', True)
@@ -1672,12 +1734,34 @@ class LightRigsPage(QWidget):
                 thumb_path = rig_path / '_thumbnail.png'
                 convert_exr_to_png(hdri_src, str(thumb_path))
 
+        photogrammetry_src = data.get('photogrammetry_path', '')
+        photogrammetry_rel = meta.get('photogrammetry_path', '')
+        if photogrammetry_src and os.path.isfile(photogrammetry_src) and not photogrammetry_src.startswith(str(rig_path)):
+            photogrammetry_dir = rig_path / 'photogrammetry'
+            photogrammetry_dir.mkdir(exist_ok=True)
+            photogrammetry_filename = os.path.basename(photogrammetry_src)
+            photogrammetry_dest = photogrammetry_dir / photogrammetry_filename
+            shutil.copy2(photogrammetry_src, str(photogrammetry_dest))
+            photogrammetry_rel = f'photogrammetry/{photogrammetry_filename}'
+
+        usd_src = data.get('usd_scene_path', '')
+        usd_rel = meta.get('usd_scene_path', '')
+        if usd_src and os.path.isfile(usd_src) and not usd_src.startswith(str(rig_path)):
+            usd_dir = rig_path / 'usd_scene'
+            usd_dir.mkdir(exist_ok=True)
+            usd_filename = os.path.basename(usd_src)
+            usd_dest = usd_dir / usd_filename
+            shutil.copy2(usd_src, str(usd_dest))
+            usd_rel = f'usd_scene/{usd_filename}'
+
         write_light_rig_meta(rig_path, {
             'name': data['name'],
             'date': data['date'],
             'time_of_day': data['time_of_day'],
             'lighting_description': data['lighting_description'],
             'hdri_path': hdri_rel,
+            'photogrammetry_path': photogrammetry_rel,
+            'usd_scene_path': usd_rel,
         })
         self._refresh()
         self._status(f'Light rig updated: {rig_name}', True)
@@ -1751,6 +1835,8 @@ class LightRigsPage(QWidget):
             self.table.setItem(i, 3, QTableWidgetItem(meta.get('time_of_day', '')))
             self.table.setItem(i, 4, QTableWidgetItem(meta.get('lighting_description', '')))
             self.table.setItem(i, 5, QTableWidgetItem(meta.get('hdri_path', '')))
+            self.table.setItem(i, 6, QTableWidgetItem(meta.get('photogrammetry_path', '')))
+            self.table.setItem(i, 7, QTableWidgetItem(meta.get('usd_scene_path', '')))
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(0, 72)
         self.table.setColumnWidth(4, max(self.table.columnWidth(4), 250))
