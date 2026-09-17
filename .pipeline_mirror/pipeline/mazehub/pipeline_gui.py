@@ -6,10 +6,11 @@ import platform
 import time
 import threading
 import webbrowser
+import shutil
 from pathlib import Path
 from collections import defaultdict
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QDateTime, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QDateTime, QTimer, QDate
 from PySide6.QtGui import QFont, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -17,12 +18,14 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QStackedWidget, QTextEdit, QFrame,
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
     QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog, QTabWidget,
-    QMenu, QCheckBox, QSpinBox, QProgressBar,
+    QMenu, QCheckBox, QSpinBox, QProgressBar, QDateEdit,
 )
 
 from pipeline_app import (
     find_project_root, setup_environment, load_apps_config,
     read_shot_meta, write_shot_meta, DEFAULT_SHOT_META,
+    read_light_rig_meta, write_light_rig_meta, list_light_rigs,
+    DEFAULT_LIGHT_RIG_META,
     APP_FILE_EXTENSIONS,
     build_context_env, _app_dir, APP_VERSION,
     discover_usd_files, discover_husk_passes,
@@ -86,6 +89,7 @@ SIDEBAR_ITEMS = [
     ('Home', 'Dashboard with project info and quick launch'),
     ('Launch Apps', 'Launch VFX applications'),
     ('Shot Explorer', 'Browse existing shots and create new ones'),
+    ('Light Rigs', 'Manage and browse light rigs'),
     ('Asset Explorer', 'Browse existing assets and create new ones'),
     ('Production', 'Track production progress across shots and assets'),
     ('Render', 'Headless USD rendering with husk'),
@@ -465,7 +469,7 @@ class FileBrowserPanel(QWidget):
 
 
 class ShotDialog(QDialog):
-    def __init__(self, parent=None, shot_name='', meta=None):
+    def __init__(self, parent=None, shot_name='', meta=None, project_root=None):
         super().__init__(parent)
         self.setWindowTitle('New Shot' if not shot_name else f'Edit Shot: {shot_name}')
         self.setMinimumWidth(500)
@@ -504,6 +508,16 @@ class ShotDialog(QDialog):
         self.fps_edit.setPlaceholderText('e.g. 24')
         form.addRow('Frame Rate:', self.fps_edit)
 
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat('yyyy-MM-dd')
+        stored_date = meta.get('date', '')
+        if stored_date:
+            self.date_edit.setDate(QDate.fromString(stored_date, 'yyyy-MM-dd'))
+        else:
+            self.date_edit.setDate(QDate.currentDate())
+        form.addRow('Date:', self.date_edit)
+
         self.focal_edit = QLineEdit(focal)
         self.focal_edit.setPlaceholderText('e.g. 50')
         form.addRow('Focal Length (mm):', self.focal_edit)
@@ -515,6 +529,18 @@ class ShotDialog(QDialog):
         self.nd_edit = QLineEdit(meta.get('nd_filter', DEFAULT_SHOT_META['nd_filter']))
         self.nd_edit.setPlaceholderText('e.g. 6')
         form.addRow('ND Filter (stops):', self.nd_edit)
+
+        self.light_rig_combo = QComboBox()
+        self.light_rig_combo.addItem('')
+        if project_root:
+            for rig_name in list_light_rigs(project_root):
+                self.light_rig_combo.addItem(rig_name)
+        current_rig = meta.get('light_rig', '')
+        if current_rig:
+            idx = self.light_rig_combo.findText(current_rig)
+            if idx >= 0:
+                self.light_rig_combo.setCurrentIndex(idx)
+        form.addRow('Light Rig:', self.light_rig_combo)
 
         self.desc_edit = QLineEdit(meta.get('description', DEFAULT_SHOT_META['description']))
         self.desc_edit.setPlaceholderText('e.g. Establishing wide shot')
@@ -563,9 +589,11 @@ class ShotDialog(QDialog):
             'name': name,
             'frame_range': f'{start}-{end}',
             'frame_rate': fps,
+            'date': self.date_edit.date().toString('yyyy-MM-dd'),
             'focal_length': focal,
             'iso': self.iso_edit.text().strip(),
             'nd_filter': self.nd_edit.text().strip(),
+            'light_rig': self.light_rig_combo.currentText(),
             'description': self.desc_edit.text().strip(),
         }
         self.accept()
@@ -625,6 +653,100 @@ class AssetDialog(QDialog):
         self._result = {
             'category': self.cat_combo.currentText(),
             'name': name,
+        }
+        self.accept()
+
+    def result_data(self):
+        return self._result
+
+
+class LightRigDialog(QDialog):
+    def __init__(self, parent=None, project_root=None, rig_name='', meta=None):
+        super().__init__(parent)
+        self.setWindowTitle('New Light Rig' if not rig_name else f'Edit Light Rig: {rig_name}')
+        self.setMinimumWidth(500)
+        self._result = None
+        self._project_root = project_root
+
+        if meta is None:
+            meta = DEFAULT_LIGHT_RIG_META
+
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+        self.name_edit = QLineEdit(rig_name or meta.get('name', ''))
+        self.name_edit.setPlaceholderText('e.g. Sunset Key')
+        form.addRow('Name:', self.name_edit)
+
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDisplayFormat('yyyy-MM-dd')
+        stored_date = meta.get('date', '')
+        if stored_date:
+            self.date_edit.setDate(QDate.fromString(stored_date, 'yyyy-MM-dd'))
+        else:
+            self.date_edit.setDate(QDate.currentDate())
+        form.addRow('Date:', self.date_edit)
+
+        self.time_edit = QLineEdit(meta.get('time_of_day', ''))
+        self.time_edit.setPlaceholderText('e.g. Golden Hour')
+        form.addRow('Time of Day:', self.time_edit)
+
+        self.desc_edit = QLineEdit(meta.get('lighting_description', ''))
+        self.desc_edit.setPlaceholderText('e.g. Warm key, cool fill')
+        form.addRow('Description:', self.desc_edit)
+
+        hdri_row = QHBoxLayout()
+        self.hdri_edit = QLineEdit(meta.get('hdri_path', ''))
+        self.hdri_edit.setPlaceholderText('No HDRI selected')
+        self.hdri_edit.setReadOnly(True)
+        hdri_row.addWidget(self.hdri_edit, 1)
+        self.hdri_browse_btn = QPushButton('Browse')
+        self.hdri_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.hdri_browse_btn.clicked.connect(self._browse_hdri)
+        hdri_row.addWidget(self.hdri_browse_btn)
+        form.addRow('HDRI:', hdri_row)
+        layout.addLayout(form)
+
+        self.error_label = QLabel('')
+        self.error_label.setObjectName('dialogError')
+        self.error_label.setVisible(False)
+        layout.addWidget(self.error_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        save_btn = QPushButton('Save' if rig_name else 'Create')
+        save_btn.setMinimumHeight(36)
+        save_btn.clicked.connect(self._accept)
+        btn_row.addWidget(save_btn)
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.setMinimumHeight(36)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+    def _browse_hdri(self):
+        from PySide6.QtWidgets import QFileDialog
+        start_dir = str(self._project_root) if self._project_root else ''
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select HDRI File', start_dir,
+            'HDRI Files (*.exr *.hdr *.png *.jpg *.jpeg);;All Files (*)'
+        )
+        if path:
+            self.hdri_edit.setText(path)
+
+    def _accept(self):
+        name = self.name_edit.text().strip()
+        if not name:
+            self.error_label.setText('Required: Name')
+            self.error_label.setVisible(True)
+            return
+        self._result = {
+            'name': name,
+            'date': self.date_edit.date().toString('yyyy-MM-dd'),
+            'time_of_day': self.time_edit.text().strip(),
+            'lighting_description': self.desc_edit.text().strip(),
+            'hdri_path': self.hdri_edit.text().strip(),
         }
         self.accept()
 
@@ -1196,9 +1318,9 @@ class ShotExplorerPage(QWidget):
         layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(11)
+        self.table.setColumnCount(13)
         self.table.setHorizontalHeaderLabels(
-            ['', 'Shot', 'Progress', 'Path', 'Frame Range', 'Frame Rate', 'Focal Length', 'ISO', 'ND Filter', 'Description', 'Working Dirs']
+            ['', 'Shot', 'Progress', 'Path', 'Frame Range', 'Frame Rate', 'Date', 'Focal Length', 'ISO', 'ND Filter', 'Light Rig', 'Description', 'Working Dirs']
         )
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -1225,7 +1347,7 @@ class ShotExplorerPage(QWidget):
         self._refresh()
 
     def _new_shot(self):
-        dialog = ShotDialog(self)
+        dialog = ShotDialog(self, project_root=self.project_root)
         if dialog.exec() != QDialog.Accepted:
             return
         data = dialog.result_data()
@@ -1243,9 +1365,11 @@ class ShotExplorerPage(QWidget):
             write_shot_meta(shot_path, {
                 'frame_range': data['frame_range'],
                 'frame_rate': data['frame_rate'],
+                'date': data['date'],
                 'focal_length': data['focal_length'],
                 'iso': data['iso'],
                 'nd_filter': data['nd_filter'],
+                'light_rig': data['light_rig'],
                 'description': data['description'],
             })
             self._refresh()
@@ -1262,7 +1386,7 @@ class ShotExplorerPage(QWidget):
         shot_path = self.project_root / 'sequence' / shot_name
         meta = read_shot_meta(shot_path)
 
-        dialog = ShotDialog(self, shot_name=shot_name, meta=meta)
+        dialog = ShotDialog(self, shot_name=shot_name, meta=meta, project_root=self.project_root)
         if dialog.exec() != QDialog.Accepted:
             return
         data = dialog.result_data()
@@ -1270,9 +1394,11 @@ class ShotExplorerPage(QWidget):
         write_shot_meta(shot_path, {
             'frame_range': data['frame_range'],
             'frame_rate': data['frame_rate'],
+            'date': data['date'],
             'focal_length': data['focal_length'],
             'iso': data['iso'],
             'nd_filter': data['nd_filter'],
+            'light_rig': data['light_rig'],
             'description': data['description'],
         })
         self._refresh()
@@ -1325,15 +1451,17 @@ class ShotExplorerPage(QWidget):
             self.table.setItem(i, 3, QTableWidgetItem(str(shot_path.relative_to(self.project_root))))
             self.table.setItem(i, 4, QTableWidgetItem(meta['frame_range']))
             self.table.setItem(i, 5, QTableWidgetItem(meta['frame_rate']))
-            self.table.setItem(i, 6, QTableWidgetItem(meta['focal_length']))
-            self.table.setItem(i, 7, QTableWidgetItem(meta['iso']))
-            self.table.setItem(i, 8, QTableWidgetItem(meta['nd_filter']))
-            self.table.setItem(i, 9, QTableWidgetItem(meta['description']))
-            self.table.setItem(i, 10, QTableWidgetItem(f'{working_count} dirs'))
+            self.table.setItem(i, 6, QTableWidgetItem(meta.get('date', '')))
+            self.table.setItem(i, 7, QTableWidgetItem(meta['focal_length']))
+            self.table.setItem(i, 8, QTableWidgetItem(meta['iso']))
+            self.table.setItem(i, 9, QTableWidgetItem(meta['nd_filter']))
+            self.table.setItem(i, 10, QTableWidgetItem(meta.get('light_rig', '')))
+            self.table.setItem(i, 11, QTableWidgetItem(meta['description']))
+            self.table.setItem(i, 12, QTableWidgetItem(f'{working_count} dirs'))
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(0, 72)
         self.table.setColumnWidth(3, max(self.table.columnWidth(3), 200))
-        self.table.setColumnWidth(10, max(self.table.columnWidth(10), 200))
+        self.table.setColumnWidth(12, max(self.table.columnWidth(12), 200))
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.setSortingEnabled(True)
 
@@ -1397,6 +1525,237 @@ class ShotExplorerPage(QWidget):
             import shutil
             shutil.copy2(file_path, item_path / '_thumbnail.png')
         self._refresh()
+
+    def _status(self, msg, ok=True):
+        window = self.window()
+        if hasattr(window, 'show_status'):
+            window.show_status(msg, ok)
+
+
+class LightRigsPage(QWidget):
+    def __init__(self, project_root, apps_config, pipeline_dir, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self.apps_config = apps_config
+        self.pipeline_dir = pipeline_dir
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        header = QHBoxLayout()
+        title = QLabel('Light Rigs')
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        header.addWidget(title)
+        header.addStretch()
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.setMinimumHeight(32)
+        self.refresh_btn.setCursor(Qt.PointingHandCursor)
+        self.refresh_btn.clicked.connect(self._refresh)
+        header.addWidget(self.refresh_btn)
+        layout.addLayout(header)
+        layout.addSpacing(8)
+
+        toolbar = QHBoxLayout()
+        new_btn = QPushButton('+ New Light Rig')
+        new_btn.setMinimumHeight(32)
+        new_btn.setCursor(Qt.PointingHandCursor)
+        new_btn.clicked.connect(self._new_rig)
+        toolbar.addWidget(new_btn)
+        self.edit_btn = QPushButton('Edit')
+        self.edit_btn.setMinimumHeight(32)
+        self.edit_btn.setCursor(Qt.PointingHandCursor)
+        self.edit_btn.setEnabled(False)
+        self.edit_btn.clicked.connect(self._edit_rig)
+        toolbar.addWidget(self.edit_btn)
+        self.delete_btn = QPushButton('Delete')
+        self.delete_btn.setMinimumHeight(32)
+        self.delete_btn.setCursor(Qt.PointingHandCursor)
+        self.delete_btn.setEnabled(False)
+        self.delete_btn.clicked.connect(self._delete_rig)
+        toolbar.addWidget(self.delete_btn)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(
+            ['', 'Name', 'Date', 'Time of Day', 'Description', 'HDRI']
+        )
+        self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setIconSize(QPixmap(64, 64).size())
+        self.table.setColumnWidth(0, 72)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.table.setSortingEnabled(True)
+        self.table.itemSelectionChanged.connect(self._on_selection_change)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
+        layout.addWidget(self.table, 1)
+
+        self._refresh()
+
+    def _new_rig(self):
+        dialog = LightRigDialog(self, project_root=self.project_root)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        data = dialog.result_data()
+        name = data['name']
+
+        from make_folders import make_light_rig_directory
+
+        rig_path = self.project_root / 'Light_Rigs' / name
+        if rig_path.exists():
+            self._status(f'Light rig already exists: {name}', False)
+            return
+
+        try:
+            make_light_rig_directory(str(rig_path))
+            hdri_src = data.get('hdri_path', '')
+            hdri_rel = ''
+            if hdri_src and os.path.isfile(hdri_src):
+                hdri_dir = rig_path / 'hdri'
+                hdri_filename = os.path.basename(hdri_src)
+                hdri_dest = hdri_dir / hdri_filename
+                shutil.copy2(hdri_src, str(hdri_dest))
+                hdri_rel = f'hdri/{hdri_filename}'
+                if hdri_src.lower().endswith('.exr'):
+                    from pipeline_app import convert_exr_to_png
+                    thumb_path = rig_path / '_thumbnail.png'
+                    convert_exr_to_png(hdri_src, str(thumb_path))
+            write_light_rig_meta(rig_path, {
+                'name': name,
+                'date': data['date'],
+                'time_of_day': data['time_of_day'],
+                'lighting_description': data['lighting_description'],
+                'hdri_path': hdri_rel,
+            })
+            self._refresh()
+            self._status(f'Light rig created: {name}', True)
+        except Exception as e:
+            self._status(f'Error: {e}', False)
+
+    def _edit_rig(self):
+        items = self.table.selectedItems()
+        if not items:
+            return
+        row = items[0].row()
+        rig_name = self.table.item(row, 1).text()
+        rig_path = self.project_root / 'Light_Rigs' / rig_name
+        meta = read_light_rig_meta(rig_path)
+
+        dialog = LightRigDialog(
+            self, project_root=self.project_root,
+            rig_name=rig_name, meta=meta,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        data = dialog.result_data()
+
+        hdri_src = data.get('hdri_path', '')
+        hdri_rel = meta.get('hdri_path', '')
+        if hdri_src and os.path.isfile(hdri_src) and not hdri_src.startswith(str(rig_path)):
+            hdri_dir = rig_path / 'hdri'
+            hdri_dir.mkdir(exist_ok=True)
+            hdri_filename = os.path.basename(hdri_src)
+            hdri_dest = hdri_dir / hdri_filename
+            shutil.copy2(hdri_src, str(hdri_dest))
+            hdri_rel = f'hdri/{hdri_filename}'
+            if hdri_src.lower().endswith('.exr'):
+                from pipeline_app import convert_exr_to_png
+                thumb_path = rig_path / '_thumbnail.png'
+                convert_exr_to_png(hdri_src, str(thumb_path))
+
+        write_light_rig_meta(rig_path, {
+            'name': data['name'],
+            'date': data['date'],
+            'time_of_day': data['time_of_day'],
+            'lighting_description': data['lighting_description'],
+            'hdri_path': hdri_rel,
+        })
+        self._refresh()
+        self._status(f'Light rig updated: {rig_name}', True)
+
+    def _delete_rig(self):
+        items = self.table.selectedItems()
+        if not items:
+            return
+        row = items[0].row()
+        rig_name = self.table.item(row, 1).text()
+        rig_path = self.project_root / 'Light_Rigs' / rig_name
+
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, 'Delete Light Rig',
+            f'Are you sure you want to delete "{rig_name}"?\nThis cannot be undone.',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        import shutil as _shutil
+        _shutil.rmtree(str(rig_path))
+        self._refresh()
+        self._status(f'Light rig deleted: {rig_name}', True)
+
+    def _on_selection_change(self):
+        items = self.table.selectedItems()
+        self.edit_btn.setEnabled(bool(items))
+        self.delete_btn.setEnabled(bool(items))
+
+    def _context_menu(self, pos):
+        item = self.table.itemAt(pos)
+        if not item:
+            return
+        row = item.row()
+        rig_name = self.table.item(row, 1).text()
+        menu = QMenu(self)
+        edit_action = menu.addAction('Edit Light Rig...')
+        delete_action = menu.addAction('Delete Light Rig')
+        action = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if action == edit_action:
+            self.table.selectRow(row)
+            self._edit_rig()
+        elif action == delete_action:
+            self.table.selectRow(row)
+            self._delete_rig()
+
+    def _refresh(self):
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        lightrigs_dir = self.project_root / 'Light_Rigs'
+        if not lightrigs_dir.exists():
+            return
+        rigs = sorted([
+            d.name for d in lightrigs_dir.iterdir()
+            if d.is_dir() and not d.name.startswith('_')
+        ])
+        self.table.setRowCount(len(rigs))
+        for i, name in enumerate(rigs):
+            rig_path = lightrigs_dir / name
+            meta = read_light_rig_meta(rig_path)
+            self.table.setRowHeight(i, 64)
+            thumb_item = QTableWidgetItem()
+            thumb_path = rig_path / '_thumbnail.png'
+            if thumb_path.exists():
+                thumb_item.setIcon(QIcon(str(thumb_path)))
+            self.table.setItem(i, 0, thumb_item)
+            self.table.setItem(i, 1, QTableWidgetItem(name))
+            self.table.setItem(i, 2, QTableWidgetItem(meta.get('date', '')))
+            self.table.setItem(i, 3, QTableWidgetItem(meta.get('time_of_day', '')))
+            self.table.setItem(i, 4, QTableWidgetItem(meta.get('lighting_description', '')))
+            self.table.setItem(i, 5, QTableWidgetItem(meta.get('hdri_path', '')))
+        self.table.resizeColumnsToContents()
+        self.table.setColumnWidth(0, 72)
+        self.table.setColumnWidth(4, max(self.table.columnWidth(4), 250))
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.setSortingEnabled(True)
 
     def _status(self, msg, ok=True):
         window = self.window()
@@ -3836,11 +4195,13 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
 
         page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
-                        AssetExplorerPage, ProductionPage, RenderPage, PreviewPage,
+                        LightRigsPage, AssetExplorerPage, ProductionPage,
+                        RenderPage, PreviewPage,
                         EnvVarsPage, SettingsPage, LogPage, HelpPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
             (self.apps_config, self.pipeline_dir, self.project_root),
+            (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.pipeline_dir),
@@ -3852,7 +4213,7 @@ class MainWindow(QMainWindow):
             (),
         ]
 
-        SIDEBAR_RENDER_IDX = 6
+        SIDEBAR_RENDER_IDX = 7
         for i, (label, tooltip) in enumerate(SIDEBAR_ITEMS):
             if label == 'Help':
                 sidebar_layout.addStretch()

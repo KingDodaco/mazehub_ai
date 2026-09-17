@@ -12,6 +12,7 @@ NEW_PROJECT_DIRECTORY = ['asset',
                          'rnd',
                          'IO',
                          'MISC',
+                         'Light_Rigs',
 
                          'pipeline/Houdini21.0',
                          'pipeline/Nuke',
@@ -122,6 +123,8 @@ NEW_SHOOT_DAY_DIRECTORY = ['backup',
                            'shot/_empty_shot_/hdri',
                            'shot/_empty_shot_/footage'
                            ]
+
+NEW_LIGHT_RIG_DIRECTORY = ['hdri']
 
 
 def initialize_project(project_path):
@@ -240,6 +243,17 @@ def repair_project_structure(project_root):
                         os.makedirs(sub_path)
                         missing.append(os.path.relpath(sub_path, root))
 
+    lightrigs_path = os.path.join(root, 'Light_Rigs')
+    if os.path.exists(lightrigs_path):
+        for name in os.listdir(lightrigs_path):
+            rig_path = os.path.join(lightrigs_path, name)
+            if os.path.isdir(rig_path):
+                for subdir in NEW_LIGHT_RIG_DIRECTORY:
+                    sub_path = os.path.join(rig_path, subdir)
+                    if not os.path.exists(sub_path):
+                        os.makedirs(sub_path)
+                        missing.append(os.path.relpath(sub_path, root))
+
     return missing
 
 
@@ -253,6 +267,28 @@ def make_shoot_directory(path):
     """
     if path:
         for single_directory in NEW_SHOOT_DAY_DIRECTORY:
+            construct_subscope_path = os.path.join(path, single_directory)
+            if not os.path.exists(construct_subscope_path):
+                os.makedirs(construct_subscope_path)
+
+
+def make_light_rig_directory(path):
+    """Create directory structure for a light rig.
+
+    Args:
+        path: Path to the light rig directory where subfolders should be created.
+
+    Creates all directories listed in NEW_LIGHT_RIG_DIRECTORY under the given path.
+    Returns Exception if the directory already exists.
+    """
+    if not os.path.exists(path):
+        os.makedirs(path)
+    else:
+        print(f"Directory already exists: {path}")
+        return Exception("Directory already exists")
+
+    if path:
+        for single_directory in NEW_LIGHT_RIG_DIRECTORY:
             construct_subscope_path = os.path.join(path, single_directory)
             if not os.path.exists(construct_subscope_path):
                 os.makedirs(construct_subscope_path)

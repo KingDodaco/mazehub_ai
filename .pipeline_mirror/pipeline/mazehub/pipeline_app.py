@@ -157,9 +157,11 @@ SHOT_META_FILENAME = '_metadata.json'
 DEFAULT_SHOT_META = {
     'frame_range': '1001-1240',
     'frame_rate': '24',
+    'date': '',
     'focal_length': '50mm',
     'iso': '800',
     'nd_filter': '6',
+    'light_rig': '',
     'description': '',
 }
 
@@ -180,6 +182,45 @@ def write_shot_meta(shot_path, metadata):
     clean = {k: metadata.get(k, '') for k in DEFAULT_SHOT_META}
     with open(meta_path, 'w') as f:
         json.dump(clean, f, indent=2)
+
+
+LIGHT_RIG_META_FILENAME = '_metadata.json'
+
+DEFAULT_LIGHT_RIG_META = {
+    'name': '',
+    'date': '',
+    'time_of_day': '',
+    'lighting_description': '',
+    'hdri_path': '',
+}
+
+
+def read_light_rig_meta(rig_path):
+    meta_path = Path(rig_path) / LIGHT_RIG_META_FILENAME
+    if meta_path.exists():
+        with open(meta_path) as f:
+            stored = json.load(f)
+            result = dict(DEFAULT_LIGHT_RIG_META)
+            result.update(stored)
+            return result
+    return dict(DEFAULT_LIGHT_RIG_META)
+
+
+def write_light_rig_meta(rig_path, metadata):
+    meta_path = Path(rig_path) / LIGHT_RIG_META_FILENAME
+    clean = {k: metadata.get(k, '') for k in DEFAULT_LIGHT_RIG_META}
+    with open(meta_path, 'w') as f:
+        json.dump(clean, f, indent=2)
+
+
+def list_light_rigs(project_root):
+    lightrigs_dir = Path(project_root) / 'Light_Rigs'
+    if not lightrigs_dir.exists():
+        return []
+    return sorted([
+        d.name for d in lightrigs_dir.iterdir()
+        if d.is_dir() and not d.name.startswith('_')
+    ])
 
 
 PRODUCTION_FILENAME = '_production.json'

@@ -1,8 +1,10 @@
 {
   "frame_range": "1001-1100",
   "frame_rate": "24",
+  "date": "2026-09-15",
   "focal_length": "24mm",
   "iso": "800",
   "nd_filter": "6",
+  "light_rig": "",
   "description": "Test shot"
 }
