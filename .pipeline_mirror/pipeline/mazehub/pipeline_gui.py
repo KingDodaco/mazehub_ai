@@ -34,6 +34,7 @@ from pipeline_app import (
     PRODUCTION_STATUSES, PRODUCTION_VALUES,
     ASSET_CATEGORIES, SHOT_CATEGORIES,
 )
+from recent_files import get_last_app_version, set_last_app_version
 
 
 def _score_color(score_str):
@@ -1098,6 +1099,10 @@ class DashboardPage(QWidget):
     def _quick_launch(self, app_name):
         cfg = self.apps_config.get(app_name)
         if cfg:
+            saved_version = get_last_app_version(app_name)
+            if saved_version and 'version_executables' in cfg and saved_version in cfg['version_executables']:
+                cfg = dict(cfg)
+                cfg['executable'] = cfg['version_executables'][saved_version]
             self._run_launch(cfg)
 
     def _run_launch(self, cfg):
@@ -1196,17 +1201,42 @@ class LaunchAppsPage(QWidget):
         container_layout = QGridLayout(container)
         container_layout.setSpacing(12)
 
+        self._version_menus = {}
+        self._version_labels = {}
+        self._version_buttons = {}
+        self._app_configs = {}
+
         if self.apps_config:
             row = 0
             col = 0
             for name, cfg in self.apps_config.items():
                 cfg['_key'] = name
+                self._app_configs[name] = cfg
+                btn_row = QHBoxLayout()
                 launch_btn = QPushButton(cfg['display_name'])
                 launch_btn.setMinimumHeight(48)
                 launch_btn.setCursor(Qt.PointingHandCursor)
                 launch_btn.setObjectName('appLaunchBtn')
                 launch_btn.clicked.connect(lambda checked, c=cfg: self._launch(c))
-                container_layout.addWidget(launch_btn, row, col)
+                btn_row.addWidget(launch_btn, 1)
+                if 'versions' in cfg and cfg['versions']:
+                    saved_version = get_last_app_version(name)
+                    last_ver = saved_version if saved_version in cfg['versions'] else cfg['versions'][-1]
+                    self._version_labels[name] = last_ver
+                    version_btn = QPushButton(last_ver)
+                    version_btn.setMinimumHeight(48)
+                    version_btn.setMinimumWidth(32)
+                    version_btn.setCursor(Qt.PointingHandCursor)
+                    version_btn.setObjectName('appVersionBtn')
+                    menu = QMenu()
+                    for v in cfg['versions']:
+                        action = menu.addAction(v)
+                        action.triggered.connect(lambda checked, ver=v, k=name: self._select_version(k, ver))
+                    version_btn.setMenu(menu)
+                    self._version_menus[name] = menu
+                    self._version_buttons[name] = version_btn
+                    btn_row.addWidget(version_btn)
+                container_layout.addLayout(btn_row, row, col)
                 col += 1
                 if col >= 2:
                     col = 0
@@ -1294,12 +1324,25 @@ class LaunchAppsPage(QWidget):
         self._file_panel.set_directory(path, self._context)
 
     def _launch(self, cfg):
+        key = cfg.get('_key', '')
+        if key in self._version_labels:
+            version = self._version_labels[key]
+            if 'version_executables' in cfg and version in cfg['version_executables']:
+                cfg = dict(cfg)
+                cfg['executable'] = cfg['version_executables'][version]
+                set_last_app_version(key, version)
         self.thread = AppLauncherThread(
             cfg, self.pipeline_dir,
             project_root=self.project_root, context=self._context,
         )
         self.thread.finished.connect(lambda msg, ok: self._result(msg, ok))
         self.thread.start()
+
+    def _select_version(self, app_key, version):
+        self._version_labels[app_key] = version
+        btn = self._version_buttons.get(app_key)
+        if btn:
+            btn.setText(version)
 
     def _result(self, msg, ok):
         window = self.window()
@@ -2368,7 +2411,9 @@ class PreviewPage(QWidget):
             self.status_label.setText(f'Opened {seq["prefix"]}')
             return
 
-        mplay_path = self.pipeline_dir / 'Houdini21.0' / 'bin' / 'mplay.exe'
+        mplay_path = self.pipeline_dir / 'Houdini' / 'bin' / 'mplay.exe'
+        if not mplay_path.exists():
+            mplay_path = Path(r'C:\Program Files\Side Effects Software\Houdini 22.0.416\bin\mplay.exe')
         if not mplay_path.exists():
             mplay_path = Path(r'C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\mplay.exe')
         if not mplay_path.exists():
@@ -2382,7 +2427,7 @@ class PreviewPage(QWidget):
             self.project_root,
         )
         launch_env.update(ctx_env)
-        launch_env['HOUDINI_PATH'] = str(self.pipeline_dir / 'Houdini21.0') + ';&;' + launch_env.get('HOUDINI_PATH', '')
+        launch_env['HOUDINI_PATH'] = str(self.pipeline_dir / 'Houdini') + ';&;' + launch_env.get('HOUDINI_PATH', '')
 
         ocio_config = self.pipeline_dir / 'OCIO' / 'BU_nov2024_config.ocio'
         if ocio_config.exists():
@@ -3450,6 +3495,15 @@ class RenderPage(QWidget):
         version_row.addStretch()
         layout.addLayout(version_row)
 
+        houdini_version_row = QHBoxLayout()
+        houdini_version_row.addWidget(QLabel('Houdini Version:'))
+        self.houdini_version_combo = QComboBox()
+        self.houdini_version_combo.setMinimumWidth(260)
+        self.houdini_version_combo.addItems(['22.0', '21.0'])
+        houdini_version_row.addWidget(self.houdini_version_combo, 1)
+        houdini_version_row.addStretch()
+        layout.addLayout(houdini_version_row)
+
         render_engine_row = QHBoxLayout()
         render_engine_row.addWidget(QLabel('Render Engine:'))
         self.render_engine_combo = QComboBox()
@@ -3645,6 +3699,20 @@ class RenderPage(QWidget):
             self.log_output.append('[info] husk not found — configure in Settings')
             return
 
+        houdini_version = self.houdini_version_combo.currentText()
+        if houdini_version == '22.0':
+            husk_candidates = [
+                Path(r'C:\Program Files\Side Effects Software\Houdini 22.0.416\bin\husk.exe'),
+            ]
+        else:
+            husk_candidates = [
+                Path(r'C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\husk.exe'),
+            ]
+        for candidate in husk_candidates:
+            if candidate.exists():
+                husk_path = str(candidate)
+                break
+
         self.log_output.append(f'[info] Discovering passes: {husk_path} --list-passes {usd_file.name}')
         passes = discover_husk_passes(husk_path, usd_file)
         if not passes:
@@ -3695,11 +3763,25 @@ class RenderPage(QWidget):
             self._status('Select at least one render pass', False)
             return
 
+        houdini_version = self.houdini_version_combo.currentText()
         husk_path = find_husk()
         if not husk_path:
             self.log_output.append('[error] husk binary not found — configure in Settings')
             self._status('husk binary not found — configure in Settings', False)
             return
+
+        if houdini_version == '22.0':
+            husk_candidates = [
+                Path(r'C:\Program Files\Side Effects Software\Houdini 22.0.416\bin\husk.exe'),
+            ]
+        else:
+            husk_candidates = [
+                Path(r'C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\husk.exe'),
+            ]
+        for candidate in husk_candidates:
+            if candidate.exists():
+                husk_path = str(candidate)
+                break
 
         shot_path = self.project_root / 'sequence' / shot_name
         usd_file = shot_path / 'houdini' / 'USD' / usd_name

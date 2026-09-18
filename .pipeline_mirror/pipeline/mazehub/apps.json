@@ -1,15 +1,25 @@
 {
     "Houdini":{
         "display_name":"Houdini",
-        "executable":"MAZE_Houdini_21.0.bat",
-        "subdir":"Houdini21.0",
-        "appsanywhere": false
+        "executable":"MAZE_Houdini_22.0.bat",
+        "subdir":"Houdini",
+        "appsanywhere": false,
+        "versions":["21.0", "22.0"],
+        "version_executables":{
+            "21.0":"MAZE_Houdini_21.0.bat",
+            "22.0":"MAZE_Houdini_22.0.bat"
+        }
     },
     "NukeX":{
         "display_name":"NukeX",
-        "executable":"MAZE_NukeX.bat",
+        "executable":"MAZE_NukeX_17.0.bat",
         "subdir":"Nuke",
-        "appsanywhere": true
+        "appsanywhere": true,
+        "versions":["15.2", "17.0"],
+        "version_executables":{
+            "15.2":"MAZE_NukeX_15.2.bat",
+            "17.0":"MAZE_NukeX_17.0.bat"
+        }
     },
     "SubstancePainter":{
         "display_name":"Substance Painter",
@@ -25,9 +35,14 @@
     },
     "Maya":{
         "display_name":"Maya",
-        "executable":"MAZE_Maya.bat",
+        "executable":"MAZE_Maya_2026.bat",
         "subdir":"Maya",
-        "appsanywhere": false
+        "appsanywhere": false,
+        "versions":["2025", "2026"],
+        "version_executables":{
+            "2025":"MAZE_Maya_2025.bat",
+            "2026":"MAZE_Maya_2026.bat"
+        }
     },
     "Blender":{
         "display_name":"Blender",
@@ -50,8 +65,13 @@
     "USD":{
         "display_name":"USDview",
         "file_label":"USD",
-        "executable":"MAZE_usdview.bat",
-        "subdir":"Houdini21.0",
-        "appsanywhere": false
+        "executable":"MAZE_usdview_22.0.bat",
+        "subdir":"Houdini",
+        "appsanywhere": false,
+        "versions":["21.0", "22.0"],
+        "version_executables":{
+            "21.0":"MAZE_usdview_21.0.bat",
+            "22.0":"MAZE_usdview_22.0.bat"
+        }
     }
 }

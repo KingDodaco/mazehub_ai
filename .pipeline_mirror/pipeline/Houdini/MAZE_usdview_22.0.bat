@@ -1,0 +1,23 @@
+@echo off
+setlocal
+
+set "PIPELINE_DIR=%MAZE_PIPELINE%"
+
+set HOUDINI_PACKAGE_DIR=%PIPELINE_DIR%\Houdini\Packages
+set HOUDINI_PATH=^&;%HOUDINI_PATH%
+
+echo Launching usdview (Houdini 22.0)...
+echo START_FRAME=%START_FRAME%  END_FRAME=%END_FRAME%  FRAME_RATE=%FRAME_RATE%
+
+call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
+
+set "USD_FILE=%MAZE_OPEN_FILE%"
+
+if defined USD_FILE (
+    echo Opening: %USD_FILE%
+    start "" "C:\Program Files\Side Effects Software\Houdini 22.0.416\bin\usdview.cmd" "%USD_FILE%"
+) else (
+    start "" "C:\Program Files\Side Effects Software\Houdini 22.0.416\bin\usdview.cmd"
+)
+
+endlocal

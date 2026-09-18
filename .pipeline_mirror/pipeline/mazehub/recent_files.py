@@ -84,3 +84,49 @@ def remove_recent_file(path):
 
 def clear_recent_files():
     save_recent_files([])
+
+
+def _get_app_versions_path():
+    """Get the app versions path - per-user in project folder, or fallback to home."""
+    try:
+        from settings import _get_project_root
+        project_root = _get_project_root()
+        if project_root:
+            username = getpass.getuser()
+            return project_root / 'pipeline' / 'mazehub' / f'app_versions_{username}.json'
+    except Exception:
+        pass
+    return Path.home() / '.config' / 'mazehub' / 'app_versions.json'
+
+
+def load_app_versions():
+    path = _get_app_versions_path()
+    _ensure_dir(path)
+    if path.exists():
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_app_versions(versions):
+    path = _get_app_versions_path()
+    _ensure_dir(path)
+    try:
+        with open(path, 'w') as f:
+            json.dump(versions, f, indent=2)
+    except Exception:
+        pass
+
+
+def get_last_app_version(app_key):
+    versions = load_app_versions()
+    return versions.get(app_key, '')
+
+
+def set_last_app_version(app_key, version):
+    versions = load_app_versions()
+    versions[app_key] = version
+    save_app_versions(versions)

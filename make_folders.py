@@ -14,7 +14,7 @@ NEW_PROJECT_DIRECTORY = ['asset',
                          'MISC',
                          'Light_Rigs',
 
-                         'pipeline/Houdini21.0',
+                         'pipeline/Houdini',
                          'pipeline/Nuke',
                          'pipeline/Maya',
                          'pipeline/Blender',
