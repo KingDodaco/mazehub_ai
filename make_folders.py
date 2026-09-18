@@ -124,7 +124,9 @@ NEW_SHOOT_DAY_DIRECTORY = ['backup',
                            'shot/_empty_shot_/footage'
                            ]
 
-NEW_LIGHT_RIG_DIRECTORY = ['hdri', 'photogrammetry', 'usd_scene']
+NEW_LIGHT_RIG_DIRECTORY = ['hdri', 'photogrammetry', 'usd_scene',
+                            'nuke', 'nuke/script', 'nuke/render', 'nuke/geo',
+                            'houdini', 'houdini/hip', 'houdini/geo', 'houdini/render', 'houdini/USD', 'houdini/tex']
 
 
 def initialize_project(project_path):

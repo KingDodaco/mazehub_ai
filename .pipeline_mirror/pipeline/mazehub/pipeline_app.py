@@ -194,6 +194,8 @@ DEFAULT_LIGHT_RIG_META = {
     'hdri_path': '',
     'photogrammetry_path': '',
     'usd_scene_path': '',
+    'nuke_path': '',
+    'houdini_path': '',
 }
 
 
@@ -344,6 +346,13 @@ def build_context_env(context, project_root):
         fps = meta.get('frame_rate', '')
         if fps:
             env['FRAME_RATE'] = fps
+    elif context['type'] == 'light_rig':
+        meta = read_light_rig_meta(ctx_path)
+        env['MAZE_LIGHT_RIG_HDRI'] = meta.get('hdri_path', '')
+        env['MAZE_LIGHT_RIG_PHOTOGRAWMETRY'] = meta.get('photogrammetry_path', '')
+        env['MAZE_LIGHT_RIG_USD'] = meta.get('usd_scene_path', '')
+        env['MAZE_LIGHT_RIG_NUKE'] = meta.get('nuke_path', '')
+        env['MAZE_LIGHT_RIG_HOUDINI'] = meta.get('houdini_path', '')
 
     app_env = APP_CONTEXT_ENV.get(context.get('app_name', ''), {})
     for key, template in app_env.items():

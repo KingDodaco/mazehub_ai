@@ -729,6 +729,29 @@ class LightRigDialog(QDialog):
         self.usd_scene_browse_btn.clicked.connect(self._browse_usd_scene)
         usd_row.addWidget(self.usd_scene_browse_btn)
         form.addRow('USD Scene:', usd_row)
+
+        nuke_row = QHBoxLayout()
+        self.nuke_edit = QLineEdit(meta.get('nuke_path', ''))
+        self.nuke_edit.setPlaceholderText('No Nuke script selected')
+        self.nuke_edit.setReadOnly(True)
+        nuke_row.addWidget(self.nuke_edit, 1)
+        self.nuke_browse_btn = QPushButton('Browse')
+        self.nuke_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.nuke_browse_btn.clicked.connect(self._browse_nuke)
+        nuke_row.addWidget(self.nuke_browse_btn)
+        form.addRow('Nuke Script:', nuke_row)
+
+        houdini_row = QHBoxLayout()
+        self.houdini_edit = QLineEdit(meta.get('houdini_path', ''))
+        self.houdini_edit.setPlaceholderText('No Houdini scene selected')
+        self.houdini_edit.setReadOnly(True)
+        houdini_row.addWidget(self.houdini_edit, 1)
+        self.houdini_browse_btn = QPushButton('Browse')
+        self.houdini_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.houdini_browse_btn.clicked.connect(self._browse_houdini)
+        houdini_row.addWidget(self.houdini_browse_btn)
+        form.addRow('Houdini Scene:', houdini_row)
+
         layout.addLayout(form)
 
         self.error_label = QLabel('')
@@ -778,6 +801,26 @@ class LightRigDialog(QDialog):
         if path:
             self.usd_scene_edit.setText(path)
 
+    def _browse_nuke(self):
+        from PySide6.QtWidgets import QFileDialog
+        start_dir = str(self._project_root) if self._project_root else ''
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select Nuke Script', start_dir,
+            'Nuke Scripts (*.nk);;All Files (*)'
+        )
+        if path:
+            self.nuke_edit.setText(path)
+
+    def _browse_houdini(self):
+        from PySide6.QtWidgets import QFileDialog
+        start_dir = str(self._project_root) if self._project_root else ''
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select Houdini Scene', start_dir,
+            'Houdini Files (*.hip *.hiplc *.hipnc);;All Files (*)'
+        )
+        if path:
+            self.houdini_edit.setText(path)
+
     def _accept(self):
         name = self.name_edit.text().strip()
         if not name:
@@ -792,6 +835,8 @@ class LightRigDialog(QDialog):
             'hdri_path': self.hdri_edit.text().strip(),
             'photogrammetry_path': self.photogrammetry_edit.text().strip(),
             'usd_scene_path': self.usd_scene_edit.text().strip(),
+            'nuke_path': self.nuke_edit.text().strip(),
+            'houdini_path': self.houdini_edit.text().strip(),
         }
         self.accept()
 
@@ -1161,7 +1206,7 @@ class LaunchAppsPage(QWidget):
         ctx_row = QHBoxLayout()
         ctx_row.addWidget(QLabel('Context:'))
         self.ctx_combo = QComboBox()
-        self.ctx_combo.addItems(['None', 'Shot', 'Asset'])
+        self.ctx_combo.addItems(['None', 'Shot', 'Asset', 'Light Rig'])
         self.ctx_combo.currentTextChanged.connect(self._on_context_type_change)
         ctx_row.addWidget(self.ctx_combo)
 
@@ -1179,6 +1224,11 @@ class LaunchAppsPage(QWidget):
         self.ctx_asset_combo.setVisible(False)
         self.ctx_asset_combo.currentTextChanged.connect(self._update_context)
         ctx_row.addWidget(self.ctx_asset_combo)
+
+        self.ctx_lightrig_combo = QComboBox()
+        self.ctx_lightrig_combo.setVisible(False)
+        self.ctx_lightrig_combo.currentTextChanged.connect(self._update_context)
+        ctx_row.addWidget(self.ctx_lightrig_combo)
 
         ctx_row.addStretch()
         ctx_layout.addLayout(ctx_row)
@@ -1280,8 +1330,11 @@ class LaunchAppsPage(QWidget):
         self.ctx_shot_combo.setVisible(text == 'Shot')
         self.ctx_cat_combo.setVisible(text == 'Asset')
         self.ctx_asset_combo.setVisible(text == 'Asset')
+        self.ctx_lightrig_combo.setVisible(text == 'Light Rig')
         if text == 'Asset':
             self._on_category_change(self.ctx_cat_combo.currentText())
+        if text == 'Light Rig':
+            self._populate_light_rigs()
         self._update_context()
 
     def _on_category_change(self, category):
@@ -1291,6 +1344,13 @@ class LaunchAppsPage(QWidget):
             assets = sorted(d.name for d in asset_dir.iterdir() if d.is_dir() and not d.name.startswith('_'))
             self.ctx_asset_combo.addItems(assets)
         self._update_context()
+
+    def _populate_light_rigs(self):
+        self.ctx_lightrig_combo.clear()
+        lightrigs_dir = self.project_root / 'Light_Rigs'
+        if lightrigs_dir.exists():
+            rigs = sorted(d.name for d in lightrigs_dir.iterdir() if d.is_dir() and not d.name.startswith('_'))
+            self.ctx_lightrig_combo.addItems(rigs)
 
     def _update_context(self):
         ctx_type = self.ctx_combo.currentText()
@@ -1307,6 +1367,13 @@ class LaunchAppsPage(QWidget):
                 self.ctx_info.setText('No shots available.')
                 return
             path = self.project_root / 'sequence' / name
+        elif ctx_type == 'Light Rig':
+            name = self.ctx_lightrig_combo.currentText()
+            if not name:
+                self._context = None
+                self.ctx_info.setText('No light rigs available.')
+                return
+            path = self.project_root / 'Light_Rigs' / name
         else:
             cat = self.ctx_cat_combo.currentText()
             name = self.ctx_asset_combo.currentText()
@@ -1648,7 +1715,7 @@ class LightRigsPage(QWidget):
         layout.addSpacing(8)
 
         toolbar = QHBoxLayout()
-        new_btn = QPushButton('+ New Light Rig')
+        new_btn = QPushButton('New Light Rig')
         new_btn.setMinimumHeight(32)
         new_btn.setCursor(Qt.PointingHandCursor)
         new_btn.clicked.connect(self._new_rig)
@@ -1659,12 +1726,6 @@ class LightRigsPage(QWidget):
         self.edit_btn.setEnabled(False)
         self.edit_btn.clicked.connect(self._edit_rig)
         toolbar.addWidget(self.edit_btn)
-        self.delete_btn = QPushButton('Delete')
-        self.delete_btn.setMinimumHeight(32)
-        self.delete_btn.setCursor(Qt.PointingHandCursor)
-        self.delete_btn.setEnabled(False)
-        self.delete_btn.clicked.connect(self._delete_rig)
-        toolbar.addWidget(self.delete_btn)
         toolbar.addStretch()
         layout.addLayout(toolbar)
 
@@ -1685,6 +1746,15 @@ class LightRigsPage(QWidget):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.table, 1)
+
+        self.file_browser = QGroupBox('Light Rig Files')
+        fb_layout = QVBoxLayout(self.file_browser)
+        self._file_panel = FileBrowserPanel(
+            self.project_root, self.apps_config, self.pipeline_dir
+        )
+        fb_layout.addWidget(self._file_panel)
+        layout.addWidget(self.file_browser)
+        self.file_browser.setVisible(False)
 
         self._refresh()
 
@@ -1809,32 +1879,20 @@ class LightRigsPage(QWidget):
         self._refresh()
         self._status(f'Light rig updated: {rig_name}', True)
 
-    def _delete_rig(self):
-        items = self.table.selectedItems()
-        if not items:
-            return
-        row = items[0].row()
-        rig_name = self.table.item(row, 1).text()
-        rig_path = self.project_root / 'Light_Rigs' / rig_name
-
-        from PySide6.QtWidgets import QMessageBox
-        reply = QMessageBox.question(
-            self, 'Delete Light Rig',
-            f'Are you sure you want to delete "{rig_name}"?\nThis cannot be undone.',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        import shutil as _shutil
-        _shutil.rmtree(str(rig_path))
-        self._refresh()
-        self._status(f'Light rig deleted: {rig_name}', True)
-
     def _on_selection_change(self):
         items = self.table.selectedItems()
         self.edit_btn.setEnabled(bool(items))
-        self.delete_btn.setEnabled(bool(items))
+        if items:
+            row = items[0].row()
+            rig_name = self.table.item(row, 1).text()
+            rig_path = self.project_root / 'Light_Rigs' / rig_name
+            ctx = {'type': 'light_rig', 'name': rig_name, 'path': rig_path}
+            self._file_panel.set_directory(rig_path, context=ctx)
+            self.file_browser.setTitle(f'Files: {rig_name}')
+            self.file_browser.setVisible(True)
+        else:
+            self._file_panel.clear()
+            self.file_browser.setVisible(False)
 
     def _context_menu(self, pos):
         item = self.table.itemAt(pos)
@@ -1844,14 +1902,10 @@ class LightRigsPage(QWidget):
         rig_name = self.table.item(row, 1).text()
         menu = QMenu(self)
         edit_action = menu.addAction('Edit Light Rig...')
-        delete_action = menu.addAction('Delete Light Rig')
         action = menu.exec(self.table.viewport().mapToGlobal(pos))
         if action == edit_action:
             self.table.selectRow(row)
             self._edit_rig()
-        elif action == delete_action:
-            self.table.selectRow(row)
-            self._delete_rig()
 
     def _refresh(self):
         self.table.setSortingEnabled(False)
