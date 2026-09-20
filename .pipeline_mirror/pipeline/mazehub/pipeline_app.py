@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.6.0"
 
 
 def _get_display_name():
@@ -218,7 +218,7 @@ def write_light_rig_meta(rig_path, metadata):
 
 
 def list_light_rigs(project_root):
-    lightrigs_dir = Path(project_root) / 'Light_Rigs'
+    lightrigs_dir = Path(project_root) / 'lightrigs'
     if not lightrigs_dir.exists():
         return []
     return sorted([

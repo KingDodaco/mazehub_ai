@@ -12,7 +12,7 @@ NEW_PROJECT_DIRECTORY = ['asset',
                          'rnd',
                          'IO',
                          'MISC',
-                         'Light_Rigs',
+                         'lightrigs',
 
                          'pipeline/Houdini',
                          'pipeline/Nuke',
@@ -126,7 +126,8 @@ NEW_SHOOT_DAY_DIRECTORY = ['backup',
 
 NEW_LIGHT_RIG_DIRECTORY = ['hdri', 'photogrammetry', 'usd_scene',
                             'nuke', 'nuke/script', 'nuke/render', 'nuke/geo',
-                            'houdini', 'houdini/hip', 'houdini/geo', 'houdini/render', 'houdini/USD', 'houdini/tex']
+                            'houdini', 'houdini/hip', 'houdini/geo', 'houdini/render', 'houdini/USD', 'houdini/tex',
+                            'ptgui', 'ptgui/project', 'ptgui/panorama']
 
 
 def initialize_project(project_path):
@@ -245,7 +246,7 @@ def repair_project_structure(project_root):
                         os.makedirs(sub_path)
                         missing.append(os.path.relpath(sub_path, root))
 
-    lightrigs_path = os.path.join(root, 'Light_Rigs')
+    lightrigs_path = os.path.join(root, 'lightrigs')
     if os.path.exists(lightrigs_path):
         for name in os.listdir(lightrigs_path):
             rig_path = os.path.join(lightrigs_path, name)

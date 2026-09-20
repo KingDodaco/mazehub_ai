@@ -1347,7 +1347,7 @@ class LaunchAppsPage(QWidget):
 
     def _populate_light_rigs(self):
         self.ctx_lightrig_combo.clear()
-        lightrigs_dir = self.project_root / 'Light_Rigs'
+        lightrigs_dir = self.project_root / 'lightrigs'
         if lightrigs_dir.exists():
             rigs = sorted(d.name for d in lightrigs_dir.iterdir() if d.is_dir() and not d.name.startswith('_'))
             self.ctx_lightrig_combo.addItems(rigs)
@@ -1373,7 +1373,7 @@ class LaunchAppsPage(QWidget):
                 self._context = None
                 self.ctx_info.setText('No light rigs available.')
                 return
-            path = self.project_root / 'Light_Rigs' / name
+            path = self.project_root / 'lightrigs' / name
         else:
             cat = self.ctx_cat_combo.currentText()
             name = self.ctx_asset_combo.currentText()
@@ -1767,7 +1767,7 @@ class LightRigsPage(QWidget):
 
         from make_folders import make_light_rig_directory
 
-        rig_path = self.project_root / 'Light_Rigs' / name
+        rig_path = self.project_root / 'lightrigs' / name
         if rig_path.exists():
             self._status(f'Light rig already exists: {name}', False)
             return
@@ -1822,7 +1822,7 @@ class LightRigsPage(QWidget):
             return
         row = items[0].row()
         rig_name = self.table.item(row, 1).text()
-        rig_path = self.project_root / 'Light_Rigs' / rig_name
+        rig_path = self.project_root / 'lightrigs' / rig_name
         meta = read_light_rig_meta(rig_path)
 
         dialog = LightRigDialog(
@@ -1885,7 +1885,7 @@ class LightRigsPage(QWidget):
         if items:
             row = items[0].row()
             rig_name = self.table.item(row, 1).text()
-            rig_path = self.project_root / 'Light_Rigs' / rig_name
+            rig_path = self.project_root / 'lightrigs' / rig_name
             ctx = {'type': 'light_rig', 'name': rig_name, 'path': rig_path}
             self._file_panel.set_directory(rig_path, context=ctx)
             self.file_browser.setTitle(f'Files: {rig_name}')
@@ -1900,7 +1900,10 @@ class LightRigsPage(QWidget):
             return
         row = item.row()
         rig_name = self.table.item(row, 1).text()
+        rig_path = self.project_root / 'lightrigs' / rig_name
         menu = QMenu(self)
+        _add_explorer_action(menu, rig_path)
+        menu.addSeparator()
         edit_action = menu.addAction('Edit Light Rig...')
         action = menu.exec(self.table.viewport().mapToGlobal(pos))
         if action == edit_action:
@@ -1910,7 +1913,7 @@ class LightRigsPage(QWidget):
     def _refresh(self):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
-        lightrigs_dir = self.project_root / 'Light_Rigs'
+        lightrigs_dir = self.project_root / 'lightrigs'
         if not lightrigs_dir.exists():
             return
         rigs = sorted([
@@ -3100,18 +3103,19 @@ class HelpPage(QWidget):
         layout.addSpacing(8)
 
         self._add_section(layout, '1 — Overview', """
-        <p><b>MazeHub</b> is your hub for the whole MAZE project. Open it to see your shots and assets, launch Houdini, Maya, Nuke and more with the right shot already loaded, and keep track of progress.</p>
-        <p>Everything is organised by <b>Shots</b> (like SH010, SH020) and <b>Assets</b> (characters, props). MazeHub makes sure each app opens in the right place with the right settings, so you don't have to hunt for files.</p>
+        <p><b>MazeHub</b> is your hub for the whole MAZE project. Open it to see your shots, assets and light rigs, launch Houdini, Maya, Nuke and more with the right context already loaded, and keep track of progress.</p>
+        <p>Everything is organised by <b>Shots</b> (like SH010, SH020), <b>Assets</b> (characters, props), and <b>Light Rigs</b> (HDRI setups). MazeHub makes sure each app opens in the right place with the right settings, so you don't have to hunt for files.</p>
         """, expanded=True)
 
         self._add_section(layout, '2 — Home', """
         <p>Your landing page. At the top you see how many shots and assets you have and how much is done overall.</p>
-        <p><b>Quick Launch</b> — click a button to open an app quickly. <b>Recent Files</b> — double-click any file you opened recently to jump straight back in. Right-click to show it in Windows Explorer or remove it from the list.</p>
+        <p><b>Quick Launch</b> — click a button to open an app quickly. The app launches with the last used version you selected. <b>Recent Files</b> — double-click any file you opened recently to jump straight back in. Right-click to show it in Windows Explorer or remove it from the list.</p>
         """)
 
         self._add_section(layout, '3 — Launching Apps', """
-        <p>Want to work on a specific shot or asset? Choose <b>Shot</b> or <b>Asset</b> at the top, pick the name from the list, then click the app you need.</p>
-        <p>MazeHub opens the app with that shot/asset already set as the working area, with the correct frame range and colour settings. You can also choose <b>None</b> to just open an app without a shot.</p>
+        <p>Want to work on a specific shot, asset or light rig? Choose <b>Shot</b>, <b>Asset</b> or <b>Light Rig</b> at the top, pick the name from the list, then click the app you need.</p>
+        <p>MazeHub opens the app with that context already set as the working area, with the correct frame range and colour settings. You can also choose <b>None</b> to just open an app without a context.</p>
+        <p><b>Version Selection:</b> Apps with multiple versions (like Houdini, Nuke, Maya) show a small version button on the right of the launch button. Click it to choose which version to launch. Your last choice is remembered for next time.</p>
         <p>The file list below shows you what's already in that folder and lets you open a file directly.</p>
         """)
 
@@ -3123,28 +3127,36 @@ class HelpPage(QWidget):
         Double-click a file below to open it in the right app.</p>
         """)
 
-        self._add_section(layout, '5 — Production Tracking', """
+        self._add_section(layout, '5 — Light Rigs', """
+        <p>Manage your HDRI lighting setups. Each light rig can store an HDRI, photogrammetry, USD scene, Nuke script and Houdini scene.</p>
+        <p><b>New Light Rig</b> — create a new light rig with name, date, time of day and description. Browse for files to associate with it.<br>
+        <b>Edit</b> — modify an existing light rig's settings and files.<br>
+        Click a row to see the files in that light rig's folder structure.</p>
+        <p><b>Using as Context:</b> When launching apps, you can select "Light Rig" as the context type. This sets the app's working directory to the light rig folder and exposes light rig file paths as environment variables.</p>
+        """)
+
+        self._add_section(layout, '6 — Production Tracking', """
         <p>Keep track of where everything is. There are two tabs: <b>Shots</b> and <b>Assets</b>.</p>
         <p>Each column is a task - for shots that's things like Animation, Lighting, Compositing; for assets it's Modelling, Texturing, Lookdev, etc. Colours show the state: red = Not started, amber = Work in progress, blue = Pending review, green = Finished, grey = Not applicable.</p>
-        <p><b>To update:</b> right-click a task cell and pick a new status. The progress bars at the top update automatically. If your team has set up Teams notifications, everyone will get a message like "SH010 — Animation: Not started → Work in progress by Alex".</p>
+        <p><b>To update:</b> right-click a task cell and pick a new status. The progress bars at the top update automatically.</p>
         """)
 
-        self._add_section(layout, '6 — Rendering', """
+        self._add_section(layout, '7 — Rendering', """
         <p>Render your USD scenes without opening Houdini.</p>
-        <p><b>How to:</b> pick a Shot, pick the USD file, choose a version (it suggests the next one), choose Karma XPU or CPU, tick the passes you need, set the frame range and press <b>Render Selected Passes</b>.</p>
-        <p>You'll see progress for each frame and pass, with time estimates. You can pause or cancel at any time. When it finishes you get a notification, and if Teams is set up the channel is notified too.</p>
+        <p><b>How to:</b> pick a Shot, pick the USD file, choose a version (it suggests the next one), select the Houdini version (22.0 or 21.0), choose Karma XPU or CPU, tick the passes you need, set the frame range and press <b>Render Selected Passes</b>.</p>
+        <p>You'll see progress for each frame and pass, with time estimates. You can pause or cancel at any time.</p>
         """)
 
-        self._add_section(layout, '7 — Preview', """
+        self._add_section(layout, '8 — Preview', """
         <p>Want to check a render? Pick a shot and MazeHub finds all the image sequences and videos for you.</p>
         <p>They're grouped by app, name and version. Double-click or press <b>Open in MPlay</b> to view them. Right-click to show the files in Windows Explorer.</p>
         """)
 
-        self._add_section(layout, '8 — Environment Info', """
+        self._add_section(layout, '9 — Environment Info', """
         <p>This page is just for reference. It shows the paths and shot settings MazeHub sets up for your apps (like where to find files and what frame range you're on). You don't need to change anything here - it's there if you need to check what MazeHub is doing behind the scenes.</p>
         """)
 
-        self._add_section(layout, '9 — Settings', """
+        self._add_section(layout, '10 — Settings', """
         <p><b>Where is the Husk renderer?</b> Usually found automatically. If not, use Browse or Auto-Detect.</p>
         <p><b>YouTube Screensaver:</b> paste a YouTube link for the Home page button.</p>
         <p><b>Teams Notifications:</b> paste your Teams webhook links for<br>
@@ -3155,18 +3167,19 @@ class HelpPage(QWidget):
         <p><b>Repair File Structure:</b> if folders are missing, click this to recreate them.</p>
         """)
 
-        self._add_section(layout, '10 — Playblasts & Flipbooks (Houdini / Maya / Nuke)', """
+        self._add_section(layout, '11 — Playblasts & Flipbooks (Houdini / Maya / Nuke)', """
         <p><b>Houdini:</b> open a shot, make a flipbook. It saves to the shot's flipbooks folder. Then in MPlay click <b>MAZE > Send to Dailies</b>, add a comment and it will be posted to Teams with your name.</p>
         <p><b>Maya:</b> open a shot, then <b>MAZE > Playblast</b>. Choose a comment and it renders a playblast and posts it for you.</p>
         <p><b>Nuke:</b> use <b>MAZE > Playblast</b> in the top menu or the Nodes toolbar to create a flipbook node, set the frame range and press <b>Create Flipbook</b>. It renders and posts to Teams. Make sure your script is saved first.</p>
         <p>The video needs to be in your project folder so Teams can link to it.</p>
         """)
 
-        self._add_section(layout, '11 — Tips', """
+        self._add_section(layout, '12 — Tips', """
         <p><b>No preview?</b> Try refreshing the page or check you picked the right shot.<br>
         <b>Can't post to Teams?</b> Make sure your scene/script is saved inside the project and that the Teams links are pasted in Settings.<br>
         <b>Houdini menu not showing?</b> Restart Houdini through MazeHub.<br>
-        <b>Progress looks wrong?</b> Tasks set to "Not applicable" don't count - set them properly for the right percentage.</p>
+        <b>Progress looks wrong?</b> Tasks set to "Not applicable" don't count - set them properly for the right percentage.<br>
+        <b>Version not sticking?</b> Make sure you select the version from the dropdown button on the launch button, not from the context menu.</p>
         """)
 
         layout.addStretch()
