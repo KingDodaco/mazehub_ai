@@ -372,6 +372,29 @@ def load_apps_config():
     return {}
 
 
+def save_apps_config(config):
+    config_path = _app_dir() / 'apps.json'
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=4)
+
+
+def resolve_app_exe(config, version_key=None):
+    """Resolve the exe path for an app config, using the given version or the default."""
+    versions = config.get('versions', {})
+    if not versions:
+        return ''
+    if version_key and version_key in versions:
+        ver = versions[version_key]
+        return ver.get('exe', '') if isinstance(ver, dict) else ''
+    default = config.get('default_version', '')
+    if default and default in versions:
+        ver = versions[default]
+        return ver.get('exe', '') if isinstance(ver, dict) else ''
+    first = next(iter(versions.values()))
+    return first.get('exe', '') if isinstance(first, dict) else ''
+
+
 def list_apps(apps_config):
     if not apps_config:
         print('  No applications configured.')

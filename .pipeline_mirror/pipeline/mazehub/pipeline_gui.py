@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from pipeline_app import (
-    find_project_root, setup_environment, load_apps_config,
+    find_project_root, setup_environment, load_apps_config, save_apps_config,
+    resolve_app_exe,
     read_shot_meta, write_shot_meta, DEFAULT_SHOT_META,
     read_light_rig_meta, write_light_rig_meta, list_light_rigs,
     DEFAULT_LIGHT_RIG_META,
@@ -34,7 +35,6 @@ from pipeline_app import (
     PRODUCTION_STATUSES, PRODUCTION_VALUES,
     ASSET_CATEGORIES, SHOT_CATEGORIES,
 )
-from recent_files import get_last_app_version, set_last_app_version
 
 
 def _score_color(score_str):
@@ -184,10 +184,11 @@ class AppLauncherThread(QThread):
     def run(self):
         log = get_log_stream()
         try:
-            exec_path = self.pipeline_dir / self.config['subdir'] / self.config['executable']
+            bat_name = self.config.get('bat', self.config.get('executable', ''))
+            exec_path = self.pipeline_dir / self.config['subdir'] / bat_name
             if not exec_path.exists():
-                log.write(f'[launch] Executable not found: {exec_path}')
-                self.finished.emit(f'Executable not found: {exec_path}', False)
+                log.write(f'[launch] Bat file not found: {exec_path}')
+                self.finished.emit(f'Bat file not found: {exec_path}', False)
                 return
 
             if exec_path.suffix.lower() == '.bat' and platform.system() != 'Windows':
@@ -197,12 +198,16 @@ class AppLauncherThread(QThread):
                 return
 
             launch_env = os.environ.copy()
+            exe_path = resolve_app_exe(self.config)
+            if exe_path:
+                launch_env['MAZE_EXE'] = exe_path
             if self.context and self.project_root:
                 ctx = dict(self.context, app_name=self.config.get('_key', ''))
                 ctx_env = build_context_env(ctx, self.project_root)
                 launch_env.update(ctx_env)
 
             log.write(f'[launch] Starting {self.config["display_name"]}...')
+            log.write(f'[launch] MAZE_EXE={launch_env.get("MAZE_EXE", "<not set>")}')
             if platform.system() == 'Windows':
                 import tempfile
                 bat_log = os.path.join(tempfile.gettempdir(), 'mazehub_houdini_launch.log')
@@ -244,16 +249,11 @@ class FileOpenThread(QThread):
         self.project_root = project_root
         self.context = context
 
-        app_key = app_config.get('_key', '')
-        if app_key and 'versions' in app_config and app_config['versions']:
-            saved_version = get_last_app_version(app_key)
-            if saved_version and saved_version in app_config.get('version_executables', {}):
-                self.config['executable'] = app_config['version_executables'][saved_version]
-
     def run(self):
         log = get_log_stream()
         try:
-            exec_path = self.pipeline_dir / self.config['subdir'] / self.config['executable']
+            bat_name = self.config.get('bat', self.config.get('executable', ''))
+            exec_path = self.pipeline_dir / self.config['subdir'] / bat_name
 
             if exec_path.suffix.lower() == '.bat' and platform.system() != 'Windows':
                 log.write(f'[open] Cannot launch .bat file on {platform.system()}: {exec_path.name}')
@@ -261,16 +261,19 @@ class FileOpenThread(QThread):
                 return
 
             launch_env = os.environ.copy()
+            exe_path = resolve_app_exe(self.config)
+            if exe_path:
+                launch_env['MAZE_EXE'] = exe_path
             if self.context and self.project_root:
                 ctx = dict(self.context, app_name=self.config.get('_key', ''))
                 ctx_env = build_context_env(ctx, self.project_root)
                 launch_env.update(ctx_env)
 
             log.write(f'[open] Opening {self.file_path.name} with {self.config["display_name"]}...')
+            log.write(f'[open] MAZE_EXE={launch_env.get("MAZE_EXE", "<not set>")}')
             log.write(f'[open] MAZE_PIPELINE={launch_env.get("MAZE_PIPELINE", "<not set>")}')
             log.write(f'[open] PIPELINE_DIR={launch_env.get("PIPELINE_DIR", "<not set>")}')
             log.write(f'[open] MAZE_OPEN_FILE={launch_env.get("MAZE_OPEN_FILE", "<not set>")}')
-            log.write(f'[open] HOUDINI_PATH={launch_env.get("HOUDINI_PATH", "<not set>")}')
             if platform.system() == 'Windows':
                 import tempfile
                 launch_env['MAZE_OPEN_FILE'] = str(self.file_path)
@@ -1150,10 +1153,6 @@ class DashboardPage(QWidget):
     def _quick_launch(self, app_name):
         cfg = self.apps_config.get(app_name)
         if cfg:
-            saved_version = get_last_app_version(app_name)
-            if saved_version and 'version_executables' in cfg and saved_version in cfg['version_executables']:
-                cfg = dict(cfg)
-                cfg['executable'] = cfg['version_executables'][saved_version]
             self._run_launch(cfg)
 
     def _run_launch(self, cfg):
@@ -1248,9 +1247,9 @@ class LaunchAppsPage(QWidget):
 
         body = QHBoxLayout()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
+        self._launch_scroll = QScrollArea()
+        self._launch_scroll.setWidgetResizable(True)
+        self._launch_scroll.setFrameShape(QFrame.NoFrame)
 
         container = QWidget()
         container.setObjectName('launchContainer')
@@ -1275,19 +1274,22 @@ class LaunchAppsPage(QWidget):
                 launch_btn.setObjectName('appLaunchBtn')
                 launch_btn.clicked.connect(lambda checked, c=cfg: self._launch(c))
                 btn_row.addWidget(launch_btn, 1)
-                if 'versions' in cfg and cfg['versions']:
-                    saved_version = get_last_app_version(name)
-                    last_ver = saved_version if saved_version in cfg['versions'] else cfg['versions'][-1]
-                    self._version_labels[name] = last_ver
-                    version_btn = QPushButton(last_ver)
+                versions = cfg.get('versions', {})
+                if len(versions) > 1:
+                    default_ver = cfg.get('default_version', next(iter(versions.keys())))
+                    ver_data = versions.get(default_ver, {})
+                    display_label = ver_data.get('label', default_ver) if isinstance(ver_data, dict) else default_ver
+                    self._version_labels[name] = default_ver
+                    version_btn = QPushButton(display_label)
                     version_btn.setMinimumHeight(48)
                     version_btn.setMinimumWidth(32)
                     version_btn.setCursor(Qt.PointingHandCursor)
                     version_btn.setObjectName('appVersionBtn')
                     menu = QMenu()
-                    for v in cfg['versions']:
-                        action = menu.addAction(v)
-                        action.triggered.connect(lambda checked, ver=v, k=name: self._select_version(k, ver))
+                    for ver_key, ver_data in versions.items():
+                        label = ver_data.get('label', ver_key) if isinstance(ver_data, dict) else ver_key
+                        action = menu.addAction(label)
+                        action.triggered.connect(lambda checked, k=name, vk=ver_key: self._select_version(k, vk))
                     version_btn.setMenu(menu)
                     self._version_menus[name] = menu
                     self._version_buttons[name] = version_btn
@@ -1306,8 +1308,8 @@ class LaunchAppsPage(QWidget):
         else:
             container_layout.addWidget(QLabel('No applications configured.'), 0, 0, 1, 2)
             container_layout.setRowStretch(1, 1)
-        scroll.setWidget(container)
-        body.addWidget(scroll, 1)
+        self._launch_scroll.setWidget(container)
+        body.addWidget(self._launch_scroll, 1)
         layout.addLayout(body, 1)
 
         self._file_panel = FileBrowserPanel(self.project_root, self.apps_config, self.pipeline_dir)
@@ -1315,6 +1317,81 @@ class LaunchAppsPage(QWidget):
         layout.addWidget(self._file_panel)
 
         self._populate_contexts()
+
+    def _rebuild_buttons(self):
+        container = self._launch_scroll.widget()
+        if not container:
+            return
+        layout = container.layout()
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+            else:
+                sub = item.layout()
+                if sub:
+                    while sub.count():
+                        sub_item = sub.takeAt(0)
+                        sw = sub_item.widget()
+                        if sw:
+                            sw.deleteLater()
+
+        self._version_menus.clear()
+        self._version_labels.clear()
+        self._version_buttons.clear()
+        self._app_configs.clear()
+
+        self.apps_config = load_apps_config()
+
+        if not self.apps_config:
+            layout.addWidget(QLabel('No applications configured.'), 0, 0, 1, 2)
+            layout.setRowStretch(1, 1)
+            return
+
+        row = 0
+        col = 0
+        for name, cfg in self.apps_config.items():
+            cfg['_key'] = name
+            self._app_configs[name] = cfg
+            btn_row = QHBoxLayout()
+            launch_btn = QPushButton(cfg['display_name'])
+            launch_btn.setMinimumHeight(48)
+            launch_btn.setCursor(Qt.PointingHandCursor)
+            launch_btn.setObjectName('appLaunchBtn')
+            launch_btn.clicked.connect(lambda checked, c=cfg: self._launch(c))
+            btn_row.addWidget(launch_btn, 1)
+            versions = cfg.get('versions', {})
+            if len(versions) > 1:
+                default_ver = cfg.get('default_version', next(iter(versions.keys())))
+                ver_data = versions.get(default_ver, {})
+                display_label = ver_data.get('label', default_ver) if isinstance(ver_data, dict) else default_ver
+                self._version_labels[name] = default_ver
+                version_btn = QPushButton(display_label)
+                version_btn.setMinimumHeight(48)
+                version_btn.setMinimumWidth(32)
+                version_btn.setCursor(Qt.PointingHandCursor)
+                version_btn.setObjectName('appVersionBtn')
+                menu = QMenu()
+                for ver_key, vd in versions.items():
+                    label = vd.get('label', ver_key) if isinstance(vd, dict) else ver_key
+                    action = menu.addAction(label)
+                    action.triggered.connect(lambda checked, k=name, vk=ver_key: self._select_version(k, vk))
+                version_btn.setMenu(menu)
+                self._version_menus[name] = menu
+                self._version_buttons[name] = version_btn
+                btn_row.addWidget(version_btn)
+            layout.addLayout(btn_row, row, col)
+            col += 1
+            if col >= 2:
+                col = 0
+                row += 1
+        yt_btn = QPushButton('YT Screensaver')
+        yt_btn.setMinimumHeight(48)
+        yt_btn.setCursor(Qt.PointingHandCursor)
+        yt_btn.clicked.connect(self._open_yt_screensaver)
+        layout.addWidget(yt_btn, row, col)
+        layout.setRowStretch(row + 1, 1)
 
     def _refresh(self):
         self._populate_contexts()
@@ -1400,10 +1477,8 @@ class LaunchAppsPage(QWidget):
         key = cfg.get('_key', '')
         if key in self._version_labels:
             version = self._version_labels[key]
-            if 'version_executables' in cfg and version in cfg['version_executables']:
-                cfg = dict(cfg)
-                cfg['executable'] = cfg['version_executables'][version]
-                set_last_app_version(key, version)
+            cfg = dict(cfg)
+            cfg['default_version'] = version
         self.thread = AppLauncherThread(
             cfg, self.pipeline_dir,
             project_root=self.project_root, context=self._context,
@@ -1415,7 +1490,10 @@ class LaunchAppsPage(QWidget):
         self._version_labels[app_key] = version
         btn = self._version_buttons.get(app_key)
         if btn:
-            btn.setText(version)
+            cfg = self._app_configs.get(app_key, {})
+            ver_data = cfg.get('versions', {}).get(version, {})
+            label = ver_data.get('label', version) if isinstance(ver_data, dict) else version
+            btn.setText(label)
 
     def _result(self, msg, ok):
         window = self.window()
@@ -2297,10 +2375,11 @@ class RecentFilesPage(QWidget):
 
 
 class PreviewPage(QWidget):
-    def __init__(self, project_root, pipeline_dir, parent=None):
+    def __init__(self, project_root, pipeline_dir, apps_config=None, parent=None):
         super().__init__(parent)
         self.project_root = project_root
         self.pipeline_dir = pipeline_dir
+        self.apps_config = apps_config or {}
         self._sequences = []
         self._build()
 
@@ -2474,11 +2553,18 @@ class PreviewPage(QWidget):
             self.status_label.setText(f'Opened {seq["prefix"]}')
             return
 
-        mplay_path = self.pipeline_dir / 'Houdini' / 'bin' / 'mplay.exe'
-        if not mplay_path.exists():
-            mplay_path = Path(r'C:\Program Files\Side Effects Software\Houdini 22.0.416\bin\mplay.exe')
-        if not mplay_path.exists():
-            mplay_path = Path(r'C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\mplay.exe')
+        mplay_path = None
+        houdini_cfg = self.apps_config.get('Houdini', {})
+        versions = houdini_cfg.get('versions', {})
+        default_ver = houdini_cfg.get('default_version', next(iter(versions.keys()), ''))
+        ver_data = versions.get(default_ver, {})
+        houdini_exe = ver_data.get('exe', '') if isinstance(ver_data, dict) else ''
+        if houdini_exe:
+            candidate = Path(houdini_exe).parent / 'mplay.exe'
+            if candidate.exists():
+                mplay_path = candidate
+        if not mplay_path:
+            mplay_path = self.pipeline_dir / 'Houdini' / 'bin' / 'mplay.exe'
         if not mplay_path.exists():
             self.status_label.setText('mplay.exe not found')
             return
@@ -3121,7 +3207,7 @@ class HelpPage(QWidget):
         self._add_section(layout, '3 — Launching Apps', """
         <p>Want to work on a specific shot, asset or light rig? Choose <b>Shot</b>, <b>Asset</b> or <b>Light Rig</b> at the top, pick the name from the list, then click the app you need.</p>
         <p>MazeHub opens the app with that context already set as the working area, with the correct frame range and colour settings. You can also choose <b>None</b> to just open an app without a context.</p>
-        <p><b>Version Selection:</b> Apps with multiple versions (like Houdini, Nuke, Maya) show a small version button on the right of the launch button. Click it to choose which version to launch. Your last choice is remembered for next time.</p>
+        <p><b>Version Selection:</b> Apps with multiple versions show a small version button on the right of the launch button. Click it to choose which version to launch. The default version is set in Settings under Software Versions.</p>
         <p>The file list below shows you what's already in that folder and lets you open a file directly.</p>
         """)
 
@@ -3163,7 +3249,12 @@ class HelpPage(QWidget):
         """)
 
         self._add_section(layout, '10 — Settings', """
-        <p><b>Where is the Husk renderer?</b> Usually found automatically. If not, use Browse or Auto-Detect.</p>
+        <p><b>Husk Render Binary:</b> Path to the husk executable for headless USD rendering. Usually found automatically. If not, use Browse or Auto-Detect.</p>
+        <p><b>Software Versions:</b> manage all software versions and their executable paths. For each app you can:<br>
+        &bull; <b>Add Version</b> — provide a version key (e.g. 23.0), display label (e.g. Houdini 23.0), and browse for the .exe<br>
+        &bull; <b>Edit Version</b> — change the exe path or label of an existing version<br>
+        &bull; <b>Remove Version</b> — remove a version (cannot remove the last one)<br>
+        &bull; <b>Set Default</b> — choose which version launches by default</p>
         <p><b>YouTube Screensaver:</b> paste a YouTube link for the Home page button.</p>
         <p><b>Teams Notifications:</b> paste your Teams webhook links for<br>
         &bull; <b>Render</b> — get notified when renders finish<br>
@@ -3507,10 +3598,11 @@ class RenderProgressDialog(QDialog):
 
 
 class RenderPage(QWidget):
-    def __init__(self, project_root, pipeline_dir, parent=None):
+    def __init__(self, project_root, pipeline_dir, apps_config=None, parent=None):
         super().__init__(parent)
         self.project_root = project_root
         self.pipeline_dir = pipeline_dir
+        self.apps_config = apps_config or {}
         self._render_thread = None
         self._render_dialog = None
         self._build()
@@ -3757,6 +3849,23 @@ class RenderPage(QWidget):
                 w.deleteLater()
         self.no_passes_label.setVisible(True)
 
+    def _resolve_husk_from_houdini(self, version_key=None):
+        """Derive husk.exe path from the Houdini exe path in apps config."""
+        houdini_cfg = self.apps_config.get('Houdini', {})
+        versions = houdini_cfg.get('versions', {})
+        if not versions:
+            return None
+        ver_key = version_key
+        if not ver_key:
+            ver_key = houdini_cfg.get('default_version', next(iter(versions.keys())))
+        ver_data = versions.get(ver_key, {})
+        houdini_exe = ver_data.get('exe', '') if isinstance(ver_data, dict) else ''
+        if houdini_exe:
+            husk = str(Path(houdini_exe).parent / 'husk.exe')
+            if Path(husk).exists():
+                return husk
+        return None
+
     def _refresh_passes(self):
         self._clear_passes()
         usd_name = self.usd_combo.currentText()
@@ -3766,25 +3875,14 @@ class RenderPage(QWidget):
         shot_path = self.project_root / 'sequence' / shot_name
         usd_file = shot_path / 'houdini' / 'USD' / usd_name
 
-        from settings import find_husk
-        husk_path = find_husk()
+        houdini_version = self.houdini_version_combo.currentText()
+        husk_path = self._resolve_husk_from_houdini(houdini_version)
+        if not husk_path:
+            from settings import find_husk
+            husk_path = find_husk()
         if not husk_path:
             self.log_output.append('[info] husk not found — configure in Settings')
             return
-
-        houdini_version = self.houdini_version_combo.currentText()
-        if houdini_version == '22.0':
-            husk_candidates = [
-                Path(r'C:\Program Files\Side Effects Software\Houdini 22.0.416\bin\husk.exe'),
-            ]
-        else:
-            husk_candidates = [
-                Path(r'C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\husk.exe'),
-            ]
-        for candidate in husk_candidates:
-            if candidate.exists():
-                husk_path = str(candidate)
-                break
 
         self.log_output.append(f'[info] Discovering passes: {husk_path} --list-passes {usd_file.name}')
         passes = discover_husk_passes(husk_path, usd_file)
@@ -3821,8 +3919,6 @@ class RenderPage(QWidget):
                 item.widget().setChecked(False)
 
     def _start_render(self):
-        from settings import find_husk
-
         shot_name = self.shot_combo.currentText()
         usd_name = self.usd_combo.currentText()
         if not shot_name or not usd_name:
@@ -3837,24 +3933,14 @@ class RenderPage(QWidget):
             return
 
         houdini_version = self.houdini_version_combo.currentText()
-        husk_path = find_husk()
+        husk_path = self._resolve_husk_from_houdini(houdini_version)
+        if not husk_path:
+            from settings import find_husk
+            husk_path = find_husk()
         if not husk_path:
             self.log_output.append('[error] husk binary not found — configure in Settings')
             self._status('husk binary not found — configure in Settings', False)
             return
-
-        if houdini_version == '22.0':
-            husk_candidates = [
-                Path(r'C:\Program Files\Side Effects Software\Houdini 22.0.416\bin\husk.exe'),
-            ]
-        else:
-            husk_candidates = [
-                Path(r'C:\Program Files\Side Effects Software\Houdini 21.0.440\bin\husk.exe'),
-            ]
-        for candidate in husk_candidates:
-            if candidate.exists():
-                husk_path = str(candidate)
-                break
 
         shot_path = self.project_root / 'sequence' / shot_name
         usd_file = shot_path / 'houdini' / 'USD' / usd_name
@@ -4023,6 +4109,109 @@ class RenderPage(QWidget):
         self._refresh_shots()
 
 
+class VersionDialog(QDialog):
+    def __init__(self, parent=None, apps_config=None, app_name='', version_key='', version_data=None):
+        super().__init__(parent)
+        self.setWindowTitle('Add Version' if not version_key else f'Edit Version: {version_key}')
+        self.setMinimumWidth(500)
+        self._result = None
+        self._apps_config = apps_config or {}
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.app_combo = QComboBox()
+        self.app_combo.addItems(self._apps_config.keys())
+        if app_name:
+            idx = self.app_combo.findText(app_name)
+            if idx >= 0:
+                self.app_combo.setCurrentIndex(idx)
+            self.app_combo.setEnabled(False)
+        form.addRow('App:', self.app_combo)
+
+        self.key_edit = QLineEdit(version_key)
+        self.key_edit.setPlaceholderText('e.g. 23.0')
+        if version_key:
+            self.key_edit.setEnabled(False)
+        form.addRow('Version Key:', self.key_edit)
+
+        self.label_edit = QLineEdit(version_data.get('label', version_key) if version_data else version_key)
+        self.label_edit.setPlaceholderText('e.g. Houdini 23.0')
+        form.addRow('Display Label:', self.label_edit)
+
+        exe_row = QHBoxLayout()
+        self.exe_edit = QLineEdit(version_data.get('exe', '') if version_data else '')
+        self.exe_edit.setPlaceholderText('Path to .exe')
+        exe_row.addWidget(self.exe_edit, 1)
+        self.exe_browse_btn = QPushButton('Browse')
+        self.exe_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.exe_browse_btn.clicked.connect(self._browse_exe)
+        exe_row.addWidget(self.exe_browse_btn)
+        form.addRow('Executable:', exe_row)
+
+        self.default_cb = QCheckBox('Set as default')
+        self.default_cb.setChecked(False)
+        form.addRow('', self.default_cb)
+
+        layout.addLayout(form)
+
+        self.error_label = QLabel('')
+        self.error_label.setObjectName('dialogError')
+        self.error_label.setVisible(False)
+        layout.addWidget(self.error_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        save_btn = QPushButton('Add' if not version_key else 'Save')
+        save_btn.setMinimumHeight(36)
+        save_btn.clicked.connect(self._accept)
+        btn_row.addWidget(save_btn)
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.setMinimumHeight(36)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+    def _browse_exe(self):
+        from PySide6.QtWidgets import QFileDialog
+        start_dir = r'C:\Program Files'
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select Executable', start_dir,
+            'Executables (*.exe *.cmd);;All Files (*)'
+        )
+        if path:
+            self.exe_edit.setText(path)
+
+    def _accept(self):
+        app_name = self.app_combo.currentText()
+        key = self.key_edit.text().strip()
+        label = self.label_edit.text().strip()
+        exe = self.exe_edit.text().strip()
+        if not app_name:
+            self.error_label.setText('Required: App')
+            self.error_label.setVisible(True)
+            return
+        if not key:
+            self.error_label.setText('Required: Version Key')
+            self.error_label.setVisible(True)
+            return
+        if not exe:
+            self.error_label.setText('Required: Executable')
+            self.error_label.setVisible(True)
+            return
+        self._result = {
+            'app_name': app_name,
+            'version_key': key,
+            'label': label or key,
+            'exe': exe,
+            'set_default': self.default_cb.isChecked(),
+        }
+        self.accept()
+
+    def result_data(self):
+        return self._result
+
+
 class SettingsPage(QWidget):
     def __init__(self, project_root, parent=None):
         super().__init__(parent)
@@ -4090,6 +4279,55 @@ class SettingsPage(QWidget):
 
         husk_layout.addStretch()
         layout.addWidget(husk_group)
+
+        versions_group = QGroupBox('Software Versions')
+        versions_layout = QVBoxLayout(versions_group)
+        versions_layout.addWidget(QLabel(
+            'Manage software versions and their executable paths.'
+        ))
+
+        self.versions_table = QTableWidget()
+        self.versions_table.setColumnCount(3)
+        self.versions_table.setHorizontalHeaderLabels(['App', 'Versions', 'Default'])
+        self.versions_table.setAlternatingRowColors(True)
+        self.versions_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.versions_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.versions_table.verticalHeader().setVisible(False)
+        self.versions_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.versions_table.horizontalHeader().setStretchLastSection(True)
+        versions_layout.addWidget(self.versions_table)
+
+        versions_toolbar = QHBoxLayout()
+        add_ver_btn = QPushButton('Add Version')
+        add_ver_btn.setMinimumHeight(32)
+        add_ver_btn.setCursor(Qt.PointingHandCursor)
+        add_ver_btn.clicked.connect(self._add_version)
+        versions_toolbar.addWidget(add_ver_btn)
+        edit_ver_btn = QPushButton('Edit Version')
+        edit_ver_btn.setMinimumHeight(32)
+        edit_ver_btn.setCursor(Qt.PointingHandCursor)
+        edit_ver_btn.clicked.connect(self._edit_version)
+        versions_toolbar.addWidget(edit_ver_btn)
+        remove_ver_btn = QPushButton('Remove Version')
+        remove_ver_btn.setMinimumHeight(32)
+        remove_ver_btn.setCursor(Qt.PointingHandCursor)
+        remove_ver_btn.clicked.connect(self._remove_version)
+        versions_toolbar.addWidget(remove_ver_btn)
+        set_default_btn = QPushButton('Set Default')
+        set_default_btn.setMinimumHeight(32)
+        set_default_btn.setCursor(Qt.PointingHandCursor)
+        set_default_btn.clicked.connect(self._set_default_version)
+        versions_toolbar.addWidget(set_default_btn)
+        versions_toolbar.addStretch()
+        versions_layout.addLayout(versions_toolbar)
+
+        self.versions_status = QLabel('')
+        self.versions_status.setWordWrap(True)
+        self.versions_status.setObjectName('hint')
+        versions_layout.addWidget(self.versions_status)
+
+        versions_layout.addStretch()
+        layout.addWidget(versions_group)
 
         yt_group = QGroupBox('YouTube Screensaver')
         yt_layout = QVBoxLayout(yt_group)
@@ -4224,10 +4462,203 @@ class SettingsPage(QWidget):
         layout.addStretch()
 
         self._load_husk_path()
+        self._load_versions_table()
         self._load_yt_url()
         self._load_teams_url()
         self._load_dailies_url()
         self._load_production_url()
+
+    def _load_versions_table(self):
+        config = load_apps_config()
+        self.versions_table.setRowCount(0)
+        for app_name, cfg in config.items():
+            versions = cfg.get('versions', {})
+            if not versions:
+                continue
+            row = self.versions_table.rowCount()
+            self.versions_table.insertRow(row)
+            self.versions_table.setItem(row, 0, QTableWidgetItem(cfg.get('display_name', app_name)))
+            version_labels = []
+            for vk, vd in versions.items():
+                label = vd.get('label', vk) if isinstance(vd, dict) else vk
+                version_labels.append(label)
+            self.versions_table.setItem(row, 1, QTableWidgetItem(', '.join(version_labels)))
+            default = cfg.get('default_version', '')
+            default_label = ''
+            if default and default in versions:
+                vd = versions[default]
+                default_label = vd.get('label', default) if isinstance(vd, dict) else default
+            self.versions_table.setItem(row, 2, QTableWidgetItem(default_label))
+        self.versions_table.resizeColumnsToContents()
+
+    def _add_version(self):
+        dialog = VersionDialog(self, apps_config=load_apps_config())
+        if dialog.exec() != QDialog.Accepted:
+            return
+        data = dialog.result_data()
+        config = load_apps_config()
+        app_name = data['app_name']
+        if app_name not in config:
+            self.versions_status.setText(f'Unknown app: {app_name}')
+            self.versions_status.setStyleSheet('color: #ff6b6b;')
+            return
+        cfg = config[app_name]
+        versions = cfg.setdefault('versions', {})
+        if data['version_key'] in versions:
+            self.versions_status.setText(f'Version {data["version_key"]} already exists for {app_name}')
+            self.versions_status.setStyleSheet('color: #ff6b6b;')
+            return
+        versions[data['version_key']] = {'exe': data['exe'], 'label': data['label']}
+        if data['set_default'] or len(versions) == 1:
+            cfg['default_version'] = data['version_key']
+        save_apps_config(config)
+        self._load_versions_table()
+        self.versions_status.setText(f'Added {data["label"]} to {app_name}')
+        self.versions_status.setStyleSheet('color: #00c853;')
+        self._refresh_launcher()
+
+    def _edit_version(self):
+        items = self.versions_table.selectedItems()
+        if not items:
+            self.versions_status.setText('Select a row to edit')
+            self.versions_status.setStyleSheet('color: #ffa726;')
+            return
+        row = items[0].row()
+        app_display = self.versions_table.item(row, 0).text()
+        config = load_apps_config()
+        app_name = ''
+        for k, v in config.items():
+            if v.get('display_name', k) == app_display:
+                app_name = k
+                break
+        if not app_name:
+            return
+        cfg = config[app_name]
+        versions = cfg.get('versions', {})
+        if not versions:
+            return
+        items_list = []
+        for vk, vd in versions.items():
+            label = vd.get('label', vk) if isinstance(vd, dict) else vk
+            items_list.append((vk, label))
+        from PySide6.QtWidgets import QInputDialog
+        labels = [f"{vk} — {vl}" for vk, vl in items_list]
+        item, ok = QInputDialog.getItem(self, 'Edit Version', 'Select version:', labels, 0, False)
+        if not ok:
+            return
+        idx = labels.index(item)
+        vk = items_list[idx][0]
+        vd = versions[vk]
+        dialog = VersionDialog(
+            self, apps_config=config, app_name=app_name,
+            version_key=vk, version_data=vd,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        data = dialog.result_data()
+        old_key = data['version_key']
+        new_exe = data['exe']
+        new_label = data['label']
+        versions[old_key] = {'exe': new_exe, 'label': new_label}
+        if data['set_default']:
+            cfg['default_version'] = old_key
+        save_apps_config(config)
+        self._load_versions_table()
+        self.versions_status.setText(f'Updated {new_label} in {app_name}')
+        self.versions_status.setStyleSheet('color: #00c853;')
+        self._refresh_launcher()
+
+    def _remove_version(self):
+        items = self.versions_table.selectedItems()
+        if not items:
+            self.versions_status.setText('Select a row to remove a version from')
+            self.versions_status.setStyleSheet('color: #ffa726;')
+            return
+        row = items[0].row()
+        app_display = self.versions_table.item(row, 0).text()
+        config = load_apps_config()
+        app_name = ''
+        for k, v in config.items():
+            if v.get('display_name', k) == app_display:
+                app_name = k
+                break
+        if not app_name:
+            return
+        cfg = config[app_name]
+        versions = cfg.get('versions', {})
+        if len(versions) <= 1:
+            self.versions_status.setText('Cannot remove the last version of an app')
+            self.versions_status.setStyleSheet('color: #ff6b6b;')
+            return
+        items_list = []
+        for vk, vd in versions.items():
+            label = vd.get('label', vk) if isinstance(vd, dict) else vk
+            items_list.append((vk, label))
+        from PySide6.QtWidgets import QInputDialog
+        labels = [f"{vk} — {vl}" for vk, vl in items_list]
+        item, ok = QInputDialog.getItem(self, 'Remove Version', 'Select version to remove:', labels, 0, False)
+        if not ok:
+            return
+        idx = labels.index(item)
+        vk = items_list[idx][0]
+        from PySide6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, 'Remove Version',
+            f'Are you sure you want to remove {vk} from {app_name}?',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        del versions[vk]
+        if cfg.get('default_version') == vk:
+            cfg['default_version'] = next(iter(versions.keys()), '')
+        save_apps_config(config)
+        self._load_versions_table()
+        self.versions_status.setText(f'Removed {vk} from {app_name}')
+        self.versions_status.setStyleSheet('color: #00c853;')
+        self._refresh_launcher()
+
+    def _set_default_version(self):
+        items = self.versions_table.selectedItems()
+        if not items:
+            self.versions_status.setText('Select a row to set the default version')
+            self.versions_status.setStyleSheet('color: #ffa726;')
+            return
+        row = items[0].row()
+        app_display = self.versions_table.item(row, 0).text()
+        config = load_apps_config()
+        app_name = ''
+        for k, v in config.items():
+            if v.get('display_name', k) == app_display:
+                app_name = k
+                break
+        if not app_name:
+            return
+        cfg = config[app_name]
+        versions = cfg.get('versions', {})
+        items_list = []
+        for vk, vd in versions.items():
+            label = vd.get('label', vk) if isinstance(vd, dict) else vk
+            items_list.append((vk, label))
+        from PySide6.QtWidgets import QInputDialog
+        labels = [f"{vk} — {vl}" for vk, vl in items_list]
+        item, ok = QInputDialog.getItem(self, 'Set Default', 'Select default version:', labels, 0, False)
+        if not ok:
+            return
+        idx = labels.index(item)
+        vk = items_list[idx][0]
+        cfg['default_version'] = vk
+        save_apps_config(config)
+        self._load_versions_table()
+        label = items_list[idx][1]
+        self.versions_status.setText(f'Set default to {label} for {app_name}')
+        self.versions_status.setStyleSheet('color: #00c853;')
+        self._refresh_launcher()
+
+    def _refresh_launcher(self):
+        w = self.window()
+        if hasattr(w, 'refresh_launcher'):
+            w.refresh_launcher()
 
     def _load_husk_path(self):
         from settings import get_setting, find_husk
@@ -4446,7 +4877,7 @@ class MainWindow(QMainWindow):
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.pipeline_dir),
-            (self.project_root, self.pipeline_dir),
+            (self.project_root, self.pipeline_dir, self.apps_config),
             (self.project_root, self.pipeline_dir),
             (self.env_vars,),
             (self.project_root,),
@@ -4475,6 +4906,8 @@ class MainWindow(QMainWindow):
 
             page = page_classes[i](*page_args[i])
             self.pages.addWidget(page)
+            if label == 'Launch Apps':
+                self._launch_page = page
 
         main_layout.addWidget(self.sidebar)
         main_layout.addWidget(self.pages, 1)
@@ -4502,6 +4935,10 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(message, 5000)
         else:
             self.status_bar.showMessage(f'ERROR: {message}', 8000)
+
+    def refresh_launcher(self):
+        if hasattr(self, '_launch_page'):
+            self._launch_page._rebuild_buttons()
 
 
 def _load_styles(app, styles_dir):

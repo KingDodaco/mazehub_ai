@@ -17,7 +17,7 @@ set "HOUDINI_MENU_PATH=%PIPELINE_DIR%\Houdini;&;%HOUDINI_MENU_PATH%"
 set "MPLAY_MENU_PATH=%PIPELINE_DIR%\Houdini;&;%MPLAY_MENU_PATH%"
 set "HOUDINI_JOB=%JOB%"
 
-echo Launching Houdini 22.0 for %MAZE_CONTEXT_TYPE%: %MAZE_CONTEXT_NAME%
+echo Launching Houdini for %MAZE_CONTEXT_TYPE%: %MAZE_CONTEXT_NAME%
 echo JOB=%JOB%
 echo START_FRAME=%START_FRAME%  END_FRAME=%END_FRAME%  FRAME_RATE=%FRAME_RATE%
 
@@ -28,9 +28,9 @@ if Exist "%MAZE_OPEN_FILE%" (
 )
 
 if not "%HOUDINI_FILE_ARG%"=="" (
-    start "" "C:\Program Files\Side Effects Software\Houdini 22.0.416\bin\houdini.exe" "%HOUDINI_FILE_ARG%"
+    start "" "%MAZE_EXE%" "%HOUDINI_FILE_ARG%"
 ) else (
-    start "" "C:\Program Files\Side Effects Software\Houdini 22.0.416\bin\houdini.exe"
+    start "" "%MAZE_EXE%"
 )
 
 endlocal

@@ -1,77 +1,122 @@
 {
-    "Houdini":{
-        "display_name":"Houdini",
-        "executable":"MAZE_Houdini_22.0.bat",
-        "subdir":"Houdini",
-        "appsanywhere": false,
-        "versions":["21.0", "22.0"],
-        "version_executables":{
-            "21.0":"MAZE_Houdini_21.0.bat",
-            "22.0":"MAZE_Houdini_22.0.bat"
+    "Houdini": {
+        "display_name": "Houdini",
+        "bat": "MAZE_Houdini.bat",
+        "subdir": "Houdini",
+        "versions": {
+            "21.0": {
+                "exe": "C:\\Program Files\\Side Effects Software\\Houdini 21.0.440\\bin\\houdini.exe",
+                "label": "21.0"
+            },
+            "22.0": {
+                "exe": "C:\\Program Files\\Side Effects Software\\Houdini 22.0.416\\bin\\houdini.exe",
+                "label": "22.0"
+            }
+        },
+        "default_version": "22.0"
+    },
+    "NukeX": {
+        "display_name": "NukeX",
+        "bat": "MAZE_NukeX.bat",
+        "subdir": "Nuke",
+        "versions": {
+            "15.2": {
+                "exe": "C:\\Program Files\\Nuke15.2v4\\Nuke15.2.exe",
+                "label": "15.2"
+            },
+            "17.0": {
+                "exe": "C:\\Program Files\\Nuke17.0v3\\Nuke17.0.exe",
+                "label": "17.0"
+            }
+        },
+        "default_version": "15.2"
+    },
+    "SubstancePainter": {
+        "display_name": "Substance Painter",
+        "bat": "MAZE_SubstancePainter.bat",
+        "subdir": "Substance",
+        "versions": {
+            "latest": {
+                "exe": "C:\\Program Files\\Adobe\\Adobe Substance 3D Painter\\Adobe Substance 3D Painter.exe",
+                "label": "latest"
+            }
         }
     },
-    "NukeX":{
-        "display_name":"NukeX",
-        "executable":"MAZE_NukeX_17.0.bat",
-        "subdir":"Nuke",
-        "appsanywhere": true,
-        "versions":["15.2", "17.0"],
-        "version_executables":{
-            "15.2":"MAZE_NukeX_15.2.bat",
-            "17.0":"MAZE_NukeX_17.0.bat"
+    "Mari": {
+        "display_name": "Mari",
+        "bat": "MAZE_Mari.bat",
+        "subdir": "Mari",
+        "versions": {
+            "latest": {
+                "exe": "C:\\Program Files\\Mari\\Mari.exe",
+                "label": "latest"
+            }
         }
     },
-    "SubstancePainter":{
-        "display_name":"Substance Painter",
-        "executable":"MAZE_SubstancePainter.bat",
-        "subdir":"Substance",
-        "appsanywhere": false
+    "Maya": {
+        "display_name": "Maya",
+        "bat": "MAZE_Maya.bat",
+        "subdir": "Maya",
+        "versions": {
+            "2025": {
+                "exe": "C:\\Program Files\\Autodesk\\Maya2025\\bin\\maya.exe",
+                "label": "2025"
+            },
+            "2026": {
+                "exe": "C:\\Program Files\\Autodesk\\Maya2026\\bin\\maya.exe",
+                "label": "2026"
+            }
+        },
+        "default_version": "2025"
     },
-    "Mari":{
-        "display_name":"Mari",
-        "executable":"MAZE_Mari.bat",
-        "subdir":"Mari",
-        "appsanywhere": true
-    },
-    "Maya":{
-        "display_name":"Maya",
-        "executable":"MAZE_Maya_2026.bat",
-        "subdir":"Maya",
-        "appsanywhere": false,
-        "versions":["2025", "2026"],
-        "version_executables":{
-            "2025":"MAZE_Maya_2025.bat",
-            "2026":"MAZE_Maya_2026.bat"
+    "Blender": {
+        "display_name": "Blender",
+        "bat": "MAZE_Blender.bat",
+        "subdir": "Blender",
+        "versions": {
+            "5.1": {
+                "exe": "C:\\Program Files\\Blender Foundation\\Blender 5.1\\blender.exe",
+                "label": "5.1"
+            }
         }
     },
-    "Blender":{
-        "display_name":"Blender",
-        "executable":"MAZE_Blender.bat",
-        "subdir":"Blender",
-        "appsanywhere": true
-    },
-    "Zbrush":{
-        "display_name":"Zbrush",
-        "executable":"MAZE_Zbrush.bat",
-        "subdir":"Zbrush",
-        "appsanywhere": true
-    },
-    "Photoshop":{
-        "display_name":"Photoshop",
-        "executable":"MAZE_Photoshop.bat",
-        "subdir":"Photoshop",
-        "appsanywhere": true
-    },
-    "USD":{
-        "display_name":"USDview",
-        "file_label":"USD",
-        "executable":"MAZE_usdview_22.0.bat",
-        "subdir":"Houdini",
-        "appsanywhere": false,
-        "versions":["21.0", "22.0"],
-        "version_executables":{
-            "21.0":"MAZE_usdview_21.0.bat",
-            "22.0":"MAZE_usdview_22.0.bat"
+    "Zbrush": {
+        "display_name": "Zbrush",
+        "bat": "MAZE_Zbrush.bat",
+        "subdir": "Zbrush",
+        "versions": {
+            "2024": {
+                "exe": "C:\\Program Files\\Maxon ZBrush 2024\\ZBrush.exe",
+                "label": "2024"
+            }
         }
+    },
+    "Photoshop": {
+        "display_name": "Photoshop",
+        "bat": "MAZE_Photoshop.bat",
+        "subdir": "Photoshop",
+        "versions": {
+            "2025": {
+                "exe": "C:\\Program Files\\Adobe\\Adobe Photoshop 2025\\Photoshop.exe",
+                "label": "2025"
+            }
+        }
+    },
+    "USD": {
+        "display_name": "USDview",
+        "file_label": "USD",
+        "bat": "MAZE_usdview.bat",
+        "subdir": "Houdini",
+        "versions": {
+            "21.0": {
+                "exe": "C:\\Program Files\\Side Effects Software\\Houdini 21.0.440\\bin\\usdview.cmd",
+                "label": "21.0"
+            },
+            "22.0": {
+                "exe": "C:\\Program Files\\Side Effects Software\\Houdini 22.0.416\\bin\\usdview.cmd",
+                "label": "22.0"
+            }
+        },
+        "default_version": "22.0"
     }
 }

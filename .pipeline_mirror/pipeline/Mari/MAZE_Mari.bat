@@ -11,6 +11,6 @@ if "%MAZE_CONTEXT_TYPE%"=="shot" (
 
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
-start "" "C:\Program Files\Mari\Mari.exe" "%~1"
+start "" "%MAZE_EXE%" "%~1"
 
 endlocal
