@@ -238,11 +238,17 @@ class FileOpenThread(QThread):
 
     def __init__(self, app_config, pipeline_dir, file_path, project_root=None, context=None):
         super().__init__()
-        self.config = app_config
+        self.config = dict(app_config)
         self.pipeline_dir = pipeline_dir
         self.file_path = file_path
         self.project_root = project_root
         self.context = context
+
+        app_key = app_config.get('_key', '')
+        if app_key and 'versions' in app_config and app_config['versions']:
+            saved_version = get_last_app_version(app_key)
+            if saved_version and saved_version in app_config.get('version_executables', {}):
+                self.config['executable'] = app_config['version_executables'][saved_version]
 
     def run(self):
         log = get_log_stream()

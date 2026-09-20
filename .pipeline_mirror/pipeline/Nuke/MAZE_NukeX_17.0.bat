@@ -14,6 +14,6 @@ echo START_FRAME=%START_FRAME%  END_FRAME=%END_FRAME%  FRAME_RATE=%FRAME_RATE%
 
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 
-start "" "C:\Program Files\Nuke17.0v1\Nuke17.0.exe" --nukex "%~1"
+start "" "C:\Program Files\Nuke17.0v3\Nuke17.0.exe" --nukex "%~1"
 
 endlocal
