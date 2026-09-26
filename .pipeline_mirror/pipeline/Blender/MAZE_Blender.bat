@@ -10,6 +10,9 @@ if "%MAZE_CONTEXT_TYPE%"=="shot" (
 ) else if "%MAZE_CONTEXT_TYPE%"=="asset" (
     set "JOB=%MAZE_CONTEXT_PATH%\blender"
     set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
+) else if "%MAZE_CONTEXT_TYPE%"=="light_rig" (
+    set "JOB=%MAZE_CONTEXT_PATH%\blender"
+    set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
 )
 
 echo Launching Blender for %MAZE_CONTEXT_TYPE%: %MAZE_CONTEXT_NAME%

@@ -8,6 +8,8 @@ if "%MAZE_CONTEXT_TYPE%"=="shot" (
     echo Launching NukeX for shot: %MAZE_CONTEXT_NAME%
 ) else if "%MAZE_CONTEXT_TYPE%"=="asset" (
     echo Launching NukeX for asset: %MAZE_CONTEXT_NAME%
+) else if "%MAZE_CONTEXT_TYPE%"=="light_rig" (
+    echo Launching NukeX for light rig: %MAZE_CONTEXT_NAME%
 )
 
 echo START_FRAME=%START_FRAME%  END_FRAME=%END_FRAME%  FRAME_RATE=%FRAME_RATE%

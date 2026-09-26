@@ -9,6 +9,9 @@ if "%MAZE_CONTEXT_TYPE%"=="shot" (
 ) else if "%MAZE_CONTEXT_TYPE%"=="asset" (
     set "JOB=%MAZE_CONTEXT_PATH%\houdini"
     set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
+) else if "%MAZE_CONTEXT_TYPE%"=="light_rig" (
+    set "JOB=%MAZE_CONTEXT_PATH%\houdini"
+    set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
 )
 
 set "HOUDINI_PACKAGE_DIR=%PIPELINE_DIR%\Houdini\Packages"

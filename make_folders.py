@@ -13,6 +13,7 @@ NEW_PROJECT_DIRECTORY = ['asset',
                          'IO',
                          'MISC',
                          'lightrigs',
+                         'DB',
 
                          'pipeline/Houdini',
                          'pipeline/Nuke',
@@ -33,6 +34,8 @@ NEW_PROJECT_DIRECTORY = ['asset',
                          'asset/env',
                          'asset/prop',
                          'asset/misc'
+
+                         'DB/Resolve'
                          ]
                          
 NEW_SHOT_LIST = ['_empty_shot_']
@@ -61,6 +64,9 @@ NEW_WORKING_DIRECTORY = ['blender',
                      'houdini/render',
                      'houdini/USD',
                      'houdini/tex',
+
+                     'input',
+                     'input/plates',
                      
                      'mari',
 
@@ -127,7 +133,8 @@ NEW_SHOOT_DAY_DIRECTORY = ['backup',
 NEW_LIGHT_RIG_DIRECTORY = ['hdri', 'photogrammetry', 'usd_scene',
                             'nuke', 'nuke/script', 'nuke/render', 'nuke/geo',
                             'houdini', 'houdini/hip', 'houdini/geo', 'houdini/render', 'houdini/USD', 'houdini/tex',
-                            'ptgui', 'ptgui/project', 'ptgui/panorama']
+                            'ptgui', 'ptgui/project', 'ptgui/panorama',
+                            'input']
 
 
 def initialize_project(project_path):

@@ -273,10 +273,18 @@ class FileOpenThread(QThread):
             log.write(f'[open] MAZE_EXE={launch_env.get("MAZE_EXE", "<not set>")}')
             log.write(f'[open] MAZE_PIPELINE={launch_env.get("MAZE_PIPELINE", "<not set>")}')
             log.write(f'[open] PIPELINE_DIR={launch_env.get("PIPELINE_DIR", "<not set>")}')
+            log.write(f'[open] MAZE_CONTEXT_TYPE={launch_env.get("MAZE_CONTEXT_TYPE", "<not set>")}')
+            log.write(f'[open] MAZE_CONTEXT_NAME={launch_env.get("MAZE_CONTEXT_NAME", "<not set>")}')
+            log.write(f'[open] MAZE_CONTEXT_PATH={launch_env.get("MAZE_CONTEXT_PATH", "<not set>")}')
+            log.write(f'[open] JOB={launch_env.get("JOB", "<not set>")}')
+            log.write(f'[open] HOUDINI_JOB={launch_env.get("HOUDINI_JOB", "<not set>")}')
+            log.write(f'[open] START_FRAME={launch_env.get("START_FRAME", "<not set>")}')
+            log.write(f'[open] END_FRAME={launch_env.get("END_FRAME", "<not set>")}')
+            log.write(f'[open] FRAME_RATE={launch_env.get("FRAME_RATE", "<not set>")}')
+            launch_env['MAZE_OPEN_FILE'] = str(self.file_path)
             log.write(f'[open] MAZE_OPEN_FILE={launch_env.get("MAZE_OPEN_FILE", "<not set>")}')
             if platform.system() == 'Windows':
                 import tempfile
-                launch_env['MAZE_OPEN_FILE'] = str(self.file_path)
                 bat_log = os.path.join(tempfile.gettempdir(), 'mazehub_houdini_launch.log')
                 if os.path.exists(bat_log):
                     os.unlink(bat_log)
@@ -360,11 +368,22 @@ class FileBrowserPanel(QWidget):
         self.open_btn.setEnabled(False)
         self.open_btn.clicked.connect(self._open_selected)
         btn_row.addWidget(self.open_btn)
+
+        self.version_combo = QComboBox()
+        self.version_combo.setMinimumHeight(32)
+        self.version_combo.setMinimumWidth(100)
+        self.version_combo.setEnabled(False)
+        self.version_combo.currentIndexChanged.connect(self._on_version_change)
+        btn_row.addWidget(self.version_combo)
+
+        self._selected_app_key = None
+        self._selected_version_key = None
+
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
         self.tree.itemSelectionChanged.connect(
-            lambda: self.open_btn.setEnabled(bool(self.tree.selectedItems()))
+            lambda: self._on_selection_change()
         )
 
     def set_directory(self, path, context=None):
@@ -380,6 +399,10 @@ class FileBrowserPanel(QWidget):
         self.tree.clear()
         self._file_map.clear()
         self.open_btn.setEnabled(False)
+        self.version_combo.clear()
+        self.version_combo.setEnabled(False)
+        self._selected_app_key = None
+        self._selected_version_key = None
 
     def _refresh(self):
         self.tree.clear()
@@ -430,6 +453,56 @@ class FileBrowserPanel(QWidget):
             item = QTreeWidgetItem(['No project files found in this directory', '', ''])
             self.tree.addTopLevelItem(item)
 
+    def _on_selection_change(self):
+        items = self.tree.selectedItems()
+        self.open_btn.setEnabled(bool(items))
+        if not items:
+            self.version_combo.clear()
+            self.version_combo.setEnabled(False)
+            self._selected_app_key = None
+            self._selected_version_key = None
+            return
+
+        item = items[0]
+        app_key = None
+        for idx, (app_name, fp, rel, tree_item) in self._file_map.items():
+            if tree_item is item:
+                app_key = app_name
+                break
+
+        if not app_key:
+            self.version_combo.clear()
+            self.version_combo.setEnabled(False)
+            self._selected_app_key = None
+            self._selected_version_key = None
+            return
+
+        self._selected_app_key = app_key
+        cfg = self.apps_config.get(app_key, {})
+        versions = cfg.get('versions', {})
+
+        self.version_combo.blockSignals(True)
+        self.version_combo.clear()
+
+        if len(versions) > 1:
+            default_ver = cfg.get('default_version', next(iter(versions.keys()), ''))
+            for vk, vd in versions.items():
+                label = vd.get('label', vk) if isinstance(vd, dict) else vk
+                self.version_combo.addItem(label, userData=vk)
+            idx = self.version_combo.findData(default_ver)
+            if idx >= 0:
+                self.version_combo.setCurrentIndex(idx)
+            self.version_combo.setEnabled(True)
+            self._selected_version_key = self.version_combo.currentData()
+        else:
+            self.version_combo.setEnabled(False)
+            self._selected_version_key = next(iter(versions.keys()), None)
+
+        self.version_combo.blockSignals(False)
+
+    def _on_version_change(self, index):
+        self._selected_version_key = self.version_combo.currentData()
+
     def _open_selected(self):
         items = self.tree.selectedItems()
         if not items:
@@ -443,7 +516,10 @@ class FileBrowserPanel(QWidget):
                     if hasattr(window, 'show_status'):
                         window.show_status(f'No config for {app_name}', False)
                     return
+                cfg = dict(cfg)
                 cfg['_key'] = app_name
+                if self._selected_version_key:
+                    cfg['default_version'] = self._selected_version_key
                 self.thread = FileOpenThread(
                     cfg, self.pipeline_dir, fp,
                     project_root=self.project_root, context=self._current_context,
@@ -1988,11 +2064,32 @@ class LightRigsPage(QWidget):
         menu = QMenu(self)
         _add_explorer_action(menu, rig_path)
         menu.addSeparator()
+        thumb_action = menu.addAction('Set Thumbnail...')
         edit_action = menu.addAction('Edit Light Rig...')
         action = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if action == edit_action:
+        if action == thumb_action:
+            self._set_thumbnail(rig_path)
+        elif action == edit_action:
             self.table.selectRow(row)
             self._edit_rig()
+
+    def _set_thumbnail(self, rig_path):
+        from PySide6.QtWidgets import QFileDialog
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 'Select Thumbnail', str(rig_path),
+            'Images (*.png *.jpg *.jpeg *.bmp *.tiff *.exr);;All Files (*)'
+        )
+        if not file_path:
+            return
+        from pipeline_app import convert_exr_to_png
+        if file_path.lower().endswith('.exr'):
+            if not convert_exr_to_png(file_path, rig_path / '_thumbnail.png'):
+                self._status('Failed to convert EXR file', False)
+                return
+        else:
+            import shutil
+            shutil.copy2(file_path, rig_path / '_thumbnail.png')
+        self._refresh()
 
     def _refresh(self):
         self.table.setSortingEnabled(False)
