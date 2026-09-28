@@ -27,6 +27,7 @@ from pipeline_app import (
     read_shot_meta, write_shot_meta, DEFAULT_SHOT_META,
     read_light_rig_meta, write_light_rig_meta, list_light_rigs,
     DEFAULT_LIGHT_RIG_META,
+    read_asset_meta, write_asset_meta, DEFAULT_ASSET_META,
     APP_FILE_EXTENSIONS,
     build_context_env, _app_dir, APP_VERSION,
     discover_usd_files, discover_husk_passes,
@@ -689,11 +690,16 @@ class ShotDialog(QDialog):
 
 
 class AssetDialog(QDialog):
-    def __init__(self, parent=None, category='', asset_name=''):
+    def __init__(self, parent=None, category='', asset_name='', meta=None):
         super().__init__(parent)
-        self.setWindowTitle('New Asset' if not asset_name else f'Edit Asset: {asset_name}')
-        self.setMinimumWidth(400)
+        self._editing = bool(asset_name)
+        self.setWindowTitle('New Asset' if not self._editing else f'Edit Asset: {asset_name}')
+        self.setMinimumWidth(450)
         self._result = None
+        self._folder_edited = False
+
+        if meta is None:
+            meta = DEFAULT_ASSET_META
 
         from make_folders import NEW_ASSET_CATEGORY_LIST
 
@@ -706,11 +712,23 @@ class AssetDialog(QDialog):
             idx = self.cat_combo.findText(category)
             if idx >= 0:
                 self.cat_combo.setCurrentIndex(idx)
+        if self._editing:
+            self.cat_combo.setEnabled(False)
         form.addRow('Category:', self.cat_combo)
 
-        self.name_edit = QLineEdit(asset_name)
-        self.name_edit.setPlaceholderText('e.g. MainCharacter')
-        form.addRow('Asset Name:', self.name_edit)
+        self.display_edit = QLineEdit(meta.get('display_name', ''))
+        self.display_edit.setPlaceholderText('e.g. Main Character')
+        form.addRow('Display Name:', self.display_edit)
+
+        self.folder_edit = QLineEdit(meta.get('folder_name', ''))
+        self.folder_edit.setPlaceholderText('e.g. main_character')
+        if self._editing:
+            self.folder_edit.setReadOnly(True)
+        form.addRow('Folder Name:', self.folder_edit)
+
+        if not self._editing:
+            self.display_edit.textChanged.connect(self._auto_folder)
+
         layout.addLayout(form)
 
         self.error_label = QLabel('')
@@ -720,7 +738,7 @@ class AssetDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        save_btn = QPushButton('Save' if asset_name else 'Create')
+        save_btn = QPushButton('Save' if self._editing else 'Create')
         save_btn.setMinimumHeight(36)
         save_btn.clicked.connect(self._accept)
         btn_row.addWidget(save_btn)
@@ -730,15 +748,28 @@ class AssetDialog(QDialog):
         btn_row.addWidget(cancel_btn)
         layout.addLayout(btn_row)
 
+    def _auto_folder(self, text):
+        if self._folder_edited:
+            return
+        folder = text.strip().lower().replace(' ', '_')
+        self.folder_edit.setText(folder)
+
     def _accept(self):
-        name = self.name_edit.text().strip()
-        if not name:
-            self.error_label.setText('Required: Asset Name')
+        display_name = self.display_edit.text().strip()
+        folder_name = self.folder_edit.text().strip()
+        errors = []
+        if not display_name:
+            errors.append('Display Name')
+        if not folder_name:
+            errors.append('Folder Name')
+        if errors:
+            self.error_label.setText(f'Required: {", ".join(errors)}')
             self.error_label.setVisible(True)
             return
         self._result = {
             'category': self.cat_combo.currentText(),
-            'name': name,
+            'display_name': display_name,
+            'folder_name': folder_name,
         }
         self.accept()
 
@@ -2164,6 +2195,12 @@ class AssetExplorerPage(QWidget):
         self.new_btn.setCursor(Qt.PointingHandCursor)
         self.new_btn.clicked.connect(self._new_asset)
         toolbar.addWidget(self.new_btn)
+        self.edit_btn = QPushButton('Edit')
+        self.edit_btn.setMinimumHeight(32)
+        self.edit_btn.setCursor(Qt.PointingHandCursor)
+        self.edit_btn.setEnabled(False)
+        self.edit_btn.clicked.connect(self._edit_asset)
+        toolbar.addWidget(self.edit_btn)
 
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel('Category:'))
@@ -2177,8 +2214,8 @@ class AssetExplorerPage(QWidget):
         layout.addLayout(toolbar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(['', 'Asset', 'Progress', 'Category', 'Path', 'Working Dirs'])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(['', 'Asset', 'Progress', 'Category', 'Path', 'Working Dirs', '_folder'])
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -2186,6 +2223,7 @@ class AssetExplorerPage(QWidget):
         self.table.setIconSize(QPixmap(64, 64).size())
         self.table.setColumnWidth(0, 72)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.table.setColumnHidden(6, True)
         self.table.setSortingEnabled(True)
         self.table.itemSelectionChanged.connect(self._on_selection_change)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -2209,32 +2247,61 @@ class AssetExplorerPage(QWidget):
             return
         data = dialog.result_data()
         category = data['category']
-        name = data['name']
+        folder_name = data['folder_name']
+        display_name = data['display_name']
 
         from make_folders import make_working_directory
 
-        asset_path = self.project_root / 'asset' / category / name
+        asset_path = self.project_root / 'asset' / category / folder_name
         if asset_path.exists():
-            self._status(f'Asset already exists: {category}/{name}', False)
+            self._status(f'Asset already exists: {category}/{folder_name}', False)
             return
 
         try:
             make_working_directory(str(asset_path))
+            write_asset_meta(asset_path, {
+                'display_name': display_name,
+                'folder_name': folder_name,
+            })
             self._refresh()
-            self._status(f'Asset created: {category}/{name}', True)
+            self._status(f'Asset created: {category}/{display_name}', True)
         except Exception as e:
             self._status(f'Error: {e}', False)
 
+    def _edit_asset(self):
+        items = self.table.selectedItems()
+        if not items:
+            return
+        row = items[0].row()
+        folder_name = self.table.item(row, 6).text()
+        cat = self.table.item(row, 3).text()
+        asset_path = self.project_root / 'asset' / cat / folder_name
+        meta = read_asset_meta(asset_path)
+
+        dialog = AssetDialog(self, category=cat, asset_name=folder_name, meta=meta)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        data = dialog.result_data()
+
+        write_asset_meta(asset_path, {
+            'display_name': data['display_name'],
+            'folder_name': folder_name,
+        })
+        self._refresh()
+        self._status(f'Asset updated: {folder_name}', True)
+
     def _on_selection_change(self):
         items = self.table.selectedItems()
+        self.edit_btn.setEnabled(bool(items))
         if items:
             row = items[0].row()
-            asset_name = self.table.item(row, 1).text()
+            display_name = self.table.item(row, 1).text()
             cat = self.table.item(row, 3).text()
-            asset_path = self.project_root / 'asset' / cat / asset_name
-            ctx = {'type': 'asset', 'name': asset_name, 'path': asset_path, 'category': cat}
+            folder_name = self.table.item(row, 6).text()
+            asset_path = self.project_root / 'asset' / cat / folder_name
+            ctx = {'type': 'asset', 'name': folder_name, 'path': asset_path, 'category': cat}
             self._file_panel.set_directory(asset_path, context=ctx)
-            self.file_browser.setTitle(f'Files: {asset_name}')
+            self.file_browser.setTitle(f'Files: {display_name}')
             self.file_browser.setVisible(True)
         else:
             self._file_panel.clear()
@@ -2255,6 +2322,7 @@ class AssetExplorerPage(QWidget):
                 continue
             for asset in sorted(cat_dir.iterdir()):
                 if asset.is_dir() and not asset.name.startswith('_'):
+                    meta = read_asset_meta(asset)
                     prod = read_production(asset)
                     if not prod:
                         prod = {cat_name: 'Not applicable' if info == 'optional' else 'Not started'
@@ -2262,17 +2330,17 @@ class AssetExplorerPage(QWidget):
                         write_production(asset, prod)
                     score = production_score(prod)
                     working_count = sum(1 for d in asset.iterdir() if d.is_dir())
-                    rows.append((asset.name, cat_dir.name, str(asset.relative_to(self.project_root)), score, f'{working_count} dirs'))
+                    rows.append((asset.name, meta.get('display_name', asset.name), cat_dir.name, str(asset.relative_to(self.project_root)), score, f'{working_count} dirs'))
         self.table.setRowCount(len(rows))
-        for i, (name, cat, path, score, count) in enumerate(rows):
+        for i, (folder_name, display_name, cat, path, score, count) in enumerate(rows):
             self.table.setRowHeight(i, 64)
             thumb_item = QTableWidgetItem()
-            asset_path = self.project_root / 'asset' / cat / name
+            asset_path = self.project_root / 'asset' / cat / folder_name
             thumb_path = asset_path / '_thumbnail.png'
             if thumb_path.exists():
                 thumb_item.setIcon(QIcon(str(thumb_path)))
             self.table.setItem(i, 0, thumb_item)
-            self.table.setItem(i, 1, QTableWidgetItem(name))
+            self.table.setItem(i, 1, QTableWidgetItem(display_name))
             score_item = _SortItem(score, int(score.replace('%', '')) if score else None)
             color = _score_color(score)
             if color:
@@ -2281,6 +2349,7 @@ class AssetExplorerPage(QWidget):
             self.table.setItem(i, 3, QTableWidgetItem(cat))
             self.table.setItem(i, 4, QTableWidgetItem(path))
             self.table.setItem(i, 5, QTableWidgetItem(count))
+            self.table.setItem(i, 6, QTableWidgetItem(folder_name))
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(0, 72)
         self.table.setColumnWidth(4, max(self.table.columnWidth(4), 300))
@@ -2291,14 +2360,15 @@ class AssetExplorerPage(QWidget):
         if not item:
             return
         row = item.row()
-        asset_name = self.table.item(row, 1).text()
+        folder_name = self.table.item(row, 6).text()
         cat = self.table.item(row, 3).text()
-        asset_path = self.project_root / 'asset' / cat / asset_name
+        asset_path = self.project_root / 'asset' / cat / folder_name
         prod = read_production(asset_path)
 
         menu = QMenu(self)
         _add_explorer_action(menu, asset_path)
         menu.addSeparator()
+        edit_action = menu.addAction('Edit Asset...')
 
         for cat_name, cat_type in ASSET_CATEGORIES.items():
             status = prod.get(cat_name, 'Not started')
@@ -2320,7 +2390,10 @@ class AssetExplorerPage(QWidget):
             remove_thumb = menu.addAction('Remove Thumbnail')
 
         action = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if action and action.data():
+        if action == edit_action:
+            self.table.selectRow(row)
+            self._edit_asset()
+        elif action and action.data():
             cat_name, status = action.data()
             prod[cat_name] = status
             write_production(asset_path, prod)
@@ -2895,12 +2968,13 @@ class ProductionPage(QWidget):
                 continue
             for asset in sorted(cat_dir.iterdir()):
                 if asset.is_dir() and not asset.name.startswith('_'):
+                    meta = read_asset_meta(asset)
                     prod = read_production(asset)
                     if not prod:
                         prod = {cat_name: 'Not applicable' if info == 'optional' else 'Not started'
                                 for cat_name, info in ASSET_CATEGORIES.items()}
                         write_production(asset, prod)
-                    rows.append((asset.name, cat_dir.name, prod))
+                    rows.append((meta.get('display_name', asset.name), cat_dir.name, prod))
         self.asset_table.setRowCount(len(rows))
         for i, (name, cat, prod) in enumerate(rows):
             self.asset_table.setItem(i, 0, QTableWidgetItem(name))

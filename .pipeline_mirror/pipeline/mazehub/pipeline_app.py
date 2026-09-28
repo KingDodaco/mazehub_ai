@@ -227,6 +227,33 @@ def list_light_rigs(project_root):
     ])
 
 
+ASSET_META_FILENAME = '_metadata.json'
+
+DEFAULT_ASSET_META = {
+    'display_name': '',
+    'folder_name': '',
+}
+
+
+def read_asset_meta(asset_path):
+    meta_path = Path(asset_path) / ASSET_META_FILENAME
+    if meta_path.exists():
+        with open(meta_path) as f:
+            stored = json.load(f)
+            result = dict(DEFAULT_ASSET_META)
+            result.update(stored)
+            return result
+    name = Path(asset_path).name
+    return {'display_name': name, 'folder_name': name}
+
+
+def write_asset_meta(asset_path, metadata):
+    meta_path = Path(asset_path) / ASSET_META_FILENAME
+    clean = {k: metadata.get(k, '') for k in DEFAULT_ASSET_META}
+    with open(meta_path, 'w') as f:
+        json.dump(clean, f, indent=2)
+
+
 PRODUCTION_FILENAME = '_production.json'
 
 PRODUCTION_STATUSES = ['Not started', 'Work in progress', 'Pending review', 'Finished']
@@ -785,11 +812,16 @@ def handle_create_asset(project_root):
     if not name:
         return
     from make_folders import make_working_directory
-    asset_path = project_root / 'asset' / category / name
+    folder_name = name.lower().replace(' ', '_')
+    asset_path = project_root / 'asset' / category / folder_name
     if asset_path.exists():
-        print(f'  Asset already exists: {category}/{name}')
+        print(f'  Asset already exists: {category}/{folder_name}')
         return
     make_working_directory(str(asset_path))
+    write_asset_meta(asset_path, {
+        'display_name': name,
+        'folder_name': folder_name,
+    })
     print(f'  Created asset: {category}/{name}')
     print(f'  Location: {asset_path}')
 
