@@ -4093,6 +4093,17 @@ class RenderPage(QWidget):
                 item.widget().setChecked(False)
 
     def _start_render(self):
+        try:
+            self._do_render()
+        except Exception as e:
+            import traceback
+            self.log_output.append(f'[error] {e}')
+            self.log_output.append(traceback.format_exc())
+            self._status(f'Render error: {e}', False)
+            self.render_btn.setEnabled(True)
+            self.cancel_btn.setEnabled(False)
+
+    def _do_render(self):
         shot_name = self.shot_combo.currentText()
         usd_name = self.usd_combo.currentText()
         if not shot_name or not usd_name:
@@ -4139,10 +4150,20 @@ class RenderPage(QWidget):
             self._status('Start frame must be <= end frame', False)
             return
 
+        version = self.version_combo.currentData()
+        if version is None:
+            self.log_output.append('[error] Select a render version first')
+            self._status('Select a render version first', False)
+            return
+
+        render_engine = self.render_engine_combo.currentData()
+        if not render_engine:
+            self.log_output.append('[error] Select a render engine first')
+            self._status('Select a render engine first', False)
+            return
+
         commands = []
         render_base = shot_path / 'houdini' / 'render'
-        version = self.version_combo.currentData()
-        render_engine = self.render_engine_combo.currentData()
         version_dir_name = f'{shot_name}_v{version:03d}'
         frames = list(range(start, end + 1, max(interval, 1)))
         for p in passes:
