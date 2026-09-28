@@ -32,6 +32,7 @@ from pipeline_app import (
     build_context_env, _app_dir, APP_VERSION,
     discover_usd_files, discover_husk_passes,
     discover_image_sequences,
+    sync_usd_references, parse_usd_references,
     read_production, write_production, production_score,
     PRODUCTION_STATUSES, PRODUCTION_VALUES,
     ASSET_CATEGORIES, SHOT_CATEGORIES,
@@ -4120,6 +4121,14 @@ class RenderPage(QWidget):
             self._status(f'USD file not found: {usd_file}', False)
             return
 
+        self.log_output.append(f'[info] Syncing USD references for {usd_name}...')
+        sync_dlg = SyncProgressDialog(usd_file, self.window())
+        sync_dlg.start()
+        if sync_dlg.exec() != QDialog.Accepted:
+            self.log_output.append('[warning] USD sync cancelled or timed out — rendering may fail')
+        else:
+            self.log_output.append('[info] USD references synced')
+
         start = self.start_frame_spin.value()
         end = self.end_frame_spin.value()
         interval = self.interval_spin.value()
@@ -4381,6 +4390,97 @@ class VersionDialog(QDialog):
 
     def result_data(self):
         return self._result
+
+
+class SyncProgressDialog(QDialog):
+    def __init__(self, usd_file, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Syncing USD References')
+        self.setMinimumWidth(400)
+        self.setModal(True)
+        self.usd_file = Path(usd_file)
+        layout = QVBoxLayout(self)
+        self.status_label = QLabel(f'Scanning references in {self.usd_file.name}...')
+        layout.addWidget(self.status_label)
+        self.progress = QProgressBar()
+        self.progress.setMinimum(0)
+        self.progress.setMaximum(100)
+        layout.addWidget(self.progress)
+        self.detail_label = QLabel('')
+        layout.addWidget(self.detail_label)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.cancel_btn = QPushButton('Cancel')
+        self.cancel_btn.clicked.connect(self._cancel)
+        btn_row.addWidget(self.cancel_btn)
+        layout.addLayout(btn_row)
+        self._cancelled = False
+        self._thread = None
+
+    def start(self):
+        from PySide6.QtCore import QThread, Signal
+
+        class Worker(QThread):
+            progress = Signal(int, int, str)
+            finished = Signal(bool)
+
+            def __init__(self, usd_file):
+                super().__init__()
+                self.usd_file = usd_file
+                self._cancelled = False
+
+            def cancel(self):
+                self._cancelled = True
+
+            def run(self):
+                from pipeline_app import parse_usd_references, sync_file
+                refs = parse_usd_references(self.usd_file)
+                if not refs:
+                    self.finished.emit(True)
+                    return
+                resolved = []
+                for ref in refs:
+                    p = self.usd_file.parent / ref
+                    if p.exists():
+                        resolved.append((ref, p))
+                unsynced = [(ref, p) for ref, p in resolved if p.stat().st_size == 0]
+                if not unsynced:
+                    self.finished.emit(True)
+                    return
+                import time
+                for ref, p in unsynced:
+                    try:
+                        p.open('rb').close()
+                    except Exception:
+                        pass
+                total = len(unsynced)
+                deadline = time.time() + 60
+                while time.time() < deadline and not self._cancelled:
+                    synced = sum(1 for _, p in unsynced if p.exists() and p.stat().st_size > 0)
+                    self.progress.emit(synced, total, unsynced[synced][0] if synced < total else '')
+                    if synced == total:
+                        self.finished.emit(True)
+                        return
+                    time.sleep(0.5)
+                self.finished.emit(False)
+
+        self._thread = Worker(self.usd_file)
+        self._thread.progress.connect(self._on_progress)
+        self._thread.finished.connect(self._on_finished)
+        self._thread.start()
+
+    def _on_progress(self, synced, total, current):
+        pct = int(synced / total * 100) if total > 0 else 0
+        self.progress.setValue(pct)
+        self.detail_label.setText(f'{synced}/{total} synced — {current}')
+
+    def _on_finished(self, success):
+        self.accept() if success else self.reject()
+
+    def _cancel(self):
+        if self._thread:
+            self._thread.cancel()
+        self.reject()
 
 
 class SettingsPage(QWidget):

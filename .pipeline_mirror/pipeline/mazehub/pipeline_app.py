@@ -735,26 +735,133 @@ def discover_husk_passes(husk_path, usd_file):
         in_passes = False
         for line in output.splitlines():
             raw = line.strip()
-            if not raw:
-                continue
             lower = raw.lower()
-            if 'available render passes' in lower or 'render passes found' in lower:
-                in_passes = True
+            if not in_passes:
+                if 'render pass' in lower:
+                    in_passes = True
                 continue
-            if in_passes:
-                if raw.startswith(('[', '#', '//')) or len(raw) > 80 or '://' in raw:
-                    continue
-                passes.append(raw)
+            if not raw:
+                break
+            if any(lower.startswith(p) for p in ('error', 'warning', 'fatal', 'failed')):
+                break
+            if raw.startswith(('[', '#', '//')):
                 continue
-            if raw.startswith('[') or raw.startswith('#') or len(raw) > 80:
+            if '://' in raw or ':' in raw:
                 continue
-            if '://' in raw:
+            if len(raw) > 80:
                 continue
-            if not any(c in raw for c in (' ', '\t')) and len(raw) < 80:
-                passes.append(raw)
+            passes.append(raw)
         return passes
     except Exception:
         return []
+
+
+def is_usd_ascii(usd_file):
+    try:
+        with open(usd_file, 'r', errors='ignore') as f:
+            return f.read(8).startswith('#usda')
+    except Exception:
+        return False
+
+
+def parse_usd_references(usd_file):
+    usd_file = Path(usd_file)
+    if not usd_file.exists():
+        return []
+    ext = usd_file.suffix.lower()
+    refs = set()
+    if ext == '.usdc':
+        try:
+            from pxr import Usd, Sdf
+            stage = Usd.Stage.Open(str(usd_file))
+            for prim in stage.Traverse():
+                for rel in prim.GetRelationships():
+                    for target in rel.GetTargets():
+                        if not target.pathString.startswith('/'):
+                            refs.add(target.pathString)
+                for attr in prim.GetAttributes():
+                    if attr.GetTypeName() == Sdf.AssetPathType:
+                        val = attr.Get()
+                        if val and val.GetResolvedPath():
+                            p = val.GetResolvedPath()
+                            if not p.startswith('/') and not p.startswith('<'):
+                                refs.add(p)
+        except Exception:
+            pass
+    else:
+        ascii_mode = ext == '.usda' or is_usd_ascii(usd_file)
+        if not ascii_mode:
+            return []
+        try:
+            text = usd_file.read_text(errors='ignore')
+            refs.update(re.findall(r'@([^@\n]+?)@', text))
+        except Exception:
+            pass
+    resolved = set()
+    for ref in refs:
+        if ref.startswith('<') or ref.startswith('/'):
+            continue
+        resolved.add(ref)
+    return sorted(resolved)
+
+
+def _resolve_references(usd_file, refs):
+    usd_file = Path(usd_file)
+    resolved = []
+    for ref in refs:
+        p = usd_file.parent / ref
+        if p.exists():
+            resolved.append(p)
+    return resolved
+
+
+def sync_file(file_path, timeout=30):
+    file_path = Path(file_path)
+    if not file_path.exists():
+        return False
+    if file_path.stat().st_size > 0:
+        return True
+    try:
+        file_path.open('rb').close()
+    except Exception:
+        pass
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if file_path.stat().st_size > 0:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def sync_usd_references(usd_file, progress_callback=None):
+    refs = parse_usd_references(usd_file)
+    if not refs:
+        return True
+    resolved = _resolve_references(usd_file, refs)
+    unsynced = [p for p in resolved if p.stat().st_size == 0]
+    if not unsynced:
+        return True
+    for p in unsynced:
+        try:
+            p.open('rb').close()
+        except Exception:
+            pass
+    total = len(unsynced)
+    synced = 0
+    import time
+    deadline = time.time() + 60
+    while synced < total and time.time() < deadline:
+        synced = sum(1 for p in unsynced if p.exists() and p.stat().st_size > 0)
+        if progress_callback:
+            progress_callback(synced, total)
+        if synced == total:
+            break
+        time.sleep(0.5)
+    return synced == total
 
 
 def print_header(project_root):
