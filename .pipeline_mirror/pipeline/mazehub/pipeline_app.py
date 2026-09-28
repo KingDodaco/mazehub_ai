@@ -381,6 +381,9 @@ def build_context_env(context, project_root):
         env['MAZE_LIGHT_RIG_NUKE'] = meta.get('nuke_path', '')
         env['MAZE_LIGHT_RIG_HOUDINI'] = meta.get('houdini_path', '')
 
+    env['JOB'] = str(ctx_path)
+    env['HOUDINI_JOB'] = str(ctx_path)
+
     app_env = APP_CONTEXT_ENV.get(context.get('app_name', ''), {})
     for key, template in app_env.items():
         resolved = template.format(
@@ -732,25 +735,15 @@ def discover_husk_passes(husk_path, usd_file):
         )
         output = (result.stdout or '') + '\n' + (result.stderr or '')
         passes = []
-        in_passes = False
         for line in output.splitlines():
-            raw = line.strip()
-            lower = raw.lower()
-            if not in_passes:
-                if 'render pass' in lower or 'available pass' in lower or 'passes:' in lower:
-                    in_passes = True
+            cleaned = re.sub(r'\[\d{2}:\d{2}:\d{2}\]\s*', '', line).strip()
+            if not cleaned:
                 continue
-            if not raw:
-                break
-            if any(lower.startswith(p) for p in ('error', 'warning', 'fatal', 'failed')):
-                break
-            if raw.startswith(('[', '#', '//')):
+            if any(cleaned.lower().startswith(p) for p in ('error', 'warning', 'fatal', 'failed')):
                 continue
-            if '://' in raw:
-                continue
-            if len(raw) > 80:
-                continue
-            passes.append(raw)
+            for part in cleaned.split():
+                if part.startswith('/') and len(part) > 1:
+                    passes.append(part)
         return passes, output
     except Exception:
         return [], ''
