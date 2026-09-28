@@ -511,3 +511,236 @@ def send_to_dailies():
     else:
         send_dailies_notification(webhook_url, shot, artist, source_path or Path('.'), notes)
 
+
+def post_frame(output, comment=""):
+    """Post a single PNG frame to Teams via Adaptive Card Image."""
+    try:
+        onedrive_link = local_to_onedrive_link(output)
+    except Exception as e:
+        print(f"local_to_onedrive_link failed ({e}), trying get_sharepoint_url")
+        onedrive_link = get_sharepoint_url(output)
+        if not onedrive_link:
+            raise
+
+    settings = get_mazehub_settings()
+    webhook_url = settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK") or "https://defaultede29655d09742e4bbb5f38d427fbf.b8.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/cdf54a2c13564d2dba8edc95a608ff50/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PaCvoX6XhuOJC3S4ubnKnOQuuWZUasyKX52AdQp33OA"
+
+    try:
+        username = get_artist_name()
+    except Exception:
+        username = getpass.getuser()
+
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    filename = os.path.splitext(os.path.basename(output))[0]
+
+    context_name = os.environ.get("MAZE_CONTEXT_NAME") or ""
+    hip_path = ""
+    try:
+        hp = hou.hipFile.path()
+        if hp and "untitled" not in Path(hp).name.lower():
+            hip_path = _long_path(hp)
+    except Exception:
+        pass
+    if not context_name:
+        try:
+            context_name = get_shot_name() or ""
+        except Exception:
+            pass
+    if not context_name:
+        context_name = Path(hip_path).stem if hip_path else filename
+
+    title_text = f"{context_name} — {format_versioned_filename(filename)}" if context_name else format_versioned_filename(filename)
+    hip_text = hip_path or ""
+    message = username
+    pretty_comment = f'"{comment}"' if comment else ""
+
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "contentUrl": None,
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard", "version": "1.5",
+                "body": [
+                    {"type": "Container", "items": [
+                        {"type": "TextBlock", "text": title_text, "wrap": True, "weight": "Bolder", "size": "Large"},
+                        {"type": "TextBlock", "text": hip_text, "wrap": True, "spacing": "None", "size": "Small", "isSubtle": True, "fontType": "Monospace"} if hip_text else {"type": "TextBlock", "text": "", "wrap": True, "spacing": "None", "isVisible": False},
+                        {"type": "TextBlock", "text": current_time, "wrap": True, "spacing": "Small"},
+                        {"type": "TextBlock", "text": message, "wrap": True, "spacing": "Small"},
+                        {"type": "TextBlock", "text": pretty_comment, "wrap": True, "spacing": "Small"},
+                    ], "style": "emphasis", "bleed": True},
+                    {"type": "Image", "url": onedrive_link, "style": "default"},
+                ],
+            },
+        }],
+    }
+
+    url = webhook_url
+    if requests is not None:
+        r = requests.post(url, json=payload, timeout=15)
+        if 200 <= r.status_code < 300:
+            print("Posted to Teams")
+            return True
+        print(f"Failed to post: {r.status_code} - {r.text}")
+        return False
+    else:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            urllib.request.urlopen(req, timeout=15)
+            print("Posted to Teams")
+            return True
+        except Exception as e:
+            print(f"Failed to post: {e}")
+            return False
+
+
+def send_frame_to_dailies():
+    """Send the current frame to Teams as a PNG. Prefers existing flipbook image, falls back to viewport capture."""
+    hip_saved = False
+    try:
+        hp = hou.hipFile.path()
+        if hp and "untitled" not in Path(hp).name.lower():
+            hip_saved = True
+    except Exception:
+        pass
+    if not hip_saved:
+        job = hou.getenv("JOB") or os.environ.get("JOB", "")
+        ctx = os.environ.get("MAZE_CONTEXT_PATH", "")
+        if job and os.path.isdir(job):
+            hip_saved = True
+        elif ctx and os.path.isdir(ctx):
+            hip_saved = True
+    if not hip_saved:
+        msg = "Hip file not saved.\n\nPlease save your hip under MZE before sending to Teams."
+        print(msg)
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(None, "Save Hip First", msg)
+        except Exception:
+            try:
+                from PySide2.QtWidgets import QMessageBox
+                QMessageBox.warning(None, "Save Hip First", msg)
+            except Exception:
+                pass
+        return
+
+    current_frame = int(hou.frame())
+
+    job_dir = hou.getenv("JOB") or os.environ.get("JOB") or ""
+    if job_dir:
+        flipbooks_dir = os.path.join(job_dir, "flipbooks")
+    else:
+        ctx = os.environ.get("MAZE_CONTEXT_PATH") or ""
+        flipbooks_dir = os.path.join(ctx, "houdini", "flipbooks") if ctx else ""
+
+    frame_path = None
+    if flipbooks_dir and os.path.isdir(flipbooks_dir):
+        frame_re = re.compile(rf".*[._]{current_frame}[._]?\.(png|jpg|jpeg)$", re.IGNORECASE)
+        for f in os.listdir(flipbooks_dir):
+            if frame_re.match(f):
+                frame_path = os.path.join(flipbooks_dir, f)
+                break
+
+    if not frame_path:
+        scene = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
+        if not scene:
+            msg = "No flipbook image found for current frame and no Scene Viewer open."
+            print(msg)
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(None, "No Frame", msg)
+            except Exception:
+                try:
+                    from PySide2.QtWidgets import QMessageBox
+                    QMessageBox.warning(None, "No Frame", msg)
+                except Exception:
+                    pass
+            return
+
+        viewport = scene.curViewport()
+        if flipbooks_dir:
+            try:
+                os.makedirs(flipbooks_dir, exist_ok=True)
+            except Exception:
+                pass
+
+        temp_dir = tempfile.mkdtemp(prefix="maze_frame_")
+        png_path = os.path.join(temp_dir, "frame.png")
+
+        settings_obj = scene.flipbookSettings().stash()
+        settings_obj.output(png_path)
+        settings_obj.frameRange((current_frame, current_frame))
+        settings_obj.useResolution(True)
+        settings_obj.outputToMPlay(False)
+        settings_obj.resolution(get_camera_resolution(viewport))
+
+        print(f"Capturing frame {current_frame} from viewport...")
+        scene.flipbook(viewport, settings_obj)
+
+        if not os.path.exists(png_path):
+            msg = f"Viewport capture produced no output."
+            print(msg)
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(None, "Capture Failed", msg)
+            except Exception:
+                try:
+                    from PySide2.QtWidgets import QMessageBox
+                    QMessageBox.warning(None, "Capture Failed", msg)
+                except Exception:
+                    pass
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return
+
+        frame_path = png_path
+
+    hip_name = os.path.splitext(hou.hipFile.basename())[0]
+    base = re.sub(r"_v\d+$", "", hip_name)
+    if not base or base.lower().startswith("untitled"):
+        base = "frame"
+
+    final_path = frame_path
+    if flipbooks_dir:
+        pat = re.compile(rf"^{re.escape(base)}_v(\d{{3}})\.png$", re.IGNORECASE)
+        max_v = 0
+        try:
+            for f in os.listdir(flipbooks_dir):
+                m = pat.match(f)
+                if m:
+                    max_v = max(max_v, int(m.group(1)))
+        except Exception:
+            pass
+        version = max_v + 1
+        final_path = os.path.join(flipbooks_dir, f"{base}_v{version:03d}.png")
+        if os.path.abspath(frame_path) != os.path.abspath(final_path):
+            shutil.copy2(frame_path, final_path)
+
+    if frame_path.startswith(tempfile.gettempdir()):
+        shutil.rmtree(os.path.dirname(frame_path), ignore_errors=True)
+
+    notes = ''
+    try:
+        from PySide6.QtWidgets import QInputDialog, QApplication
+        app = QApplication.instance() or QApplication([])
+        notes, ok = QInputDialog.getText(None, 'Dailies', 'Add a note (optional):')
+        if not ok:
+            return
+    except Exception:
+        try:
+            from PySide2.QtWidgets import QInputDialog, QApplication
+            app = QApplication.instance() or QApplication([])
+            notes, ok = QInputDialog.getText(None, 'Dailies', 'Add a note (optional):')
+            if not ok:
+                return
+        except Exception:
+            pass
+
+    ok = post_frame(final_path, notes)
+    if not ok:
+        try:
+            hou.ui.displayMessage(f"Teams post failed. Check console. File saved to:\n{final_path}")
+        except Exception:
+            pass
+

@@ -4,6 +4,7 @@ import re
 import json
 import getpass
 import datetime
+import tempfile
 from pathlib import Path
 try:
     import requests
@@ -218,6 +219,185 @@ def post_flipbook(output, comment=""):
     except Exception as e:
         print(f"Failed to post: {e}")
 
+
+def post_frame(output, comment=""):
+    """Post a single PNG frame to Teams via Adaptive Card Image."""
+    try:
+        onedrive_link = local_to_onedrive_link(output)
+    except Exception as e:
+        print(f"local_to_onedrive_link failed ({e}), trying fallback")
+        onedrive_link = output.replace("\\", "/")
+
+    settings = _get_mazehub_settings()
+    webhook_url = settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK") or "https://defaultede29655d09742e4bbb5f38d427fbf.b8.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/cdf54a2c13564d2dba8edc95a608ff50/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PaCvoX6XhuOJC3S4ubnKnOQuuWZUasyKX52AdQp33OA"
+
+    try:
+        username = _get_display_name()
+    except Exception:
+        username = getpass.getuser()
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    filename = os.path.splitext(os.path.basename(output))[0]
+
+    context_name = os.environ.get("MAZE_CONTEXT_NAME", "")
+    script_path = ""
+    try:
+        sp = nuke.root().name()
+        if sp and sp != "Root" and "untitled" not in Path(sp).name.lower():
+            script_path = _long_path(sp)
+    except Exception:
+        pass
+    if not context_name and script_path:
+        parts = Path(script_path).parts
+        for i, part in enumerate(parts):
+            if part.lower() == "shot" and i + 1 < len(parts):
+                context_name = parts[i + 1]
+                break
+        if not context_name:
+            context_name = Path(script_path).stem
+    if not context_name:
+        context_name = Path(script_path).stem if script_path else filename
+    title_text = f"{context_name} — {format_versioned_filename(filename)}" if context_name else format_versioned_filename(filename)
+    hip_text = Path(script_path).name if script_path else ""
+    message = username
+    pretty_comment = f'"{comment}"' if comment else ""
+
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "contentUrl": None,
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.5",
+                "body": [
+                    {"type": "Container", "items": [
+                        {"type": "TextBlock", "text": title_text, "wrap": True, "weight": "Bolder", "size": "Large"},
+                        {"type": "TextBlock", "text": hip_text, "wrap": True, "spacing": "None", "size": "Small", "isSubtle": True, "fontType": "Monospace"} if hip_text else {"type": "TextBlock", "text": "", "wrap": True, "spacing": "None", "isVisible": False},
+                        {"type": "TextBlock", "text": current_time, "wrap": True, "spacing": "Small"},
+                        {"type": "TextBlock", "text": message, "wrap": True, "spacing": "Small"},
+                        {"type": "TextBlock", "text": pretty_comment, "wrap": True, "spacing": "Small"},
+                    ], "style": "emphasis", "bleed": True},
+                    {"type": "Image", "url": onedrive_link, "style": "default"},
+                ],
+            },
+        }],
+    }
+
+    if requests is not None:
+        try:
+            response = requests.post(webhook_url, json=payload, timeout=15)
+            if 200 <= response.status_code < 300:
+                print("Posted to Teams")
+                return True
+            print(f"Failed to post: {response.status_code} - {response.text}")
+            return False
+        except Exception as e:
+            print(f"requests.post failed ({e}), trying urllib")
+    try:
+        import json as _json
+        data = _json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(webhook_url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if 200 <= resp.status < 300:
+                print("Posted to Teams")
+                return True
+            print(f"Failed to post: {resp.status} - {resp.read().decode()}")
+            return False
+    except Exception as e:
+        print(f"Failed to post: {e}")
+        return False
+
+
+def send_frame_to_dailies(node=None):
+    """Render the current frame as PNG and send to Teams."""
+    try:
+        script_path = nuke.root().name()
+        if not script_path or script_path == "Root" or "untitled" in Path(script_path).name.lower():
+            nuke.message("Please save the script before sending a frame.")
+            return
+
+        long_script = _long_path(script_path)
+        root = _long_path(os.environ.get("MAZE_PROJECT_ROOT", ""))
+        if root and ".." in os.path.relpath(long_script, root).replace("\\", "/"):
+            nuke.message("Script not under MZE project.\nPlease save under MZE before sending to Teams.")
+            return
+
+        flipdir = _ensure_flip_dir(script_path)
+        script_base = os.path.splitext(os.path.basename(script_path))[0]
+        script_clean = re.sub(r"_v\d+$", "", script_base.replace(".nk", ""))
+
+        base = re.sub(r"_v\d+$", "", script_clean)
+        pat = re.compile(rf"^{re.escape(base)}_v(\d{{3}})\.png$", re.IGNORECASE)
+        max_v = 0
+        if os.path.isdir(flipdir):
+            for f in os.listdir(flipdir):
+                m = pat.match(f)
+                if m:
+                    max_v = max(max_v, int(m.group(1)))
+        version = max_v + 1
+        png_path = os.path.join(flipdir, f"{base}_v{version:03d}.png")
+
+        current_frame = int(nuke.frame())
+
+        tmp_dir = tempfile.mkdtemp(prefix="maze_frame_")
+        tmp_png = os.path.join(tmp_dir, "frame.png")
+
+        write_node = nuke.nodes.Write(
+            name="MazeFrameWrite",
+            file=tmp_png.replace("\\", "/"),
+            file_type="png"
+        )
+        if write_node.knob("create_directories"):
+            write_node["create_directories"].setValue(True)
+
+        try:
+            nuke.execute(write_node, start=current_frame, end=current_frame, continueOnError=True)
+        except Exception as e:
+            nuke.message(f"Render failed: {e}")
+            return
+        finally:
+            try:
+                write_node.knob("remove")()
+            except Exception:
+                pass
+
+        if not os.path.exists(tmp_png):
+            nuke.message("Frame render produced no output.")
+            return
+
+        import shutil
+        shutil.copy2(tmp_png, png_path)
+        try:
+            import shutil as _shutil
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+        comment = ""
+        if node:
+            try:
+                comment = node["message_text"].value()
+            except Exception:
+                pass
+        if not comment:
+            try:
+                from PySide6.QtWidgets import QInputDialog
+                comment, ok = QInputDialog.getText(None, "Dailies", "Add a note (optional):")
+                if not ok:
+                    return
+            except Exception:
+                pass
+
+        ok = post_frame(png_path, comment)
+        if not ok:
+            nuke.message(f"Teams post failed. Check console. File saved to:\n{png_path}")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        nuke.message(f"Frame send error:\n{e}")
+
 # --- Flipbook execution ---
 def flipbook_sender_execute(node):
     try:
@@ -376,6 +556,7 @@ def create_flipbook_sender_node():
     g.addKnob(nuke.Int_Knob("fps", "FPS"))
     g.addKnob(nuke.String_Knob("message_text", "Message Text"))
     g.addKnob(nuke.PyScript_Knob("do_flip", "Create Flipbook"))
+    g.addKnob(nuke.PyScript_Knob("send_frame", "Send Frame"))
 
     g['first_frame'].setValue(int(nuke.root()['first_frame'].value()))
     g['last_frame'].setValue(int(nuke.root()['last_frame'].value()))
@@ -384,6 +565,7 @@ def create_flipbook_sender_node():
 
     module_name = __name__
     g['do_flip'].setCommand(f'{module_name}.flipbook_sender_execute(nuke.thisNode())')
+    g['send_frame'].setCommand(f'{module_name}.send_frame_to_dailies(nuke.thisNode())')
 
     return g
 
@@ -417,23 +599,26 @@ def _flipbook_knob_changed():
 
 # --- Menu registration ---
 def main():
-    # Top menu bar MAZE -> Playblast
+    # Top menu bar MAZE -> Playblast / Send Frame
     try:
         m = nuke.menu("Nuke").addMenu("MAZE", index=999)
         m.addCommand("Playblast", create_flipbook_sender_node, "ctrl+shift+f")
+        m.addCommand("Send Frame", lambda: send_frame_to_dailies(), "ctrl+shift+g")
     except Exception:
         pass
-    # Side bar (Nodes toolbar) MAZE -> Playblast
+    # Side bar (Nodes toolbar) MAZE -> Playblast / Send Frame
     try:
         tb = nuke.toolbar("Nodes")
         mtb = tb.addMenu("MAZE", index=999)
         mtb.addCommand("Playblast", create_flipbook_sender_node, "ctrl+shift+f")
+        mtb.addCommand("Send Frame", lambda: send_frame_to_dailies(), "ctrl+shift+g")
     except Exception:
         # Fallback to Nodes menu
         try:
             menu = nuke.menu("Nodes")
             fm = menu.addMenu("MAZE Flipbook", index=999)
             fm.addCommand("Create Flipbook Node", create_flipbook_sender_node, "ctrl+shift+f")
+            fm.addCommand("Send Frame", lambda: send_frame_to_dailies(), "ctrl+shift+g")
         except Exception:
             pass
 

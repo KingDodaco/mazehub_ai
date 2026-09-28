@@ -388,6 +388,188 @@ def _post_playblast(output, comment=""):
         return False
 
 
+def _post_frame(output, comment=""):
+    import json, getpass, datetime
+    try:
+        onedrive_link = _local_to_onedrive_link(output)
+    except Exception as e:
+        print(f"local_to_onedrive_link failed ({e})")
+        onedrive_link = output.replace("\\", "/")
+    settings_path = os.path.expanduser("~/.config/mazehub/settings.json")
+    webhook_url = ""
+    try:
+        import json as _j
+        if os.path.exists(settings_path):
+            with open(settings_path) as f:
+                webhook_url = _j.load(f).get("dailies_webhook_url", "")
+    except Exception:
+        pass
+    if not webhook_url:
+        webhook_url = os.environ.get("MAZE_DAILIES_WEBHOOK") or "https://defaultede29655d09742e4bbb5f38d427fbf.b8.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/cdf54a2c13564d2dba8edc95a608ff50/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PaCvoX6XhuOJC3S4ubnKnOQuuWZUasyKX52AdQp33OA"
+    try:
+        username = _get_display_name()
+    except Exception:
+        username = getpass.getuser()
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    filename = os.path.splitext(os.path.basename(output))[0]
+    context_name = os.environ.get("MAZE_CONTEXT_NAME", "")
+    hip_path = ""
+    try:
+        hp = cmds.file(q=True, sn=True) or ""
+        if hp and "untitled" not in os.path.basename(hp).lower():
+            hip_path = _long_path(hp)
+    except Exception:
+        pass
+    if not context_name and hip_path:
+        parts = hip_path.replace("\\", "/").split("/")
+        for i, part in enumerate(parts):
+            if part.lower() == "shot" and i + 1 < len(parts):
+                context_name = parts[i + 1]
+                break
+        if not context_name:
+            context_name = os.path.splitext(os.path.basename(hip_path))[0]
+    if not context_name:
+        context_name = os.path.splitext(os.path.basename(hip_path))[0] if hip_path else filename
+    title_text = f"{context_name} — {_format_versioned_filename(filename)}" if context_name else _format_versioned_filename(filename)
+    hip_text = os.path.basename(hip_path) if hip_path else ""
+    pretty_comment = f'"{comment}"' if comment else ""
+    payload = {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard", "version": "1.5",
+                "body": [
+                    {"type": "Container", "items": [
+                        {"type": "TextBlock", "text": title_text, "wrap": True, "weight": "Bolder", "size": "Large"},
+                        {"type": "TextBlock", "text": hip_text, "wrap": True, "spacing": "None", "size": "Small", "isSubtle": True, "fontType": "Monospace"} if hip_text else {"type": "TextBlock", "text": "", "isVisible": False},
+                        {"type": "TextBlock", "text": current_time, "wrap": True, "spacing": "Small"},
+                        {"type": "TextBlock", "text": username, "wrap": True, "spacing": "Small"},
+                        {"type": "TextBlock", "text": pretty_comment, "wrap": True, "spacing": "Small"},
+                    ], "style": "emphasis", "bleed": True},
+                    {"type": "Image", "url": onedrive_link, "style": "default"},
+                ],
+            },
+        }],
+    }
+    try:
+        import requests
+        r = requests.post(webhook_url, json=payload, timeout=15)
+        if 200 <= r.status_code < 300:
+            print("Posted to Teams")
+            return True
+        print(f"Failed to post: {r.status_code} - {r.text}")
+        return False
+    except Exception:
+        pass
+    try:
+        import urllib.request, json as _j2
+        data = _j2.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(webhook_url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            print("Posted to Teams")
+            return True
+    except Exception as e:
+        print(f"Failed to post: {e}")
+        return False
+
+
+def _do_playblast_frame(*args):
+    scene = cmds.file(q=True, sn=True) or ""
+    if not scene or "untitled" in os.path.basename(scene).lower():
+        cmds.confirmDialog(title="Save Scene", message="Please save your scene under MZE before playblasting.", button=["OK"])
+        return
+    job = os.environ.get("JOB") or os.environ.get("MAYA_PROJECT") or os.environ.get("MAZE_CONTEXT_PATH") or ""
+    if job and not os.path.isdir(job):
+        try:
+            os.makedirs(job, exist_ok=True)
+        except Exception:
+            pass
+    comment = ""
+    try:
+        from PySide6.QtWidgets import QInputDialog
+        from shiboken6 import wrapInstance
+        import maya.OpenMayaUI as omui
+        parent = wrapInstance(int(omui.MQtUtil.mainWindow()), __import__("PySide6.QtWidgets", fromlist=["QWidget"]).QWidget)
+        text, ok = QInputDialog.getText(parent, "Playblast Frame", "Add a note (optional):")
+        if not ok:
+            return
+        comment = text
+    except Exception:
+        comment = ""
+    current_frame = int(cmds.currentTime(query=True))
+    ctx = os.environ.get('MAZE_CONTEXT_PATH') or ""
+    if ctx:
+        job_dir = os.path.join(ctx, "maya")
+    else:
+        job_dir = job or os.path.expanduser("~")
+    flipbooks_dir = os.path.join(job_dir, "flipbooks")
+    os.makedirs(flipbooks_dir, exist_ok=True)
+    scene = cmds.file(q=True, sn=True) or ""
+    hip_name = os.path.splitext(os.path.basename(scene))[0] if scene else "playblast"
+    if not hip_name or hip_name.lower().startswith("untitled"):
+        hip_name = "frame"
+    base = re.sub(r"_v\d+$", "", hip_name)
+    pat = re.compile(rf"^{re.escape(base)}_v(\d{{3}})\.png$", re.IGNORECASE)
+    max_v = 0
+    try:
+        for f in os.listdir(flipbooks_dir):
+            m = pat.match(f)
+            if m:
+                max_v = max(max_v, int(m.group(1)))
+    except Exception:
+        pass
+    version = max_v + 1
+    output = os.path.abspath(os.path.join(flipbooks_dir, f"{base}_v{version:03d}.png"))
+    panel = None
+    try:
+        panel = cmds.getPanel(withFocus=True)
+        if not cmds.getPanel(typeOf=panel) == "modelPanel":
+            panel = cmds.getPanel(wf=True)
+            if cmds.getPanel(typeOf=panel) != "modelPanel":
+                for p in cmds.getPanel(type="modelPanel"):
+                    panel = p
+                    break
+    except Exception:
+        pass
+    if not panel:
+        cmds.warning("No modelPanel found for playblast")
+        return
+    try:
+        import glob
+        for ext in ("jpg", "png", "jpeg"):
+            for old in glob.glob(os.path.join(flipbooks_dir, f"frame.*.{ext}")):
+                try:
+                    os.remove(old)
+                except Exception:
+                    pass
+        playblast_base = os.path.join(flipbooks_dir, "frame").replace("\\", "/")
+        cmds.playblast(format="image", filename=playblast_base, forceOverwrite=True, clearCache=True, viewer=False, showOrnaments=False, percent=100, quality=100, widthHeight=[1920, 1080], startTime=current_frame, endTime=current_frame)
+        created = sorted(glob.glob(os.path.join(flipbooks_dir, "frame.*.png")) + glob.glob(os.path.join(flipbooks_dir, "frame.*.jpg")) + glob.glob(os.path.join(flipbooks_dir, "frame.*.jpeg")))
+        if not created:
+            created = sorted(glob.glob(os.path.join(flipbooks_dir, "frame.*")))
+            created = [c for c in created if os.path.splitext(c)[1].lower() in (".jpg", ".jpeg", ".png")]
+        if not created:
+            raise RuntimeError(f"Playblast created no files in {flipbooks_dir}")
+        src = created[0]
+        if not src.lower().endswith('.png'):
+            try:
+                from PIL import Image as PILImage
+                png_tmp = src.rsplit('.', 1)[0] + '.png'
+                PILImage.open(src).save(png_tmp)
+                src = png_tmp
+            except Exception:
+                pass
+        import shutil
+        shutil.copy2(src, output)
+        cmds.confirmDialog(title="Playblast Frame", message=f"Saved {os.path.basename(output)}", button=["OK"])
+        _post_frame(output, comment)
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        cmds.warning(f"Playblast frame failed: {e}")
+
+
 def _do_playblast(*args):
     # Guard: scene must be saved
     scene = cmds.file(q=True, sn=True) or ""
@@ -487,6 +669,12 @@ def create_maze_menu():
     cmds.menuItem(
         label="Playblast",
         command=_do_playblast,
+        parent="maze_menu",
+    )
+
+    cmds.menuItem(
+        label="Playblast Frame",
+        command=_do_playblast_frame,
         parent="maze_menu",
     )
 

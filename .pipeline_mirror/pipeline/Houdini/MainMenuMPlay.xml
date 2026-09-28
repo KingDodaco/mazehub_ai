@@ -8,11 +8,23 @@
         <label>Send to Dailies</label>
         <scriptCode><![CDATA[
 import os, sys
-maze_scripts = os.path.join(os.environ.get('MAZE_PIPELINE', ''), 'Houdini21.0', 'Scripts')
+maze_scripts = os.path.join(os.environ.get('MAZE_PIPELINE', ''), 'Houdini', 'scripts')
 if maze_scripts not in sys.path:
     sys.path.insert(0, maze_scripts)
 import maze_menu
 maze_menu.send_to_dailies()
+        ]]></scriptCode>
+      </scriptItem>
+
+      <scriptItem id="maze_send_frame_to_dailies">
+        <label>Send Frame to Dailies</label>
+        <scriptCode><![CDATA[
+import os, sys
+maze_scripts = os.path.join(os.environ.get('MAZE_PIPELINE', ''), 'Houdini', 'scripts')
+if maze_scripts not in sys.path:
+    sys.path.insert(0, maze_scripts)
+import maze_menu
+maze_menu.send_frame_to_dailies()
         ]]></scriptCode>
       </scriptItem>
 
