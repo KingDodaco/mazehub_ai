@@ -724,7 +724,7 @@ def discover_image_sequences(shot_path):
 
 def discover_husk_passes(husk_path, usd_file):
     if not husk_path or not Path(husk_path).exists():
-        return []
+        return [], ''
     try:
         result = subprocess.run(
             [husk_path, '--list-passes', str(usd_file)],
@@ -737,7 +737,7 @@ def discover_husk_passes(husk_path, usd_file):
             raw = line.strip()
             lower = raw.lower()
             if not in_passes:
-                if 'render pass' in lower:
+                if 'render pass' in lower or 'available pass' in lower or 'passes:' in lower:
                     in_passes = True
                 continue
             if not raw:
@@ -746,14 +746,14 @@ def discover_husk_passes(husk_path, usd_file):
                 break
             if raw.startswith(('[', '#', '//')):
                 continue
-            if '://' in raw or ':' in raw:
+            if '://' in raw:
                 continue
             if len(raw) > 80:
                 continue
             passes.append(raw)
-        return passes
+        return passes, output
     except Exception:
-        return []
+        return [], ''
 
 
 def is_usd_ascii(usd_file):

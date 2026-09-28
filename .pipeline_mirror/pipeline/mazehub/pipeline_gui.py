@@ -1574,7 +1574,7 @@ class LaunchAppsPage(QWidget):
                 return
             path = self.project_root / 'asset' / cat / name
 
-        self._context = {'type': ctx_type.lower(), 'name': name, 'path': path}
+        self._context = {'type': ctx_type.lower().replace(' ', '_'), 'name': name, 'path': path}
         if ctx_type == 'Asset':
             self._context['category'] = self.ctx_cat_combo.currentText()
         self.ctx_info.setText(f'Launch context: {ctx_type} — {name}  ({path})')
@@ -4057,7 +4057,9 @@ class RenderPage(QWidget):
             return
 
         self.log_output.append(f'[info] Discovering passes: {husk_path} --list-passes {usd_file.name}')
-        passes = discover_husk_passes(husk_path, usd_file)
+        passes, raw_output = discover_husk_passes(husk_path, usd_file)
+        if raw_output:
+            self.log_output.append(f'[husk output]\n{raw_output.strip()}')
         if not passes:
             self.log_output.append('[info] No passes found')
             self.no_passes_label.setVisible(True)
