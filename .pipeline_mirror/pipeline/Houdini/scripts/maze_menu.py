@@ -255,8 +255,10 @@ def compile_existing_flipbook(input_pattern, output, start_frame=1001):
             "-c:v", codec, "-pix_fmt", "yuv420p", "-crf", "23", "-preset", "medium",
             output,
         ]
-        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+        run_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.name == "nt":
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        result = subprocess.run(cmd, **run_kwargs)
         if result.returncode == 0 and os.path.exists(output):
             return output
     raise RuntimeError(f"hffmpeg failed to compile {input_pattern} -> {output}")
@@ -266,6 +268,9 @@ def flipbook(output=None, start_frame=1001, end_frame=1101, use_custom_resolutio
     """Legacy: render then compile. Kept for Houdini FlipbookUI; MPlay path uses compile_existing_flipbook."""
     if not output:
         output = get_default_output()
+    if not hasattr(hou, 'ui'):
+        print("flipbook() requires Houdini's Scene Viewer — cannot run from MPlay.\nUse MAZE > Send to Dailies from MPlay to compile and send existing flipbook images.")
+        return
     temp_dir = tempfile.mkdtemp(prefix="flipbook_")
     local_output = os.path.join(temp_dir, os.path.basename(output))
     input_pattern = os.path.join(temp_dir, "flipbook.$F4.jpeg")
@@ -295,10 +300,18 @@ def flipbook(output=None, start_frame=1001, end_frame=1101, use_custom_resolutio
     except Exception as e:
         print(f"Failed to keep jpeg sequence: {e}")
     ffmpeg_path = os.path.join(os.environ.get("HFS", ""), "bin", "hffmpeg")
+    if not os.path.exists(ffmpeg_path):
+        ffmpeg_path = "hffmpeg"
     framerate = int(hou.fps())
-    cmd = [ffmpeg_path, "-y", "-framerate", str(framerate), "-start_number", str(start_frame), "-i", input_pattern.replace("$F4", "%04d"), "-c:v", "h264_nvenc", "-pix_fmt", "yuv420p", "-crf", "23", "-preset", "medium", local_output]
-    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, creationflags=flags)
+    ffmpeg_input = input_pattern.replace("$F4", "%04d")
+    for codec in ("h264_nvenc", "libx264"):
+        cmd = [ffmpeg_path, "-y", "-framerate", str(framerate), "-start_number", str(start_frame), "-i", ffmpeg_input, "-c:v", codec, "-pix_fmt", "yuv420p", "-crf", "23", "-preset", "medium", local_output]
+        run_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.name == "nt":
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        result = subprocess.run(cmd, **run_kwargs)
+        if result.returncode == 0 and os.path.exists(local_output):
+            break
     os.makedirs(os.path.dirname(output), exist_ok=True)
     shutil.copy2(local_output, output)
     shutil.rmtree(temp_dir, ignore_errors=True)
@@ -637,64 +650,111 @@ def send_frame_to_dailies():
 
     frame_path = None
     if flipbooks_dir and os.path.isdir(flipbooks_dir):
+        # Exact frame number match (e.g. flipbook.1001.jpeg, frame_1001.png)
         frame_re = re.compile(rf".*[._]{current_frame}[._]?\.(png|jpg|jpeg)$", re.IGNORECASE)
         for f in os.listdir(flipbooks_dir):
             if frame_re.match(f):
                 frame_path = os.path.join(flipbooks_dir, f)
                 break
+        # Broader match: frame number with leading zeros (e.g. flipbook.0001.jpeg for frame 1)
+        if not frame_path:
+            frame_str = str(current_frame)
+            zero_re = re.compile(rf".*0*{re.escape(frame_str)}[._]?\.(png|jpg|jpeg)$", re.IGNORECASE)
+            for f in os.listdir(flipbooks_dir):
+                if zero_re.match(f):
+                    frame_path = os.path.join(flipbooks_dir, f)
+                    break
 
     if not frame_path:
-        scene = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
-        if not scene:
-            msg = "No flipbook image found for current frame and no Scene Viewer open."
-            print(msg)
-            try:
-                from PySide6.QtWidgets import QMessageBox
-                QMessageBox.warning(None, "No Frame", msg)
-            except Exception:
+        if hasattr(hou, 'ui'):
+            # Inside Houdini — try viewport capture
+            scene = hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
+            if not scene:
+                msg = "No flipbook image found for current frame and no Scene Viewer open."
+                print(msg)
                 try:
-                    from PySide2.QtWidgets import QMessageBox
+                    from PySide6.QtWidgets import QMessageBox
                     QMessageBox.warning(None, "No Frame", msg)
                 except Exception:
-                    pass
-            return
+                    try:
+                        from PySide2.QtWidgets import QMessageBox
+                        QMessageBox.warning(None, "No Frame", msg)
+                    except Exception:
+                        pass
+                return
 
-        viewport = scene.curViewport()
-        if flipbooks_dir:
-            try:
-                os.makedirs(flipbooks_dir, exist_ok=True)
-            except Exception:
-                pass
-
-        temp_dir = tempfile.mkdtemp(prefix="maze_frame_")
-        png_path = os.path.join(temp_dir, "frame.png")
-
-        settings_obj = scene.flipbookSettings().stash()
-        settings_obj.output(png_path)
-        settings_obj.frameRange((current_frame, current_frame))
-        settings_obj.useResolution(True)
-        settings_obj.outputToMPlay(False)
-        settings_obj.resolution(get_camera_resolution(viewport))
-
-        print(f"Capturing frame {current_frame} from viewport...")
-        scene.flipbook(viewport, settings_obj)
-
-        if not os.path.exists(png_path):
-            msg = f"Viewport capture produced no output."
-            print(msg)
-            try:
-                from PySide6.QtWidgets import QMessageBox
-                QMessageBox.warning(None, "Capture Failed", msg)
-            except Exception:
+            viewport = scene.curViewport()
+            if flipbooks_dir:
                 try:
-                    from PySide2.QtWidgets import QMessageBox
-                    QMessageBox.warning(None, "Capture Failed", msg)
+                    os.makedirs(flipbooks_dir, exist_ok=True)
                 except Exception:
                     pass
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return
 
-        frame_path = png_path
+            temp_dir = tempfile.mkdtemp(prefix="maze_frame_")
+            png_path = os.path.join(temp_dir, "frame.png")
+
+            settings_obj = scene.flipbookSettings().stash()
+            settings_obj.output(png_path)
+            settings_obj.frameRange((current_frame, current_frame))
+            settings_obj.useResolution(True)
+            settings_obj.outputToMPlay(False)
+            settings_obj.resolution(get_camera_resolution(viewport))
+
+            print(f"Capturing frame {current_frame} from viewport...")
+            scene.flipbook(viewport, settings_obj)
+
+            if not os.path.exists(png_path):
+                msg = f"Viewport capture produced no output."
+                print(msg)
+                try:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.warning(None, "Capture Failed", msg)
+                except Exception:
+                    try:
+                        from PySide2.QtWidgets import QMessageBox
+                        QMessageBox.warning(None, "Capture Failed", msg)
+                    except Exception:
+                        pass
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return
+
+            frame_path = png_path
+        else:
+            # MPlay — no viewport capture available, search more broadly
+            searched_dirs = [flipbooks_dir] if flipbooks_dir else []
+            # Also search $JOB/houdini/flipbooks and $JOB/ if flipbooks_dir is different
+            if job_dir:
+                for alt in [os.path.join(job_dir, "houdini", "flipbooks"), job_dir]:
+                    if alt and os.path.isdir(alt) and alt not in searched_dirs:
+                        searched_dirs.append(alt)
+
+            for search_dir in searched_dirs:
+                if not os.path.isdir(search_dir):
+                    continue
+                # Last resort: find any image file with the frame number anywhere in the name
+                for f in os.listdir(search_dir):
+                    if not re.search(r"\.(png|jpg|jpeg)$", f, re.IGNORECASE):
+                        continue
+                    if str(current_frame) in f:
+                        frame_path = os.path.join(search_dir, f)
+                        break
+                if frame_path:
+                    break
+
+            if not frame_path:
+                dirs_msg = "\n".join(f"  {d}" for d in searched_dirs if d and os.path.isdir(d))
+                msg = f"No flipbook image found for frame {current_frame}.\n\nSearched:\n{dirs_msg}\n\nRun a Flipbook from Houdini first, then use Send Frame from MPlay."
+                print(msg)
+                try:
+                    from PySide6.QtWidgets import QMessageBox
+                    QMessageBox.warning(None, "No Frame", msg)
+                except Exception:
+                    try:
+                        from PySide2.QtWidgets import QMessageBox
+                        QMessageBox.warning(None, "No Frame", msg)
+                    except Exception:
+                        pass
+                return
 
     hip_name = os.path.splitext(hou.hipFile.basename())[0]
     base = re.sub(r"_v\d+$", "", hip_name)
