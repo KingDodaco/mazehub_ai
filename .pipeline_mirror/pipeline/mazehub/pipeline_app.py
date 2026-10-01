@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.6.3"
+APP_VERSION = "0.6.4"
 
 
 def _get_display_name():
@@ -361,6 +361,14 @@ def build_context_env(context, project_root):
         'MAZE_CONTEXT_NAME': context['name'],
         'MAZE_CONTEXT_PATH': str(ctx_path),
         'PIPELINE_DIR': str(Path(project_root) / 'pipeline'),
+        'START_FRAME': '',
+        'END_FRAME': '',
+        'FRAME_RATE': '',
+        'MAZE_LIGHT_RIG_HDRI': '',
+        'MAZE_LIGHT_RIG_PHOTOGRAWMETRY': '',
+        'MAZE_LIGHT_RIG_USD': '',
+        'MAZE_LIGHT_RIG_NUKE': '',
+        'MAZE_LIGHT_RIG_HOUDINI': '',
     }
 
     if context['type'] == 'shot':
