@@ -507,10 +507,9 @@ def create_flipbook_sender_node():
         ocio_node.setInput(0, inp)
 
         if ocio_node.knob("display"):
-            try:
-                ocio_node["display"].setValue("arri709")
-            except Exception:
-                pass
+            ocio_node["display"].setValue("arri709 - Display")
+        if ocio_node.knob("view"):
+            ocio_node["view"].setValue("arri709 - View")
 
         dirpath = os.path.dirname(script_path)
         flipdir = _ensure_flip_dir(script_path)

@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.6.4"
+APP_VERSION = "0.6.5"
 
 
 def _get_display_name():
@@ -737,6 +737,12 @@ def discover_husk_passes(husk_path, usd_file):
     if not husk_path or not Path(husk_path).exists():
         return [], ''
     try:
+        usd_file = Path(usd_file)
+        if not sync_file(usd_file):
+            return [], f'USD file is missing or did not sync: {usd_file}'
+        if not sync_usd_references(usd_file):
+            return [], f'USD references did not sync: {usd_file}'
+
         result = subprocess.run(
             [husk_path, '--list-passes', str(usd_file)],
             capture_output=True, text=True, timeout=30,
@@ -753,8 +759,10 @@ def discover_husk_passes(husk_path, usd_file):
                 if part.startswith('/') and len(part) > 1:
                     passes.append(part)
         return passes, output
-    except Exception:
-        return [], ''
+    except subprocess.TimeoutExpired as e:
+        return [], f'husk pass discovery timed out: {e}'
+    except Exception as e:
+        return [], f'husk pass discovery failed: {e}'
 
 
 def is_usd_ascii(usd_file):

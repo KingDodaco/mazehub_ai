@@ -64,6 +64,7 @@ NEW_WORKING_DIRECTORY = ['blender',
                      'houdini/render',
                      'houdini/USD',
                      'houdini/tex',
+                     'houdini/geo',
 
                      'input',
                      'input/plates',
