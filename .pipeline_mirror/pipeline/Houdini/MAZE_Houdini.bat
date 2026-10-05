@@ -3,13 +3,7 @@ setlocal
 
 set "PIPELINE_DIR=%MAZE_PIPELINE%"
 
-if "%MAZE_CONTEXT_TYPE%"=="shot" (
-    set "JOB=%MAZE_CONTEXT_PATH%\houdini"
-    set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
-) else if "%MAZE_CONTEXT_TYPE%"=="asset" (
-    set "JOB=%MAZE_CONTEXT_PATH%\houdini"
-    set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
-) else if "%MAZE_CONTEXT_TYPE%"=="light_rig" (
+if defined MAZE_CONTEXT_PATH (
     set "JOB=%MAZE_CONTEXT_PATH%\houdini"
     set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
 )
@@ -19,6 +13,14 @@ set "HOUDINI_PATH=%PIPELINE_DIR%\Houdini;&;%HOUDINI_PATH%"
 set "HOUDINI_MENU_PATH=%PIPELINE_DIR%\Houdini;&;%HOUDINI_MENU_PATH%"
 set "MPLAY_MENU_PATH=%PIPELINE_DIR%\Houdini;&;%MPLAY_MENU_PATH%"
 set "HOUDINI_JOB=%JOB%"
+
+(
+    echo MAZE_CONTEXT_TYPE=%MAZE_CONTEXT_TYPE%
+    echo MAZE_CONTEXT_NAME=%MAZE_CONTEXT_NAME%
+    echo MAZE_CONTEXT_PATH=%MAZE_CONTEXT_PATH%
+    echo JOB=%JOB%
+    echo HOUDINI_JOB=%HOUDINI_JOB%
+) > "%TEMP%\mazehub_houdini_launch.log"
 
 echo Launching Houdini for %MAZE_CONTEXT_TYPE%: %MAZE_CONTEXT_NAME%
 echo JOB=%JOB%

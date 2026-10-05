@@ -33,7 +33,7 @@ NEW_PROJECT_DIRECTORY = ['asset',
                          'asset/char',
                          'asset/env',
                          'asset/prop',
-                         'asset/misc'
+                         'asset/misc',
 
                          'DB/Resolve'
                          ]
@@ -65,6 +65,7 @@ NEW_WORKING_DIRECTORY = ['blender',
                      'houdini/USD',
                      'houdini/tex',
                      'houdini/geo',
+                     'houdini/export',
 
                      'input',
                      'input/plates',

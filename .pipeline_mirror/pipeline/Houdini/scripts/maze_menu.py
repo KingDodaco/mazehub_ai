@@ -23,11 +23,18 @@ except ImportError:
 
 
 def get_mazehub_settings():
-    settings_path = Path.home() / '.config' / 'mazehub' / 'settings.json'
-    if settings_path.exists():
-        with open(settings_path, 'r') as f:
-            return json.load(f)
-    return {}
+    settings = {}
+    settings_paths = [Path.home() / '.config' / 'mazehub' / 'user_settings.json']
+    project_root = os.environ.get('MAZE_PROJECT_ROOT')
+    if project_root:
+        settings_paths.append(Path(project_root) / 'pipeline' / 'mazehub' / 'shared_settings.json')
+    for settings_path in settings_paths:
+        try:
+            with open(settings_path, 'r') as f:
+                settings.update(json.load(f))
+        except (OSError, ValueError):
+            pass
+    return settings
 
 
 def _long_path(p):
@@ -71,6 +78,7 @@ def get_sharepoint_url(file_path):
 
 def send_dailies_notification(webhook_url, shot, artist, file_path, notes=''):
     if not webhook_url:
+        print("Dailies webhook is not configured in MazeHub settings.")
         return False
     facts = [{'name': 'Artist', 'value': artist}]
     if notes:
@@ -96,7 +104,8 @@ def send_dailies_notification(webhook_url, shot, artist, file_path, notes=''):
     try:
         urllib.request.urlopen(req, timeout=10)
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Failed to post: {e}")
         return False
 
 
@@ -329,7 +338,10 @@ def post_flipbook(output, comment=""):
             # last fallback: use local path as-is (will fail in Teams but show error)
             raise
     settings = get_mazehub_settings()
-    webhook_url = settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK") or "https://defaultede29655d09742e4bbb5f38d427fbf.b8.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/cdf54a2c13564d2dba8edc95a608ff50/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PaCvoX6XhuOJC3S4ubnKnOQuuWZUasyKX52AdQp33OA"
+    webhook_url = settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK", "")
+    if not webhook_url:
+        print("Dailies webhook is not configured in MazeHub settings.")
+        return False
     try:
         username = get_artist_name()
     except Exception:
@@ -494,7 +506,7 @@ def send_to_dailies():
     if os.path.exists(output):
         source_path = Path(output)
 
-    webhook_url = settings.get('dailies_webhook_url', '')
+    webhook_url = settings.get('dailies_webhook_url') or os.environ.get('MAZE_DAILIES_WEBHOOK', '')
     artist = get_artist_name()
     notes = ''
     try:
@@ -522,7 +534,12 @@ def send_to_dailies():
             except Exception:
                 pass
     else:
-        send_dailies_notification(webhook_url, shot, artist, source_path or Path('.'), notes)
+        posted = send_dailies_notification(webhook_url, shot, artist, source_path or Path('.'), notes)
+        if not posted:
+            try:
+                hou.ui.displayMessage("Dailies submission failed. Check the Houdini console and configure a valid webhook in MazeHub Settings.")
+            except Exception:
+                pass
 
 
 def post_frame(output, comment=""):
@@ -536,7 +553,10 @@ def post_frame(output, comment=""):
             raise
 
     settings = get_mazehub_settings()
-    webhook_url = settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK") or "https://defaultede29655d09742e4bbb5f38d427fbf.b8.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/cdf54a2c13564d2dba8edc95a608ff50/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PaCvoX6XhuOJC3S4ubnKnOQuuWZUasyKX52AdQp33OA"
+    webhook_url = settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK", "")
+    if not webhook_url:
+        print("Dailies webhook is not configured in MazeHub settings.")
+        return False
 
     try:
         username = get_artist_name()

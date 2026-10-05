@@ -18,14 +18,18 @@ except ImportError:
 
 
 def _get_mazehub_settings():
-    p = Path.home() / '.config' / 'mazehub' / 'settings.json'
-    if p.exists():
+    settings = {}
+    settings_paths = [Path.home() / '.config' / 'mazehub' / 'user_settings.json']
+    project_root = os.environ.get('MAZE_PROJECT_ROOT')
+    if project_root:
+        settings_paths.append(Path(project_root) / 'pipeline' / 'mazehub' / 'shared_settings.json')
+    for settings_path in settings_paths:
         try:
-            with open(p, 'r') as f:
-                return json.load(f)
+            with open(settings_path, 'r') as f:
+                settings.update(json.load(f))
         except Exception:
             pass
-    return {}
+    return settings
 
 
 def _get_display_name():
@@ -137,7 +141,10 @@ def post_flipbook(output, comment=""):
         onedrive_link = output.replace("\\", "/")
 
     settings = _get_mazehub_settings()
-    webhook_url = settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK") or "https://defaultede29655d09742e4bbb5f38d427fbf.b8.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/cdf54a2c13564d2dba8edc95a608ff50/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PaCvoX6XhuOJC3S4ubnKnOQuuWZUasyKX52AdQp33OA"
+    webhook_url = settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK", "")
+    if not webhook_url:
+        print("Dailies webhook is not configured in MazeHub settings.")
+        return False
 
     # Display name, no device
     try:
@@ -201,9 +208,10 @@ def post_flipbook(output, comment=""):
             response = requests.post(webhook_url, json=payload, timeout=15)
             if 200 <= response.status_code < 300:
                 print("Posted successfully to Teams!")
+                return True
             else:
                 print(f"Failed to post: {response.status_code} - {response.text}")
-            return
+                return False
         except Exception as e:
             print(f"requests.post failed ({e}), trying urllib")
     # Fallback to urllib
@@ -214,10 +222,13 @@ def post_flipbook(output, comment=""):
         with urllib.request.urlopen(req, timeout=15) as resp:
             if 200 <= resp.status < 300:
                 print("Posted successfully to Teams!")
+                return True
             else:
                 print(f"Failed to post: {resp.status} - {resp.read().decode()}")
+                return False
     except Exception as e:
         print(f"Failed to post: {e}")
+        return False
 
 
 def post_frame(output, comment=""):
@@ -229,7 +240,10 @@ def post_frame(output, comment=""):
         onedrive_link = output.replace("\\", "/")
 
     settings = _get_mazehub_settings()
-    webhook_url = settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK") or "https://defaultede29655d09742e4bbb5f38d427fbf.b8.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/cdf54a2c13564d2dba8edc95a608ff50/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PaCvoX6XhuOJC3S4ubnKnOQuuWZUasyKX52AdQp33OA"
+    webhook_url = settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK", "")
+    if not webhook_url:
+        print("Dailies webhook is not configured in MazeHub settings.")
+        return False
 
     try:
         username = _get_display_name()
@@ -340,6 +354,17 @@ def send_frame_to_dailies(node=None):
 
         current_frame = int(nuke.frame())
 
+        try:
+            viewer = nuke.activeViewer()
+            viewer_node = viewer.node() if viewer else None
+            active_input = viewer.activeInput() if viewer else -1
+            viewer_input = viewer_node.input(active_input) if viewer_node and active_input >= 0 else None
+        except Exception:
+            viewer_input = None
+        if viewer_input is None:
+            nuke.message("Connect a node to the active Viewer before sending a frame.")
+            return
+
         tmp_dir = tempfile.mkdtemp(prefix="maze_frame_")
         tmp_png = os.path.join(tmp_dir, "frame.png")
 
@@ -348,6 +373,7 @@ def send_frame_to_dailies(node=None):
             file=tmp_png.replace("\\", "/"),
             file_type="png"
         )
+        write_node.setInput(0, viewer_input)
         if write_node.knob("create_directories"):
             write_node["create_directories"].setValue(True)
 
@@ -456,7 +482,8 @@ def flipbook_sender_execute(node):
                 print("Rendering flipbook...")
                 nuke.execute(write_node, start=first_frame, end=last_frame, continueOnError=True)
                 print(f"Rendered flipbook {mp4_path} ({first_frame}-{last_frame} @ {fps_val}fps)")
-                post_flipbook(mp4_path, node["message_text"].value())
+                if not post_flipbook(mp4_path, node["message_text"].value()):
+                    nuke.message(f"Teams post failed. Check the Nuke Script Editor. File saved to:\n{mp4_path}")
             except Exception as e:
                 if "already executing" not in str(e):
                     nuke.message(f"Render failed: {str(e)}")
