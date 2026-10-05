@@ -34,6 +34,7 @@ HTTP_HEADERS = {
     'Accept': 'application/vnd.github+json',
 }
 DOWNLOAD_CHUNK = 256 * 1024
+STALL_TIMEOUT_SECONDS = 45
 SIDECARS_KEY = 'sidecars'
 
 
@@ -455,7 +456,13 @@ def check_for_update(current_version, channel=None, timeout=12):
     return info
 
 
-def download_file(url, dest, progress_cb=None, timeout=120):
+def _emit(progress_cb, phase, done, total, detail=''):
+    if progress_cb:
+        progress_cb(phase, done, total, detail)
+
+
+def download_file(url, dest, progress_cb=None, timeout=120,
+                  stall_timeout=STALL_TIMEOUT_SECONDS):
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not (url.startswith('http://') or url.startswith('https://')):
@@ -469,26 +476,50 @@ def download_file(url, dest, progress_cb=None, timeout=120):
                     break
                 f_out.write(chunk)
                 copied += len(chunk)
-                if progress_cb:
-                    progress_cb(copied, total)
+                _emit(progress_cb, 'download', copied, total, dest.name)
         return dest
     req = urllib.request.Request(url, headers={'User-Agent': 'MazeHub-Updater'})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         total = int(resp.headers.get('Content-Length') or 0)
+        sock = getattr(getattr(getattr(resp, 'fp', None), 'raw', None),
+                       '_sock', None)
+        if sock is not None and stall_timeout:
+            try:
+                sock.settimeout(stall_timeout)
+            except OSError:
+                sock = None
         tmp = dest.with_name(dest.name + TMP_SUFFIX)
         copied = 0
-        with open(tmp, 'wb') as f_out:
-            while True:
-                chunk = resp.read(DOWNLOAD_CHUNK)
-                if not chunk:
-                    break
-                f_out.write(chunk)
-                copied += len(chunk)
-                if progress_cb:
-                    progress_cb(copied, total if total > 0 else -1)
+        last_data = time.time()
+        try:
+            with open(tmp, 'wb') as f_out:
+                while True:
+                    try:
+                        chunk = resp.read1(DOWNLOAD_CHUNK)
+                    except (socket.timeout, TimeoutError) as exc:
+                        raise UpdateError(
+                            f'Download stalled — no data for {stall_timeout}s '
+                            f'({copied} bytes received).') from exc
+                    if not chunk:
+                        break
+                    now = time.time()
+                    if stall_timeout and now - last_data > stall_timeout:
+                        raise UpdateError(
+                            f'Download stalled — no data for {stall_timeout}s '
+                            f'({copied} bytes received).')
+                    last_data = now
+                    f_out.write(chunk)
+                    copied += len(chunk)
+                    _emit(progress_cb, 'download', copied, total, dest.name)
+        except Exception:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
         os.replace(tmp, dest)
-    if progress_cb:
-        progress_cb(dest.stat().st_size, dest.stat().st_size)
+    _emit(progress_cb, 'download', dest.stat().st_size,
+          dest.stat().st_size, dest.name)
     return dest
 
 
@@ -498,30 +529,35 @@ def _verify_zip(zip_path, manifest):
         raise UpdateError('Downloaded archive failed checksum verification.')
 
 
-def _safe_extract(zip_path, dest_dir):
+def _safe_extract(zip_path, dest_dir, progress_cb=None):
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path) as zf:
-        for info in zf.infolist():
+        infos = zf.infolist()
+        for info in infos:
             name = info.filename
             parts = Path(name).parts
             if name.startswith('/') or name.startswith('\\') or '..' in parts:
                 raise UpdateError(f'Unsafe path in archive: {name}')
             if len(name) > 1 and name[1] == ':':
                 raise UpdateError(f'Unsafe path in archive: {name}')
-        zf.extractall(dest_dir)
+        for i, info in enumerate(infos, 1):
+            zf.extract(info, str(dest_dir))
+            _emit(progress_cb, 'extract', i, len(infos), info.filename)
 
 
-def _verify_extracted(release_dir, manifest):
+def _verify_extracted(release_dir, manifest, progress_cb=None):
     missing = []
     bad = []
-    for entry in manifest.get('files', []):
+    entries = manifest.get('files', [])
+    for i, entry in enumerate(entries, 1):
         path = Path(release_dir) / entry['path']
         if not path.is_file():
             missing.append(entry['path'])
             continue
         if sha256_file(path) != entry.get('sha256'):
             bad.append(entry['path'])
+        _emit(progress_cb, 'verify_files', i, len(entries), entry['path'])
     if missing or bad:
         raise UpdateError(
             f'Extracted release verification failed '
@@ -534,11 +570,12 @@ def stage_update(info, progress_cb=None):
     try:
         zip_path = work / ZIP_NAME
         download_file(info.zip_url, zip_path, progress_cb)
+        _emit(progress_cb, 'verify', 0, 1, 'release checksum')
         manifest = _fetch_json_url(info.manifest_url, timeout=30)
         _verify_zip(zip_path, manifest)
         release_dir = work / 'release'
-        _safe_extract(zip_path, release_dir)
-        _verify_extracted(release_dir, manifest)
+        _safe_extract(zip_path, release_dir, progress_cb)
+        _verify_extracted(release_dir, manifest, progress_cb)
     except Exception:
         shutil.rmtree(work, ignore_errors=True)
         raise
@@ -691,6 +728,7 @@ def _apply_locked(install_root, release_root, manifest, exe_mode, progress_cb):
 
     _clean_tmp_leftovers(install_root)
     _clean_pycache(install_root)
+    _emit(progress_cb, 'prepare', 0, 1, '')
 
     exe_entry = inc_idx.get(EXE_NAME)
     defer_exe = bool(exe_entry) and _is_exe_deferred(exe_mode)
@@ -714,8 +752,7 @@ def _apply_locked(install_root, release_root, manifest, exe_mode, progress_cb):
                 except OSError:
                     pass
             done += 1
-            if progress_cb:
-                progress_cb(done, total)
+            _emit(progress_cb, 'apply', done, total, rel)
             continue
 
         action = 'write'
@@ -783,24 +820,25 @@ def _apply_locked(install_root, release_root, manifest, exe_mode, progress_cb):
                         pass
                 new_sidecars.discard(rel)
         done += 1
-        if progress_cb:
-            progress_cb(done, total)
+        _emit(progress_cb, 'apply', done, total, rel)
 
     if exe_entry:
+        _emit(progress_cb, 'exe', 0, 1, EXE_NAME)
         _apply_exe(
             install_root, release_root, exe_entry, defer_exe, result)
         if result.exe_action != 'failed':
             new_base[EXE_NAME] = exe_entry
 
     if not bootstrap:
-        for rel, entry in base_idx.items():
-            if rel in inc_idx:
-                continue
+        if EXE_NAME in base_idx and EXE_NAME not in inc_idx:
+            new_base[EXE_NAME] = base_idx[EXE_NAME]
+        removals = [
+            r for r in base_idx if r not in inc_idx and r != EXE_NAME]
+        for i, rel in enumerate(removals):
+            _emit(progress_cb, 'cleanup', i, len(removals), rel)
+            entry = base_idx[rel]
             dest = install_root / rel
             sidecar = dest.with_name(dest.name + SIDECAR_SUFFIX)
-            if rel == EXE_NAME:
-                new_base[rel] = entry
-                continue
             if not dest.is_file():
                 if rel in sidecars and sidecar.is_file():
                     try:
@@ -827,6 +865,7 @@ def _apply_locked(install_root, release_root, manifest, exe_mode, progress_cb):
                         shutil.move(str(sidecar), str(sidecar_target))
             except Exception as exc:
                 result.failed.append(f'{rel} ({exc})')
+        _emit(progress_cb, 'cleanup', len(removals), len(removals), '')
 
     _prune_empty_dirs(install_root, prunable_dirs)
 
@@ -841,6 +880,7 @@ def _apply_locked(install_root, release_root, manifest, exe_mode, progress_cb):
         'files': final_files,
         SIDECARS_KEY: sorted(new_sidecars),
     }
+    _emit(progress_cb, 'finalize', 0, 1, '')
     _save_installed(install_root, installed_data)
     save_report(install_root, result)
     return result

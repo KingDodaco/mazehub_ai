@@ -5223,7 +5223,7 @@ class SettingsPage(QWidget):
 class UpdateSignals(QObject):
     checked = Signal(object)
     check_error = Signal(str)
-    progressed = Signal(int, int)
+    progressed = Signal(str, int, int, str)
     applied = Signal(object)
     failed = Signal(str)
 
@@ -5263,8 +5263,8 @@ class UpdateController(QObject):
             return
         self.busy = True
 
-        def progress(done, total):
-            self.signals.progressed.emit(done, total)
+        def progress(phase, done, total, detail):
+            self.signals.progressed.emit(phase, done, total, detail)
 
         def run():
             work = None
@@ -5494,22 +5494,71 @@ class MainWindow(QMainWindow):
             'Downloading update…', '', 0, 0, self)
         self._update_progress.setWindowTitle('Updating MazeHub')
         self._update_progress.setWindowModality(Qt.WindowModal)
-        cancel_btn = self._update_progress.cancelButton()
-        if cancel_btn is not None:
-            cancel_btn.hide()
+        self._update_progress.setCancelButton(None)
+        self._update_range_key = None
+        self._update_dl_start = None
         self._update_progress.show()
         self._update.apply(info)
 
-    def _on_update_progress(self, done, total):
-        if self._update_progress is None:
+    def _on_update_progress(self, phase, done, total, detail):
+        pd = self._update_progress
+        if pd is None:
             return
-        if total >= 1_000_000:
-            self._update_progress.setLabelText(
-                f'Downloading update… {done // (1024 * 1024)} / '
-                f'{total // (1024 * 1024)} MB')
-        elif total > 0:
-            self._update_progress.setLabelText(
-                f'Applying update… {done} / {total} files')
+        indeterminate = (
+            phase in ('verify', 'prepare', 'exe', 'finalize')
+            or total <= 0
+        )
+        key = (phase, 0) if indeterminate else (phase, total)
+        if getattr(self, '_update_range_key', None) != key:
+            pd.setRange(0, 0 if indeterminate else total)
+            self._update_range_key = key
+        if not indeterminate:
+            pd.setValue(min(done, max(total, 0)))
+        detail = detail or ''
+        if len(detail) > 60:
+            detail = '…' + detail[-59:]
+        if phase == 'download':
+            now = time.monotonic()
+            if getattr(self, '_update_dl_start', None) is None:
+                self._update_dl_start = now
+            elapsed = max(now - self._update_dl_start, 0.001)
+            timing = f'{int(elapsed)}s'
+            if elapsed >= 1.5:
+                rate = done / elapsed
+                if rate >= 1048576:
+                    timing += f', {rate / 1048576:.1f} MB/s'
+                else:
+                    timing += f', {rate / 1024:.0f} KB/s'
+            if total >= 1048576:
+                text = (f'Downloading update… '
+                        f'{done // 1048576} / {total // 1048576} MB '
+                        f'({timing})')
+            elif total > 0:
+                text = (f'Downloading update… '
+                        f'{done // 1024} / {total // 1024} KB ({timing})')
+            else:
+                text = f'Downloading update… {done // 1048576} MB ({timing})'
+        elif phase == 'verify':
+            text = 'Verifying download…'
+        elif phase == 'extract':
+            text = f'Extracting… {done} / {total} files'
+        elif phase == 'verify_files':
+            text = f'Verifying files… {done} / {total}'
+        elif phase == 'prepare':
+            text = 'Preparing update…'
+        elif phase == 'apply':
+            text = f'Applying update… {done} / {total} files'
+        elif phase == 'cleanup':
+            text = f'Removing obsolete files… {done} / {total}'
+        elif phase == 'exe':
+            text = 'Updating executable…'
+        elif phase == 'finalize':
+            text = 'Finalizing update…'
+        else:
+            text = 'Updating…'
+        if detail:
+            text += f' — {detail}'
+        pd.setLabelText(text)
 
     def _on_update_applied(self, result):
         if self._update_progress is not None:
