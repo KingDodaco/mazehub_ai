@@ -19,7 +19,10 @@ from PySide6.QtWidgets import (
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
     QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog, QTabWidget,
     QMenu, QCheckBox, QSpinBox, QProgressBar, QDateEdit,
+    QMessageBox, QProgressDialog,
 )
+
+import updater
 
 from pipeline_app import (
     find_project_root, setup_environment, load_apps_config, save_apps_config,
@@ -4753,6 +4756,52 @@ class SettingsPage(QWidget):
 
         group_layout.addStretch()
         layout.addWidget(group)
+
+        updates_group = QGroupBox('Updates')
+        updates_layout = QVBoxLayout(updates_group)
+        updates_layout.addWidget(QLabel(
+            'MazeHub checks GitHub for new versions and updates itself. '
+            'Your settings, app versions, and any local file changes are preserved.'
+        ))
+
+        self.upd_version_label = QLabel(f'Current version: v{APP_VERSION}')
+        self.upd_version_label.setObjectName('hint')
+        updates_layout.addWidget(self.upd_version_label)
+
+        self.upd_last_label = QLabel('Never checked for updates.')
+        self.upd_last_label.setWordWrap(True)
+        self.upd_last_label.setObjectName('hint')
+        updates_layout.addWidget(self.upd_last_label)
+
+        self.upd_auto_check = QCheckBox('Check for updates on launch')
+        self.upd_auto_check.setCursor(Qt.PointingHandCursor)
+        self.upd_auto_check.toggled.connect(self._toggle_auto_check)
+        updates_layout.addWidget(self.upd_auto_check)
+
+        channel_row = QHBoxLayout()
+        self.upd_channel_input = QLineEdit()
+        self.upd_channel_input.setPlaceholderText(
+            'GitHub releases (leave empty) or a folder/URL with manifest.json')
+        channel_row.addWidget(self.upd_channel_input, 1)
+        upd_channel_save = QPushButton('Save')
+        upd_channel_save.setCursor(Qt.PointingHandCursor)
+        upd_channel_save.clicked.connect(self._save_update_channel)
+        channel_row.addWidget(upd_channel_save)
+        updates_layout.addLayout(channel_row)
+
+        self.upd_check_btn = QPushButton('Check for Updates')
+        self.upd_check_btn.setMinimumHeight(36)
+        self.upd_check_btn.setCursor(Qt.PointingHandCursor)
+        self.upd_check_btn.clicked.connect(self._check_updates_now)
+        updates_layout.addWidget(self.upd_check_btn)
+
+        self.upd_status = QLabel('')
+        self.upd_status.setWordWrap(True)
+        self.upd_status.setObjectName('hint')
+        updates_layout.addWidget(self.upd_status)
+
+        updates_layout.addStretch()
+        layout.addWidget(updates_group)
         layout.addStretch()
 
         self._load_husk_path()
@@ -4761,6 +4810,7 @@ class SettingsPage(QWidget):
         self._load_teams_url()
         self._load_dailies_url()
         self._load_production_url()
+        self.refresh_updates_section()
 
     def _load_versions_table(self):
         config = load_apps_config()
@@ -4954,6 +5004,57 @@ class SettingsPage(QWidget):
         if hasattr(w, 'refresh_launcher'):
             w.refresh_launcher()
 
+    def refresh_updates_section(self):
+        from settings import get_setting
+        self.upd_version_label.setText(f'Current version: v{APP_VERSION}')
+        last = get_setting('update_last_check') or ''
+        known = get_setting('update_last_known_version') or ''
+        if last:
+            when = last.replace('T', ' ')[:16]
+            text = f'Last checked: {when}'
+            if known:
+                text += f' — latest known: v{known}'
+            self.upd_last_label.setText(text)
+        self.upd_auto_check.blockSignals(True)
+        self.upd_auto_check.setChecked(bool(get_setting('update_auto_check', True)))
+        self.upd_auto_check.blockSignals(False)
+        channel = get_setting('update_channel') or ''
+        if self.upd_channel_input.text().strip() != channel.strip():
+            self.upd_channel_input.setText(channel)
+        w = self.window()
+        info = getattr(w, '_last_update_info', None)
+        if info is None:
+            self.upd_status.setText('')
+            self.upd_status.setStyleSheet('')
+        elif info.is_newer:
+            self.upd_status.setText(
+                f'Version {info.version} is available — press '
+                f'"Check for Updates" to install it.')
+            self.upd_status.setStyleSheet('color: #00c853;')
+        else:
+            self.upd_status.setText(
+                f'Up to date (latest release: {info.version}).')
+            self.upd_status.setStyleSheet('color: #00c853;')
+
+    def _toggle_auto_check(self, checked):
+        from settings import set_setting
+        set_setting('update_auto_check', bool(checked))
+
+    def _save_update_channel(self):
+        from settings import set_setting
+        channel = self.upd_channel_input.text().strip()
+        set_setting('update_channel', channel)
+        if channel:
+            self.upd_status.setText(f'Update channel saved: {channel}')
+        else:
+            self.upd_status.setText('Update channel cleared — using GitHub releases.')
+        self.upd_status.setStyleSheet('color: #00c853;')
+
+    def _check_updates_now(self):
+        w = self.window()
+        if hasattr(w, 'check_for_updates'):
+            w.check_for_updates(manual=True)
+
     def _load_husk_path(self):
         from settings import get_setting, find_husk
         configured = get_setting('husk_path')
@@ -5114,6 +5215,71 @@ class SettingsPage(QWidget):
             self.repair_btn.setText('Repair File Structure')
 
 
+class UpdateSignals(QObject):
+    checked = Signal(object)
+    check_error = Signal(str)
+    progressed = Signal(int, int)
+    applied = Signal(object)
+    failed = Signal(str)
+
+
+class UpdateController(QObject):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.signals = UpdateSignals()
+        self.busy = False
+        self.manual = False
+
+    def check(self, manual=False):
+        if self.busy:
+            return
+        self.busy = True
+        self.manual = manual
+
+        def run():
+            try:
+                info = updater.check_for_update(APP_VERSION)
+            except Exception as exc:
+                self.signals.check_error.emit(str(exc))
+                self.busy = False
+                return
+            updater.record_check(info.version if info else APP_VERSION)
+            self.signals.checked.emit(info)
+            self.busy = False
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def apply(self, info):
+        if self.busy:
+            return
+        install_root = updater.find_install_root()
+        if not install_root:
+            self.signals.failed.emit('Install folder could not be determined.')
+            return
+        self.busy = True
+
+        def progress(done, total):
+            self.signals.progressed.emit(done, total)
+
+        def run():
+            work = None
+            try:
+                release_dir, manifest, work = updater.stage_update(
+                    info, progress_cb=progress)
+                result = updater.apply_release(
+                    install_root, release_dir, manifest, exe_mode='auto',
+                    progress_cb=progress)
+                self.signals.applied.emit(result)
+            except Exception as exc:
+                self.signals.failed.emit(str(exc))
+            finally:
+                self.busy = False
+                if work:
+                    shutil.rmtree(work, ignore_errors=True)
+
+        threading.Thread(target=run, daemon=True).start()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, project_root, env_vars, apps_config, pipeline_dir):
         super().__init__()
@@ -5121,6 +5287,14 @@ class MainWindow(QMainWindow):
         self.env_vars = env_vars
         self.apps_config = apps_config
         self.pipeline_dir = pipeline_dir
+        self._last_update_info = None
+        self._update_progress = None
+        self._update = UpdateController(self)
+        self._update.signals.checked.connect(self._on_update_checked)
+        self._update.signals.check_error.connect(self._on_update_check_failed)
+        self._update.signals.progressed.connect(self._on_update_progress)
+        self._update.signals.applied.connect(self._on_update_applied)
+        self._update.signals.failed.connect(self._on_update_failed)
         self._build()
 
     def _build(self):
@@ -5202,6 +5376,8 @@ class MainWindow(QMainWindow):
             self.pages.addWidget(page)
             if label == 'Launch Apps':
                 self._launch_page = page
+            if label == 'Settings':
+                self._settings_page = page
 
         main_layout.addWidget(self.sidebar)
         main_layout.addWidget(self.pages, 1)
@@ -5212,7 +5388,10 @@ class MainWindow(QMainWindow):
 
         version_label = QLabel(f'v{APP_VERSION}')
         version_label.setStyleSheet('color: #888; padding-right: 8px;')
+        version_label.setCursor(Qt.PointingHandCursor)
+        version_label.setToolTip('Check for updates in Settings → Updates')
         self.status_bar.addPermanentWidget(version_label)
+        self.version_label = version_label
 
         self.sidebar_buttons[0].setChecked(True)
 
@@ -5233,6 +5412,167 @@ class MainWindow(QMainWindow):
     def refresh_launcher(self):
         if hasattr(self, '_launch_page'):
             self._launch_page._rebuild_buttons()
+
+    def check_for_updates(self, manual=False):
+        if not manual:
+            if not getattr(sys, 'frozen', False):
+                return
+            if not updater.get_pref('update_auto_check', True):
+                return
+        if self._update.busy:
+            return
+        self._last_update_info = None
+        if manual and hasattr(self, '_settings_page'):
+            self._settings_page.upd_status.setText('Checking for updates…')
+            self._settings_page.upd_status.setStyleSheet('')
+        self._update.check(manual=manual)
+
+    def _on_update_checked(self, info):
+        self._last_update_info = info
+        if hasattr(self, '_settings_page'):
+            self._settings_page.refresh_updates_section()
+        if info is None:
+            if self._update.manual:
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Information)
+                box.setWindowTitle('Updates')
+                box.setText(
+                    'No published release with an update package was found.\n\n'
+                    'Releases are created automatically when a new version '
+                    'is published. Check Settings → Updates to change the '
+                    'update channel.'
+                )
+                box.exec()
+            return
+        if not info.is_newer:
+            if self._update.manual:
+                QMessageBox.information(
+                    self, 'Updates',
+                    f'MazeHub is up to date.\n\nCurrent version: v{APP_VERSION}')
+            return
+        skipped = str(updater.get_pref('update_skipped_version') or '')
+        if not self._update.manual and skipped == info.version:
+            return
+        self.version_label.setText(f'v{APP_VERSION} → {info.version} available')
+        self.version_label.setStyleSheet('color: #00c853; padding-right: 8px;')
+        self.version_label.setToolTip(
+            f'MazeHub {info.version} is available — click Settings → Updates')
+        self._prompt_update(info)
+
+    def _prompt_update(self, info):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle('Update Available')
+        text = (
+            f'A new version of MazeHub is available.\n\n'
+            f'Current: v{APP_VERSION}\n'
+            f'Latest: v{info.version}'
+        )
+        notes = (info.notes or '').strip()
+        if notes:
+            text += f'\n\n{notes[:600]}'
+        text += '\n\nYour local settings and file changes are preserved.'
+        box.setText(text)
+        btn_now = box.addButton('Update && Restart', QMessageBox.ButtonRole.AcceptRole)
+        btn_later = box.addButton('Remind Me Later', QMessageBox.ButtonRole.RejectRole)
+        box.addButton('Skip This Version', QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(btn_later)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == btn_now:
+            self._begin_update(info)
+        elif clicked is not None and 'Skip' in clicked.text():
+            updater.set_pref('update_skipped_version', info.version)
+
+    def _begin_update(self, info):
+        self._update_progress = QProgressDialog(
+            'Downloading update…', '', 0, 0, self)
+        self._update_progress.setWindowTitle('Updating MazeHub')
+        self._update_progress.setWindowModality(Qt.WindowModal)
+        cancel_btn = self._update_progress.cancelButton()
+        if cancel_btn is not None:
+            cancel_btn.hide()
+        self._update_progress.show()
+        self._update.apply(info)
+
+    def _on_update_progress(self, done, total):
+        if self._update_progress is None:
+            return
+        if total >= 1_000_000:
+            self._update_progress.setLabelText(
+                f'Downloading update… {done // (1024 * 1024)} / '
+                f'{total // (1024 * 1024)} MB')
+        elif total > 0:
+            self._update_progress.setLabelText(
+                f'Applying update… {done} / {total} files')
+
+    def _on_update_applied(self, result):
+        if self._update_progress is not None:
+            self._update_progress.close()
+            self._update_progress = None
+        install_root = updater.find_install_root()
+        if result.exe_action == 'failed':
+            QMessageBox.warning(
+                self, 'Update',
+                'Update applied with errors:\n\n'
+                f'{result.summary()}\n\n'
+                'Close any programs using pipeline files and try again.'
+            )
+            return
+        if result.exe_action == 'staged':
+            try:
+                helper = updater.write_update_helper(
+                    install_root, result.staged_exe, os.getpid())
+                updater.spawn_update_helper(helper)
+            except Exception as exc:
+                QMessageBox.warning(
+                    self, 'Update',
+                    f'Update files were applied but the restart helper '
+                    f'could not start:\n{exc}\n\nRestart MazeHub manually.'
+                )
+                return
+            QApplication.quit()
+            return
+        updater.relaunch()
+        QApplication.quit()
+
+    def _on_update_check_failed(self, message):
+        if hasattr(self, '_settings_page'):
+            self._settings_page.upd_status.setText(
+                f'Update check failed: {message}')
+            self._settings_page.upd_status.setStyleSheet('color: #ff6b6b;')
+        if self._update.manual:
+            QMessageBox.warning(
+                self, 'Updates',
+                f'Could not check for updates:\n\n{message}\n\n'
+                'Check your internet connection or the update channel '
+                'in Settings → Updates.'
+            )
+
+    def _on_update_failed(self, message):
+        if self._update_progress is not None:
+            self._update_progress.close()
+            self._update_progress = None
+        if hasattr(self, '_settings_page'):
+            self._settings_page.upd_status.setText(f'Update failed: {message}')
+            self._settings_page.upd_status.setStyleSheet('color: #ff6b6b;')
+        QMessageBox.warning(
+            self, 'Update Failed',
+            f'Could not complete the update:\n\n{message}'
+        )
+
+    def show_pending_update_report(self):
+        install_root = updater.find_install_root()
+        if not install_root:
+            return
+        report = updater.pop_report(install_root)
+        if not report:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle('Update Applied')
+        box.setText(updater.summary_from_report(report))
+        box.exec()
 
 
 def _load_styles(app, styles_dir):
@@ -5277,6 +5617,10 @@ def main():
 
     window = MainWindow(project_root, env_vars, apps_config, pipeline_dir)
     window.show()
+
+    if getattr(sys, 'frozen', False):
+        QTimer.singleShot(1200, window.show_pending_update_report)
+        QTimer.singleShot(3500, lambda: window.check_for_updates(manual=False))
 
     sys.exit(app.exec())
 

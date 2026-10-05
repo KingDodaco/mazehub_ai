@@ -68,6 +68,8 @@ This creates `dist/MazeHub.exe`. The exe bundles Python, PySide6, and all app co
 publish_pipeline.bat
 # or with a target directory
 python publish_pipeline.py --target /path/to/deploy
+# or build release assets for GitHub
+python publish_pipeline.py --zip
 ```
 
 This creates a deployable bundle in `publish/pipeline/`:
@@ -88,7 +90,50 @@ publish/pipeline/
   ...
 ```
 
-No Python source files are included in the published bundle.
+No Python source files are included in the published bundle. With `--zip`,
+`publish/MazeHub-pipeline.zip` and `publish/manifest.json` are also produced
+(release assets used by the self-updater).
+
+`--target` syncs manifest-aware instead of overwriting the destination: local
+edits and user data (see below) are preserved, only changed files are copied.
+
+## Self-Update
+
+MazeHub updates itself from GitHub Releases (`KingDodaco/mazehub_ai`):
+
+1. On launch (frozen exe only) it silently checks `releases/latest`.
+2. If a newer version exists you get an **Update & Restart** prompt.
+3. The zip is downloaded, checksum-verified, and staged outside the install.
+4. Data files are synced into place; the exe is swapped by a helper script
+   that waits for MazeHub to exit, renames the old exe, moves the new one in,
+   relaunches, and rolls back automatically if the new exe fails to start.
+
+### Releases
+
+CI creates a GitHub Release tagged `v{version}` when `pyproject.toml` /
+`APP_VERSION` change (no release is created on pushes without a version
+bump). Assets: `MazeHub-pipeline.zip` + `manifest.json` (file list with
+SHA-256 hashes).
+
+### What is preserved
+
+- Files never shipped in a release are **never touched or deleted**:
+  `shared_settings.json`, `recent_files_*.json`, `app_versions_*.json`,
+  and any file an artist adds to the pipeline folder.
+- Shipped files that were edited locally are kept, with the incoming version
+  saved next to them as `<file>.new`.
+- `apps.json` is three-way merged: your `versions`, `default_version`, and
+  exe-path edits survive; new apps/fields from the release are added; apps
+  you added are kept. Conflicts are reported (local value wins).
+- Removed-from-source files are deleted on update; if locally edited first
+  they are moved to `.update/trash/` instead.
+
+### Settings
+
+Settings → Updates: current version, auto-check toggle, manual
+**Check for Updates**, and an optional `update_channel` (a folder or URL
+containing `manifest.json` + `MazeHub-pipeline.zip`, for testing or an
+offline channel — blank means GitHub releases).
 
 ## GUI Pages
 

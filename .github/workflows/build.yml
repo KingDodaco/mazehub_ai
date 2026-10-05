@@ -6,6 +6,9 @@ on:
 env:
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -56,6 +59,7 @@ jobs:
             --hidden-import pipeline_app
             --hidden-import recent_files
             --hidden-import settings
+            --hidden-import updater
             --hidden-import OpenEXR
             --hidden-import Imath
             --hidden-import numpy
@@ -69,7 +73,25 @@ jobs:
           python -m PyInstaller "${ARGS[@]}" main.py
 
       - name: Publish pipeline
-        run: python publish_pipeline.py
+        run: python publish_pipeline.py --zip
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "Version: $VERSION"
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists - skipping."
+            exit 0
+          fi
+          gh release create "v$VERSION" \
+            publish/MazeHub-pipeline.zip \
+            publish/manifest.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "MazeHub v$VERSION" \
+            --notes "Automated release for MazeHub v$VERSION. Deployed instances update from this release."
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4

@@ -27,6 +27,7 @@ SHARED_KEYS = {
     'production_webhook_url',
     'husk_path',
     'yt_screensaver_url',
+    'update_channel',
 }
 
 

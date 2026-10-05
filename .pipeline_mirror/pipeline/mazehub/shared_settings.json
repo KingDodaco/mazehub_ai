@@ -1,3 +1,4 @@
 {
-  "teams_webhook_url": "https://teams.global/webhook"
+  "teams_webhook_url": "https://teams.global/webhook",
+  "yt_screensaver_url": "test"
 }

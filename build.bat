@@ -64,6 +64,7 @@ echo Building %APP_NAME%...
     --hidden-import pipeline_app ^
     --hidden-import recent_files ^
     --hidden-import settings ^
+    --hidden-import updater ^
     --hidden-import OpenEXR ^
     --hidden-import Imath ^
     --hidden-import numpy ^
