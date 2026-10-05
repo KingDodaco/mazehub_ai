@@ -499,21 +499,10 @@ def flipbook_sender_execute(node):
         nuke.message(f"Flipbook error:\n{e}")
 
     finally:
-        def re_enable_button():
-            try:
-                if node and nuke.exists(node):
-                    node['do_flip'].setEnabled(True)
-            except Exception:
-                pass
-
         try:
-            nuke.executeInMainThreadWithResult(re_enable_button)
+            node['do_flip'].setEnabled(True)
         except Exception:
-            # Fallback for older Nuke
-            try:
-                nuke.executeInMainThread(re_enable_button)
-            except Exception:
-                pass
+            pass
 
 # --- Group node creation ---
 def create_flipbook_sender_node():
