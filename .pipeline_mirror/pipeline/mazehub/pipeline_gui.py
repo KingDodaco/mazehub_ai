@@ -358,8 +358,13 @@ class FileBrowserPanel(QWidget):
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(['File', 'Application', 'Path'])
-        self.tree.setColumnWidth(0, 200)
-        self.tree.setColumnWidth(1, 130)
+        tree_header = self.tree.header()
+        tree_header.setStretchLastSection(False)
+        tree_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        tree_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        tree_header.setSectionResizeMode(2, QHeaderView.Interactive)
+        self.tree.setColumnWidth(2, 420)
+        self.tree.setMinimumHeight(260)
         self.tree.setAlternatingRowColors(True)
         self.tree.itemDoubleClicked.connect(self._open_selected)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -1690,7 +1695,7 @@ class ShotExplorerPage(QWidget):
             self.project_root, self.apps_config, self.pipeline_dir
         )
         fb_layout.addWidget(self._file_panel)
-        layout.addWidget(self.file_browser)
+        layout.addWidget(self.file_browser, 1)
         self.file_browser.setVisible(False)
 
         self._refresh()
@@ -1948,7 +1953,7 @@ class LightRigsPage(QWidget):
             self.project_root, self.apps_config, self.pipeline_dir
         )
         fb_layout.addWidget(self._file_panel)
-        layout.addWidget(self.file_browser)
+        layout.addWidget(self.file_browser, 1)
         self.file_browser.setVisible(False)
 
         self._refresh()
@@ -2240,7 +2245,7 @@ class AssetExplorerPage(QWidget):
             self.project_root, self.apps_config, self.pipeline_dir
         )
         fb_layout.addWidget(self._file_panel)
-        layout.addWidget(self.file_browser)
+        layout.addWidget(self.file_browser, 1)
         self.file_browser.setVisible(False)
 
         self._refresh()
