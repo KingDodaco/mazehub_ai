@@ -29,7 +29,7 @@
                 "label": "17.0"
             }
         },
-        "default_version": "15.2"
+        "default_version": "17.0"
     },
     "SubstancePainter": {
         "display_name": "Substance Painter",
@@ -67,7 +67,7 @@
                 "label": "2026"
             }
         },
-        "default_version": "2025"
+        "default_version": "2026"
     },
     "Blender": {
         "display_name": "Blender",
@@ -86,8 +86,8 @@
         "subdir": "Zbrush",
         "versions": {
             "2024": {
-                "exe": "C:\\Program Files\\Maxon ZBrush 2024\\ZBrush.exe",
-                "label": "2024"
+                "exe": "C:\\Program Files\\Pixologic\\ZBrush 2022 FL\\ZBrush.exe",
+                "label": "2022"
             }
         }
     },
@@ -98,7 +98,7 @@
         "versions": {
             "2025": {
                 "exe": "C:\\Program Files\\Adobe\\Adobe Photoshop 2025\\Photoshop.exe",
-                "label": "2025"
+                "label": "latest"
             }
         }
     },
