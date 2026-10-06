@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import sys
 import tempfile
 import traceback
@@ -58,12 +59,31 @@ def _find_app_dir():
     return None
 
 
+def _apply_project_arg(argv):
+    project = None
+    for i, arg in enumerate(argv):
+        if arg == '--project' and i + 1 < len(argv):
+            project = argv[i + 1]
+        elif arg.startswith('--project='):
+            project = arg.split('=', 1)[1]
+    if not project:
+        return
+    p = Path(project).expanduser()
+    if not p.is_dir():
+        _debug_log(f"ERROR: --project is not a directory: {p}")
+        sys.exit(1)
+    os.environ['MAZE_PROJECT_ROOT'] = str(p.resolve())
+    _debug_log(f"Session project override: {p.resolve()}")
+
+
 def main():
     _debug_log("--- MazeHub starting ---")
     app_dir = _find_app_dir()
     if not app_dir:
         _debug_log("ERROR: pipeline app directory not found.")
         sys.exit(1)
+
+    _apply_project_arg(sys.argv[1:])
 
     this_dir = Path(__file__).resolve().parent
     project_root = this_dir.parent if this_dir.name == 'mazehub' else this_dir

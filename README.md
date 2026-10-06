@@ -8,41 +8,92 @@ MazeHub is a VFX pipeline management tool built with PySide6. It launches DCC ap
 - PySide6 6.6+
 - PyInstaller 6.21+ (for building the exe)
 
-## Project Structure
+## Structure
+
+MazeHub separates the **install** (app + pipeline tools) from **projects**
+(data folders). The install can live anywhere (e.g. `C:\Tools\MazeHub`);
+projects can live anywhere else (OneDrive, NAS, local disk).
+
+### Install folder
+
+```
+MazeHub/                  # wherever you extracted the release zip
+  MazeHub.exe
+  launch_mazehub.bat
+  mazehub/                # app code + config
+    apps.json             # DCC app configurations
+    styles.qss            # UI stylesheet
+    icon.svg              # App icon
+    make_folders.py       # Folder structure creator
+  Blender/                # DCC launchers and scripts
+  Houdini21.0/
+  Mari/
+  Maya/
+  Nuke/
+  OCIO/
+  Photoshop/
+  Substance/
+  Zbrush/
+```
+
+### Project folder (data only)
 
 ```
 project_root/
-  asset/                  # Asset directories
+  asset/                  # Asset directories (char/env/prop/misc)
   development/            # Storyboards, concepts, references
   IO/                     # Incoming/outgoing files
+  lightrigs/
   MISC/
+  mazehub/                # Per-project shared settings
+    shared_settings.json
   onset/
-  pipeline/
-    mazehub/              # MazeHub app files
-      apps.json           # DCC app configurations
-      styles.qss          # UI stylesheet
-      icon.svg            # App icon
-      make_folders.py     # Folder structure creator
-    Blender/              # Blender launcher and scripts
-    Houdini21.0/          # Houdini launcher and scripts
-    Mari/                 # Mari launcher
-    Maya/                 # Maya launcher and scripts
-    Nuke/                 # Nuke launcher and plugins
-    OCIO/                 # OCIO color config
-    Photoshop/            # Photoshop launcher
-    Substance/            # Substance Painter launcher
-    Zbrush/               # ZBrush launcher
   rnd/
   sequence/               # Shot directories
 ```
 
+Projects contain **data only** — pipeline tools always come from the install
+folder. Older projects that still contain a `pipeline/` folder keep working;
+delete it once you no longer need the legacy copy.
+
 ## Installation
+
+### From source
 
 ```bash
 pip install -r requirements.txt
 # or
 uv sync
 ```
+
+### As an installed app
+
+1. Extract `MazeHub-pipeline.zip` (or copy the `publish/pipeline/` folder)
+   anywhere, e.g. `C:\Tools\MazeHub`.
+2. Create a shortcut to `MazeHub.exe` (optionally add `--project <path>`).
+3. On first launch choose **Add Existing Folder…** and point MazeHub at your
+   project — or create a new one in Settings → Projects.
+
+## Projects
+
+An install can open any number of projects. Registered projects and the
+active project are stored in `~/.config/mazehub/projects.json`.
+
+- **Sidebar switcher** — the project name at the top of the sidebar switches
+  projects live: all pages reload against the new project. Switching is
+  blocked while an update is running or an app launch/render is in flight.
+- **Settings → Projects** — list all registered projects. **Open**
+  (or double-click) switches, **Add Existing…** registers a folder,
+  **Create New…** builds a data-only project (optional sample shot/asset/
+  shoot-day scaffolds) and opens it, **Remove** unregisters a project
+  (the folder itself is never deleted).
+- **CLI override** — `MazeHub.exe --project D:\work\MyProject` (or
+  `python main.py --project ...`) opens that project for the session only;
+  the stored active project is unchanged. The `MAZE_PROJECT_ROOT`
+  environment variable has the same effect.
+
+Resolution order: `--project` flag → `MAZE_PROJECT_ROOT` → active project
+in the registry → first-launch folder picker.
 
 ## Usage
 
@@ -118,8 +169,8 @@ SHA-256 hashes).
 ### What is preserved
 
 - Files never shipped in a release are **never touched or deleted**:
-  `shared_settings.json`, `recent_files_*.json`, `app_versions_*.json`,
-  and any file an artist adds to the pipeline folder.
+  `mazehub/shared_settings.json`, and any file an artist adds to the
+  install folder.
 - Shipped files that were edited locally are kept, with the incoming version
   saved next to them as `<file>.new`.
 - `apps.json` is three-way merged: your `versions`, `default_version`, and
@@ -127,6 +178,9 @@ SHA-256 hashes).
   you added are kept. Conflicts are reported (local value wins).
 - Removed-from-source files are deleted on update; if locally edited first
   they are moved to `.update/trash/` instead.
+- Projects are outside the install folder and are never touched by updates.
+  Recent files live with the project (`<project>/mazehub/`); app versions
+  live in `~/.config/mazehub/`.
 
 ### Settings
 
@@ -159,7 +213,8 @@ View all environment variables set by MazeHub for the current project and contex
 
 ### Settings
 
-Repair file structure and configure project options.
+Manage projects (open/add/create/remove), repair file structure, app
+versions, webhook URLs, and updates.
 
 ## Environment Variables
 
@@ -170,7 +225,7 @@ MazeHub sets the following environment variables when launched:
 | `MAZE_PROJECT_ROOT` | Root directory of the project |
 | `MZE` | Alias for `MAZE_PROJECT_ROOT` |
 | `MAZE_PROJECT` | Project folder name |
-| `MAZE_PIPELINE` | Path to the pipeline directory |
+| `MAZE_PIPELINE` | Path to the install folder's pipeline tools (not inside the project) |
 | `MAZE_ASSETS` | Path to the asset directory |
 | `MAZE_SEQUENCES` | Path to the sequence directory |
 | `MAZE_ONSET` | Path to the onset directory |
@@ -226,7 +281,11 @@ The recent files panel tracks recently opened files with:
 - Application name
 - Timestamp
 
-Recent files are stored in `~/.config/mazehub/recent_files.json`.
+Recent files are stored per project in
+`<project>/mazehub/recent_files_<user>.json` (they follow the active
+project when you switch). With no project active they fall back to
+`~/.config/mazehub/recent_files.json`. Files from the legacy
+`<project>/pipeline/mazehub/` location are migrated automatically.
 
 ## Building
 
@@ -263,7 +322,7 @@ Removes build artifacts: `build/`, `dist/`, `*.spec`, and `__pycache__/` directo
 
 ### apps.json
 
-Configure DCC applications in `pipeline/mazehub/apps.json`:
+Configure DCC applications in `<install>/mazehub/apps.json`:
 
 ```json
 {
@@ -278,4 +337,21 @@ Configure DCC applications in `pipeline/mazehub/apps.json`:
 
 ### styles.qss
 
-Customize the UI appearance by editing `pipeline/mazehub/styles.qss`. The stylesheet uses Qt's CSS syntax.
+Customize the UI appearance by editing `<install>/mazehub/styles.qss`. The
+stylesheet uses Qt's CSS syntax.
+
+### Shared settings
+
+Webhook URLs, husk path, and other per-project settings shared between
+machines live in `<project>/mazehub/shared_settings.json`. Projects that
+still store it at `<project>/pipeline/mazehub/shared_settings.json` are
+migrated automatically on first load (the legacy file is left in place).
+
+### Per-user config (`~/.config/mazehub/`)
+
+| File | Contents |
+|------|----------|
+| `projects.json` | Registered projects and the active project |
+| `user_settings.json` | Machine-local settings (update channel, toggles) |
+| `app_versions.json` | Last-used app versions |
+| `recent_files.json` | Recent files fallback (no active project) |

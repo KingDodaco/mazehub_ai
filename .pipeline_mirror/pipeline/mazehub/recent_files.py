@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import time
 import getpass
 from pathlib import Path
@@ -8,17 +9,33 @@ from pathlib import Path
 MAX_RECENT = 100
 
 
+def _config_path(filename):
+    return Path.home() / '.config' / 'mazehub' / filename
+
+
+def _migrate_once(path, legacy):
+    if path.exists() or not legacy or not legacy.exists():
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(legacy, path)
+    except Exception:
+        pass
+
+
 def _get_recent_files_path():
-    """Get the recent files path - per-user in project folder, or fallback to home."""
     try:
         from settings import _get_project_root
         project_root = _get_project_root()
         if project_root:
-            username = getpass.getuser()
-            return project_root / 'pipeline' / 'mazehub' / f'recent_files_{username}.json'
+            filename = f'recent_files_{getpass.getuser()}.json'
+            path = project_root / 'mazehub' / filename
+            legacy = project_root / 'pipeline' / 'mazehub' / filename
+            _migrate_once(path, legacy)
+            return path
     except Exception:
         pass
-    return Path.home() / '.config' / 'mazehub' / 'recent_files.json'
+    return _config_path('recent_files.json')
 
 
 def _ensure_dir(path):
@@ -87,16 +104,18 @@ def clear_recent_files():
 
 
 def _get_app_versions_path():
-    """Get the app versions path - per-user in project folder, or fallback to home."""
+    path = _config_path('app_versions.json')
+    legacy = None
     try:
         from settings import _get_project_root
         project_root = _get_project_root()
         if project_root:
-            username = getpass.getuser()
-            return project_root / 'pipeline' / 'mazehub' / f'app_versions_{username}.json'
+            legacy = (project_root / 'pipeline' / 'mazehub' /
+                      f'app_versions_{getpass.getuser()}.json')
     except Exception:
-        pass
-    return Path.home() / '.config' / 'mazehub' / 'app_versions.json'
+        legacy = None
+    _migrate_once(path, legacy)
+    return path
 
 
 def load_app_versions():

@@ -3,32 +3,128 @@ import os
 import platform
 from pathlib import Path
 
-
-def _get_project_root():
-    """Find the project root from MAZE_PROJECT_ROOT env var."""
-    root = os.environ.get('MAZE_PROJECT_ROOT')
-    if root:
-        return Path(root)
-    return None
-
-
-def _get_shared_settings_path():
-    """Lazy getter for shared settings path."""
-    root = _get_project_root()
-    if root:
-        return root / 'pipeline' / 'mazehub' / 'shared_settings.json'
-    return None
 USER_SETTINGS_PATH = Path.home() / '.config' / 'mazehub' / 'user_settings.json'
+PROJECTS_PATH = Path.home() / '.config' / 'mazehub' / 'projects.json'
 
-# Keys that should be shared globally (project-level)
+# Keys that should be shared across machines within a project
 SHARED_KEYS = {
     'teams_webhook_url',
     'dailies_webhook_url',
     'production_webhook_url',
     'husk_path',
     'yt_screensaver_url',
-    'update_channel',
 }
+
+
+def _get_project_root():
+    root = os.environ.get('MAZE_PROJECT_ROOT')
+    if root:
+        return Path(root)
+    return None
+
+
+def _migrate_legacy_shared(legacy_path, new_path):
+    data = _load_json(legacy_path)
+    if not data:
+        return
+    channel = data.pop('update_channel', None)
+    _save_json(new_path, data)
+    if channel:
+        user = _load_json(USER_SETTINGS_PATH)
+        if not user.get('update_channel'):
+            user['update_channel'] = channel
+            _save_json(USER_SETTINGS_PATH, user)
+
+
+def _get_shared_settings_path():
+    root = _get_project_root()
+    if not root:
+        return None
+    path = root / 'mazehub' / 'shared_settings.json'
+    legacy = root / 'pipeline' / 'mazehub' / 'shared_settings.json'
+    if not path.exists() and legacy.exists():
+        _migrate_legacy_shared(legacy, path)
+    return path
+
+
+def _load_registry():
+    data = _load_json(PROJECTS_PATH)
+    projects = [
+        {'name': str(p.get('name') or Path(p['root']).name),
+         'root': str(p['root'])}
+        for p in data.get('projects', [])
+        if isinstance(p, dict) and p.get('root')
+    ]
+    return {'projects': projects, 'active': str(data.get('active') or '')}
+
+
+def _save_registry(reg):
+    _save_json(PROJECTS_PATH, reg)
+
+
+def list_projects():
+    return _load_registry()['projects']
+
+
+def _normalize_root(root):
+    p = Path(root).expanduser()
+    try:
+        return str(p.resolve())
+    except OSError:
+        return str(p)
+
+
+def add_project(root):
+    root = _normalize_root(root)
+    reg = _load_registry()
+    for entry in reg['projects']:
+        if entry['root'] == root:
+            if not reg['active']:
+                reg['active'] = root
+                _save_registry(reg)
+            return entry
+    entry = {'name': Path(root).name, 'root': root}
+    reg['projects'].append(entry)
+    if not reg['active']:
+        reg['active'] = root
+    _save_registry(reg)
+    return entry
+
+
+def remove_project(root):
+    reg = _load_registry()
+    before = len(reg['projects'])
+    active_before = reg['active']
+    reg['projects'] = [p for p in reg['projects'] if p['root'] != root]
+    if reg['active'] == root:
+        reg['active'] = reg['projects'][0]['root'] if reg['projects'] else ''
+    if len(reg['projects']) != before or reg['active'] != active_before:
+        _save_registry(reg)
+
+
+def set_active_project(root):
+    root = _normalize_root(root)
+    reg = _load_registry()
+    if not any(p['root'] == root for p in reg['projects']):
+        add_project(root)
+        reg = _load_registry()
+    if reg['active'] != root:
+        reg['active'] = root
+        _save_registry(reg)
+
+
+def get_active_project():
+    active = _load_registry().get('active') or ''
+    if active and Path(active).is_dir():
+        return Path(active)
+    return None
+
+
+def resolve_project_root():
+    env = os.environ.get('MAZE_PROJECT_ROOT')
+    if env and Path(env).expanduser().is_dir():
+        return Path(env).expanduser().resolve()
+    return get_active_project()
 
 
 def _ensure_dir(path):

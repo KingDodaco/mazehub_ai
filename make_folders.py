@@ -1,11 +1,7 @@
 import os
-from pathlib import Path
 
-
-ROOT_DIR = 'C:/Users/s5720563/OneDrive - Bournemouth University/FMP - Documents/PROJECT'
 
 NEW_PROJECT_DIRECTORY = ['asset',
-                         'pipeline',
                          'onset',
                          'development',
                          'sequence',
@@ -14,14 +10,7 @@ NEW_PROJECT_DIRECTORY = ['asset',
                          'MISC',
                          'lightrigs',
                          'DB',
-
-                         'pipeline/Houdini',
-                         'pipeline/Nuke',
-                         'pipeline/Maya',
-                         'pipeline/Blender',
-                         'pipeline/OCIO',
-                         'pipeline/Substance',
-                         'pipeline/Substance/plugins',
+                         'mazehub',
 
                          'IO/incoming',
                          'IO/outgoing',
@@ -155,13 +144,14 @@ def initialize_project(project_path):
                 os.makedirs(construct_subscope_path)
 
 
-def make_project(project='', root_dir=''):
+def make_project(project='', root_dir='', seed=True):
     """Create a complete project with all standard directory structures.
-    
+
     Args:
         project: Name of the project to create (e.g., 'MAZE').
         root_dir: Root directory where the project folder should be created.
-        
+        seed: If True, also create the empty shot/asset/shoot-day scaffolds.
+
     Creates:
         - Main project directory at root_dir/project
         - All top-level directories from NEW_PROJECT_DIRECTORY
@@ -182,6 +172,9 @@ def make_project(project='', root_dir=''):
             construct_subscope_path = os.path.join(project_dir, single_directory)
             if not os.path.exists(construct_subscope_path):
                 os.makedirs(construct_subscope_path)
+
+        if not seed:
+            return
 
         # Make the shot directories
         for single_directory in NEW_SHOT_LIST:
@@ -304,6 +297,3 @@ def make_light_rig_directory(path):
             construct_subscope_path = os.path.join(path, single_directory)
             if not os.path.exists(construct_subscope_path):
                 os.makedirs(construct_subscope_path)
-
-
-# make_project('MAZE', ROOT_DIR)

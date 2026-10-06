@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.7.4"
+APP_VERSION = "0.8.0"
 
 
 def _get_display_name():
@@ -124,19 +124,21 @@ def _app_dir():
     return Path(__file__).resolve().parent
 
 
+def find_pipeline_dir():
+    app_dir = _app_dir()
+    if app_dir.name == 'mazehub':
+        return app_dir.parent
+    return app_dir
+
+
 def find_project_root():
-    env_root = os.environ.get('MAZE_PROJECT_ROOT')
-    if env_root:
-        return Path(env_root).resolve()
+    from settings import resolve_project_root
+    resolved = resolve_project_root()
+    if resolved:
+        return resolved
 
     if getattr(sys, 'frozen', False):
-        exe_dir = Path(sys.executable).resolve().parent
-        for parent in [exe_dir] + list(exe_dir.parents):
-            root_marker = parent / 'pipeline' / 'mazehub' / 'apps.json'
-            mirror_marker = parent / '.pipeline_mirror' / 'pipeline' / 'mazehub' / 'apps.json'
-            if root_marker.exists() or mirror_marker.exists():
-                return parent
-        return exe_dir
+        return None
 
     this_dir = _app_dir()
 
@@ -308,7 +310,9 @@ def _resolve_ref(value, project_root):
     return expanded
 
 
-def setup_environment(project_root):
+def setup_environment(project_root, pipeline_dir=None):
+    if pipeline_dir is None:
+        pipeline_dir = find_pipeline_dir()
     root = str(Path(project_root))
     ROOT_VAR = 'MAZE_PROJECT_ROOT'
     ref = _env_ref(ROOT_VAR)
@@ -317,7 +321,7 @@ def setup_environment(project_root):
         ROOT_VAR: root,
         'MZE': root,
         'MAZE_PROJECT': Path(root).name,
-        'MAZE_PIPELINE': f'{ref}/pipeline',
+        'MAZE_PIPELINE': str(Path(pipeline_dir)),
         'MAZE_ASSETS': f'{ref}/asset',
         'MAZE_SEQUENCES': f'{ref}/sequence',
         'MAZE_ONSET': f'{ref}/onset',
@@ -352,15 +356,17 @@ APP_CONTEXT_ENV = {
 }
 
 
-def build_context_env(context, project_root):
+def build_context_env(context, project_root, pipeline_dir=None):
     if not context:
         return {}
+    if pipeline_dir is None:
+        pipeline_dir = find_pipeline_dir()
     ctx_path = Path(context['path'])
     env = {
         'MAZE_CONTEXT_TYPE': context['type'],
         'MAZE_CONTEXT_NAME': context['name'],
         'MAZE_CONTEXT_PATH': str(ctx_path),
-        'PIPELINE_DIR': str(Path(project_root) / 'pipeline'),
+        'PIPELINE_DIR': str(Path(pipeline_dir)),
         'START_FRAME': '',
         'END_FRAME': '',
         'FRAME_RATE': '',
@@ -991,10 +997,24 @@ def show_env_vars(env_vars):
 
 def main():
     project_root = find_project_root()
-    pipeline_dir = project_root / 'pipeline'
-    mazehub_dir = pipeline_dir / 'mazehub'
+    if project_root is None:
+        from settings import list_projects, add_project, set_active_project
+        print('\n  No active project.')
+        for p in list_projects():
+            print(f"    - {p['name']}: {p['root']}")
+        choice = input('  Enter project root to add (blank to quit): ').strip()
+        if not choice:
+            return
+        candidate = Path(choice).expanduser()
+        if not candidate.is_dir():
+            print(f'  Not a directory: {candidate}')
+            return
+        add_project(candidate)
+        set_active_project(str(candidate))
+        project_root = candidate
+    pipeline_dir = find_pipeline_dir()
 
-    env_vars = setup_environment(project_root)
+    env_vars = setup_environment(project_root, pipeline_dir)
     apps_config = load_apps_config()
 
     if str(project_root) not in sys.path:

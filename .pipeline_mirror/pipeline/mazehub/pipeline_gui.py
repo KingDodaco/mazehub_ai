@@ -25,7 +25,8 @@ from PySide6.QtWidgets import (
 import updater
 
 from pipeline_app import (
-    find_project_root, setup_environment, load_apps_config, save_apps_config,
+    find_project_root, find_pipeline_dir, setup_environment,
+    load_apps_config, save_apps_config,
     resolve_app_exe,
     read_shot_meta, write_shot_meta, DEFAULT_SHOT_META,
     read_light_rig_meta, write_light_rig_meta, list_light_rigs,
@@ -4545,6 +4546,57 @@ class SettingsPage(QWidget):
         layout.addWidget(title)
         layout.addSpacing(16)
 
+        projects_group = QGroupBox('Projects')
+        projects_layout = QVBoxLayout(projects_group)
+        projects_layout.addWidget(QLabel(
+            'Project folders this install can open. Select a row and press '
+            'Open (or double-click) to switch.'
+        ))
+
+        self.projects_table = QTableWidget()
+        self.projects_table.setColumnCount(2)
+        self.projects_table.setHorizontalHeaderLabels(['Name', 'Path'])
+        self.projects_table.setAlternatingRowColors(True)
+        self.projects_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.projects_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.projects_table.verticalHeader().setVisible(False)
+        self.projects_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.projects_table.horizontalHeader().setStretchLastSection(True)
+        self.projects_table.doubleClicked.connect(lambda *_: self._open_project())
+        projects_layout.addWidget(self.projects_table)
+
+        projects_toolbar = QHBoxLayout()
+        open_proj_btn = QPushButton('Open')
+        open_proj_btn.setMinimumHeight(32)
+        open_proj_btn.setCursor(Qt.PointingHandCursor)
+        open_proj_btn.clicked.connect(self._open_project)
+        projects_toolbar.addWidget(open_proj_btn)
+        add_proj_btn = QPushButton('Add Existing…')
+        add_proj_btn.setMinimumHeight(32)
+        add_proj_btn.setCursor(Qt.PointingHandCursor)
+        add_proj_btn.clicked.connect(self._add_existing_project)
+        projects_toolbar.addWidget(add_proj_btn)
+        create_proj_btn = QPushButton('Create New…')
+        create_proj_btn.setMinimumHeight(32)
+        create_proj_btn.setCursor(Qt.PointingHandCursor)
+        create_proj_btn.clicked.connect(self._create_new_project)
+        projects_toolbar.addWidget(create_proj_btn)
+        remove_proj_btn = QPushButton('Remove')
+        remove_proj_btn.setMinimumHeight(32)
+        remove_proj_btn.setCursor(Qt.PointingHandCursor)
+        remove_proj_btn.clicked.connect(self._remove_project)
+        projects_toolbar.addWidget(remove_proj_btn)
+        projects_toolbar.addStretch()
+        projects_layout.addLayout(projects_toolbar)
+
+        self.projects_status = QLabel('')
+        self.projects_status.setWordWrap(True)
+        self.projects_status.setObjectName('hint')
+        projects_layout.addWidget(self.projects_status)
+
+        projects_layout.addStretch()
+        layout.addWidget(projects_group)
+
         husk_group = QGroupBox('Husk Render Binary')
         husk_layout = QVBoxLayout(husk_group)
 
@@ -4815,7 +4867,171 @@ class SettingsPage(QWidget):
         self._load_teams_url()
         self._load_dailies_url()
         self._load_production_url()
+        self._load_projects_table()
         self.refresh_updates_section()
+
+    def _refresh(self):
+        self._load_projects_table()
+
+    def _load_projects_table(self):
+        from settings import list_projects
+        self.projects_table.setRowCount(0)
+        active_row = -1
+        for p in list_projects():
+            row = self.projects_table.rowCount()
+            self.projects_table.insertRow(row)
+            self.projects_table.setItem(row, 0, QTableWidgetItem(p['name']))
+            self.projects_table.setItem(row, 1, QTableWidgetItem(p['root']))
+            try:
+                if Path(p['root']).resolve() == self.project_root.resolve():
+                    active_row = row
+            except OSError:
+                pass
+        self.projects_table.resizeColumnsToContents()
+        if active_row >= 0:
+            self.projects_table.selectRow(active_row)
+
+    def _selected_project_root(self):
+        items = self.projects_table.selectedItems()
+        if not items:
+            return None
+        return self.projects_table.item(items[0].row(), 1).text()
+
+    def _open_project(self):
+        root = self._selected_project_root()
+        if not root:
+            self.projects_status.setText('Select a project row first.')
+            self.projects_status.setStyleSheet('color: #ffa726;')
+            return
+        w = self.window()
+        if not hasattr(w, 'switch_project'):
+            return
+        if w.switch_project(root):
+            self.projects_status.setText(f'Opened project: {root}')
+            self.projects_status.setStyleSheet('color: #00c853;')
+
+    def _add_existing_project(self):
+        from PySide6.QtWidgets import QFileDialog
+        start = str(self.project_root.parent) if self.project_root else str(Path.home())
+        path = QFileDialog.getExistingDirectory(
+            self, 'Add existing project folder', start)
+        if not path:
+            return
+        from settings import add_project
+        entry = add_project(path)
+        self._load_projects_table()
+        self.projects_status.setText(f'Added project: {entry["root"]}')
+        self.projects_status.setStyleSheet('color: #00c853;')
+
+    def _create_new_project(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Create New Project')
+        dlg_layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        name_input = QLineEdit()
+        name_input.setPlaceholderText('MyProject')
+        form.addRow('Project name:', name_input)
+        parent_input = QLineEdit(str(self.project_root.parent))
+        parent_row = QHBoxLayout()
+        parent_row.addWidget(parent_input, 1)
+        browse_btn = QPushButton('Browse')
+        browse_btn.setCursor(Qt.PointingHandCursor)
+        browse_btn.clicked.connect(lambda: self._browse_create_parent(parent_input))
+        parent_row.addWidget(browse_btn)
+        form.addRow('Create in:', parent_row)
+        dlg_layout.addLayout(form)
+        seed_check = QCheckBox(
+            'Create sample shot / asset / shoot-day templates')
+        seed_check.setChecked(True)
+        dlg_layout.addWidget(seed_check)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_row.addWidget(cancel_btn)
+        create_btn = QPushButton('Create')
+        create_btn.setDefault(True)
+        create_btn.clicked.connect(dialog.accept)
+        btn_row.addWidget(create_btn)
+        dlg_layout.addLayout(btn_row)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        name = name_input.text().strip()
+        if not name:
+            self.projects_status.setText('Project name is required.')
+            self.projects_status.setStyleSheet('color: #ff6b6b;')
+            return
+        if any(c in name for c in '<>:"/\\|?*'):
+            self.projects_status.setText(
+                'Project name contains invalid characters.')
+            self.projects_status.setStyleSheet('color: #ff6b6b;')
+            return
+        parent = Path(parent_input.text().strip()).expanduser()
+        if not parent.is_dir():
+            self.projects_status.setText(f'Parent folder not found: {parent}')
+            self.projects_status.setStyleSheet('color: #ff6b6b;')
+            return
+        target = parent / name
+        if target.exists():
+            self.projects_status.setText(f'Folder already exists: {target}')
+            self.projects_status.setStyleSheet('color: #ff6b6b;')
+            return
+
+        try:
+            from make_folders import make_project
+            make_project(name, str(parent), seed=seed_check.isChecked())
+        except Exception as e:
+            self.projects_status.setText(f'Could not create project: {e}')
+            self.projects_status.setStyleSheet('color: #ff6b6b;')
+            return
+
+        from settings import add_project
+        add_project(target)
+        self._load_projects_table()
+        w = self.window()
+        if hasattr(w, 'switch_project'):
+            w.switch_project(target)
+        self.projects_status.setText(f'Created project: {target}')
+        self.projects_status.setStyleSheet('color: #00c853;')
+
+    def _browse_create_parent(self, line_edit):
+        from PySide6.QtWidgets import QFileDialog
+        path = QFileDialog.getExistingDirectory(
+            self, 'Select parent folder', line_edit.text() or str(Path.home()))
+        if path:
+            line_edit.setText(path)
+
+    def _remove_project(self):
+        root = self._selected_project_root()
+        if not root:
+            self.projects_status.setText('Select a project row first.')
+            self.projects_status.setStyleSheet('color: #ffa726;')
+            return
+        try:
+            current = str(self.project_root.resolve())
+            same = Path(root).resolve() == current
+        except OSError:
+            same = Path(root) == self.project_root
+        if same:
+            self.projects_status.setText(
+                'Switch to another project before removing this one.')
+            self.projects_status.setStyleSheet('color: #ffa726;')
+            return
+        reply = QMessageBox.question(
+            self, 'Remove Project',
+            f'Remove {root} from this install?\n\n'
+            'The folder itself is not deleted.',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        from settings import remove_project
+        remove_project(root)
+        self._load_projects_table()
+        self.projects_status.setText(f'Removed project: {root}')
+        self.projects_status.setStyleSheet('color: #00c853;')
 
     def _load_versions_table(self):
         config = load_apps_config()
@@ -5329,34 +5545,16 @@ class MainWindow(QMainWindow):
         logo_label.setObjectName('logo')
         sidebar_layout.addWidget(logo_label)
 
-        proj_label = QLabel(self.project_root.name)
-        proj_label.setAlignment(Qt.AlignCenter)
-        proj_label.setObjectName('projectName')
-        sidebar_layout.addWidget(proj_label)
+        self.project_combo = QComboBox()
+        self.project_combo.setObjectName('projectName')
+        self.project_combo.setCursor(Qt.PointingHandCursor)
+        self.project_combo.setToolTip('Switch project')
+        sidebar_layout.addWidget(self.project_combo)
 
         sidebar_layout.addSpacing(16)
 
         self.sidebar_buttons = []
         self.pages = QStackedWidget()
-
-        page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
-                        LightRigsPage, AssetExplorerPage, ProductionPage,
-                        RenderPage, PreviewPage,
-                        EnvVarsPage, SettingsPage, LogPage, HelpPage]
-        page_args = [
-            (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
-            (self.apps_config, self.pipeline_dir, self.project_root),
-            (self.project_root, self.apps_config, self.pipeline_dir),
-            (self.project_root, self.apps_config, self.pipeline_dir),
-            (self.project_root, self.apps_config, self.pipeline_dir),
-            (self.project_root, self.pipeline_dir),
-            (self.project_root, self.pipeline_dir, self.apps_config),
-            (self.project_root, self.pipeline_dir),
-            (self.env_vars,),
-            (self.project_root,),
-            (),
-            (),
-        ]
 
         SIDEBAR_RENDER_IDX = 7
         for i, (label, tooltip) in enumerate(SIDEBAR_ITEMS):
@@ -5377,12 +5575,9 @@ class MainWindow(QMainWindow):
                 sep.setStyleSheet('color: #444; margin: 4px 12px;')
                 sidebar_layout.addWidget(sep)
 
-            page = page_classes[i](*page_args[i])
-            self.pages.addWidget(page)
-            if label == 'Launch Apps':
-                self._launch_page = page
-            if label == 'Settings':
-                self._settings_page = page
+        self._create_pages()
+        self._sync_project_combo()
+        self.project_combo.activated.connect(self._on_project_combo)
 
         main_layout.addWidget(self.sidebar)
         main_layout.addWidget(self.pages, 1)
@@ -5399,6 +5594,119 @@ class MainWindow(QMainWindow):
         self.version_label = version_label
 
         self.sidebar_buttons[0].setChecked(True)
+
+    def _create_pages(self):
+        page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
+                        LightRigsPage, AssetExplorerPage, ProductionPage,
+                        RenderPage, PreviewPage,
+                        EnvVarsPage, SettingsPage, LogPage, HelpPage]
+        page_args = [
+            (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
+            (self.apps_config, self.pipeline_dir, self.project_root),
+            (self.project_root, self.apps_config, self.pipeline_dir),
+            (self.project_root, self.apps_config, self.pipeline_dir),
+            (self.project_root, self.apps_config, self.pipeline_dir),
+            (self.project_root, self.pipeline_dir),
+            (self.project_root, self.pipeline_dir, self.apps_config),
+            (self.project_root, self.pipeline_dir),
+            (self.env_vars,),
+            (self.project_root,),
+            (),
+            (),
+        ]
+
+        while self.pages.count():
+            page = self.pages.widget(0)
+            self.pages.removeWidget(page)
+            page.deleteLater()
+
+        for i, (label, _tooltip) in enumerate(SIDEBAR_ITEMS):
+            page = page_classes[i](*page_args[i])
+            self.pages.addWidget(page)
+            if label == 'Launch Apps':
+                self._launch_page = page
+            if label == 'Settings':
+                self._settings_page = page
+
+    def _sync_project_combo(self):
+        from settings import list_projects
+        current = str(self.project_root)
+        self.project_combo.blockSignals(True)
+        self.project_combo.clear()
+        current_row = -1
+        for p in list_projects():
+            self.project_combo.addItem(p['name'], p['root'])
+            if Path(p['root']).resolve() == self.project_root.resolve():
+                current_row = self.project_combo.count() - 1
+        if current_row < 0:
+            self.project_combo.insertItem(0, self.project_root.name, current)
+            current_row = 0
+        self.project_combo.insertSeparator(self.project_combo.count())
+        self.project_combo.addItem('Manage projects…')
+        self.project_combo.setCurrentIndex(current_row)
+        self.project_combo.setToolTip(str(self.project_root))
+        self.project_combo.blockSignals(False)
+
+    def _on_project_combo(self, index):
+        if index == self.project_combo.count() - 1:
+            self._sync_project_combo()
+            for i, (label, _tooltip) in enumerate(SIDEBAR_ITEMS):
+                if label == 'Settings':
+                    self._switch_page(i)
+                    break
+            return
+        root = self.project_combo.itemData(index)
+        if root:
+            self.switch_project(root)
+        self._sync_project_combo()
+
+    def _running_page_threads(self):
+        running = []
+        for i in range(self.pages.count()):
+            page = self.pages.widget(i)
+            if page is None:
+                continue
+            for value in vars(page).values():
+                if isinstance(value, QThread) and value.isRunning():
+                    running.append(value)
+        return running
+
+    def switch_project(self, root):
+        root = Path(root).expanduser()
+        try:
+            root = root.resolve()
+        except OSError:
+            pass
+        if root == self.project_root.resolve():
+            return True
+        if self._update.busy:
+            QMessageBox.warning(
+                self, 'Update in Progress',
+                'Wait for the update to finish before switching projects.')
+            return False
+        if self._running_page_threads():
+            QMessageBox.warning(
+                self, 'Busy',
+                'Wait for the current application launch or render to '
+                'finish before switching projects.')
+            return False
+
+        from settings import set_active_project
+        set_active_project(str(root))
+        self.project_root = root
+        self.pipeline_dir = find_pipeline_dir()
+        self.env_vars = setup_environment(self.project_root, self.pipeline_dir)
+        if str(self.project_root) not in sys.path:
+            sys.path.insert(0, str(self.project_root))
+
+        idx = self.pages.currentIndex()
+        self._create_pages()
+        self._switch_page(idx)
+        self.setWindowTitle(f'MazeHub Pipeline - {self.project_root.name}')
+        self.status_bar.showMessage(f'Project Root: {self.project_root}')
+        self._sync_project_combo()
+        self.show_status(f'Switched to project: {self.project_root.name}')
+        return True
 
     def _switch_page(self, idx):
         self.pages.setCurrentIndex(idx)
@@ -5647,16 +5955,37 @@ def _load_styles(app, styles_dir):
         app.setStyleSheet(fallback)
 
 
+def _first_run_add_project():
+    while True:
+        box = QMessageBox()
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle('MazeHub')
+        box.setText(
+            'No project is configured for this MazeHub install yet.\n\n'
+            'Add an existing project folder to get started.'
+        )
+        add_btn = box.addButton('Add Existing Folder…', QMessageBox.AcceptRole)
+        box.addButton('Quit', QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() != add_btn:
+            return None
+        from PySide6.QtWidgets import QFileDialog
+        path = QFileDialog.getExistingDirectory(
+            None, 'Select MazeHub project folder', str(Path.home()))
+        if not path:
+            continue
+        candidate = Path(path).expanduser()
+        if not candidate.is_dir():
+            QMessageBox.warning(None, 'MazeHub', f'Not a directory: {candidate}')
+            continue
+        from settings import add_project, set_active_project
+        add_project(candidate)
+        set_active_project(str(candidate.resolve()))
+        return candidate.resolve()
+
+
 def main():
-    project_root = find_project_root()
-    pipeline_dir = project_root / 'pipeline'
     app_dir = _app_dir()
-
-    env_vars = setup_environment(project_root)
-    apps_config = load_apps_config()
-
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
 
     app = QApplication(sys.argv)
     app.setFont(QFont('Segoe UI', 10))
@@ -5668,6 +5997,19 @@ def main():
     log_stream = get_log_stream()
     sys.stdout = log_stream
     sys.stderr = log_stream
+
+    project_root = find_project_root()
+    if project_root is None:
+        project_root = _first_run_add_project()
+        if project_root is None:
+            return
+
+    pipeline_dir = find_pipeline_dir()
+    env_vars = setup_environment(project_root, pipeline_dir)
+    apps_config = load_apps_config()
+
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
     window = MainWindow(project_root, env_vars, apps_config, pipeline_dir)
     window.show()
