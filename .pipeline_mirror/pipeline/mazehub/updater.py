@@ -39,18 +39,69 @@ STALL_TIMEOUT_SECONDS = 45
 SIDECARS_KEY = 'sidecars'
 
 
+def _system_ca_pems():
+    enum = getattr(ssl, 'enum_certificates', None)
+    if enum is None:
+        return []
+    pems = []
+    for store_name in ('CA', 'ROOT'):
+        try:
+            entries = enum(store_name)
+        except OSError:
+            continue
+        for _encoding, cert in entries:
+            try:
+                if isinstance(cert, bytes) and b'-----BEGIN' in cert[:64]:
+                    pems.append(cert.decode('ascii'))
+                else:
+                    pems.append(ssl.DER_cert_to_PEM_cert(cert))
+            except (ValueError, TypeError, ssl.SSLError):
+                continue
+    return pems
+
+
 def _ssl_context():
     env_ca = os.environ.get('SSL_CERT_FILE')
     if env_ca and os.path.isfile(env_ca):
         return ssl.create_default_context()
+    ctx = None
     try:
         import certifi
         cafile = certifi.where()
         if cafile and os.path.isfile(cafile):
-            return ssl.create_default_context(cafile=cafile)
+            ctx = ssl.create_default_context(cafile=cafile)
     except Exception:
-        pass
-    return ssl.create_default_context()
+        ctx = None
+    if ctx is None:
+        ctx = ssl.create_default_context()
+    for pem in _system_ca_pems():
+        try:
+            ctx.load_verify_locations(cadata=pem)
+        except (ssl.SSLError, ValueError):
+            continue
+    return ctx
+
+
+def _ssl_debug():
+    bits = []
+    env_ca = os.environ.get('SSL_CERT_FILE')
+    if env_ca:
+        bits.append(f'SSL_CERT_FILE={env_ca}'
+                    f'({"ok" if os.path.isfile(env_ca) else "missing"})')
+    else:
+        bits.append('SSL_CERT_FILE=unset')
+    try:
+        import certifi
+        cafile = certifi.where()
+        bits.append('certifi=' + (
+            'ok' if os.path.isfile(cafile) else f'missing ({cafile})'))
+    except Exception as exc:
+        bits.append(f'certifi=unavailable ({exc})')
+    try:
+        bits.append(f'CA certs={len(_ssl_context().get_ca_certs())}')
+    except Exception as exc:
+        bits.append(f'CA certs=error ({exc})')
+    return '; '.join(bits)
 
 
 def _net_error(prefix, exc):
@@ -58,7 +109,8 @@ def _net_error(prefix, exc):
     if 'CERTIFICATE' in str(exc).upper():
         text += (' - SSL certificate could not be verified. Check the '
                  'system clock, a proxy or firewall inspecting TLS, or '
-                 'update manually from the GitHub releases page.')
+                 'update manually from the GitHub releases page.'
+                 f' TLS client info: {_ssl_debug()}')
     return text
 
 
