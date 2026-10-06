@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import re
 import sys
 import tempfile
 import traceback
@@ -14,6 +15,30 @@ def _debug_log(msg):
         pass
 
 
+def _version_key(text):
+    parts = []
+    for chunk in str(text or '').strip().lstrip('vV').replace('-', '.').replace('+', '.').split('.'):
+        digits = ''
+        for ch in chunk:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        parts.append(int(digits) if digits else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:4])
+
+
+def _tree_version(path):
+    try:
+        text = (path / 'pipeline_app.py').read_text(encoding='utf-8', errors='ignore')
+    except OSError:
+        return None
+    match = re.search(r'APP_VERSION\s*=\s*["\']([^"\']+)["\']', text)
+    return match.group(1) if match else None
+
+
 def _find_app_dir():
     this_dir = Path(__file__).resolve().parent
     _debug_log(f"this_dir: {this_dir}")
@@ -25,24 +50,35 @@ def _find_app_dir():
         _debug_log(f"exe_dir: {exe_dir}")
         _debug_log(f"meipass: {meipass}")
 
-        candidates = []
+        candidates = [
+            exe_dir / 'mazehub',
+            exe_dir / 'pipeline' / 'mazehub',
+            exe_dir / '_internal' / 'pipeline' / 'mazehub',
+            exe_dir / '_internal' / 'mazehub',
+            exe_dir,
+        ]
         if meipass:
             candidates += [
                 meipass / 'pipeline' / 'mazehub',
                 meipass / 'mazehub',
             ]
-        candidates += [
-            exe_dir / '_internal' / 'pipeline' / 'mazehub',
-            exe_dir / 'pipeline' / 'mazehub',
-            exe_dir / 'mazehub',
-            exe_dir,
-        ]
 
+        valid = []
         for p in candidates:
             _debug_log(f"checking: {p} exists={p.exists()}")
             if p.exists() and (p / 'pipeline_app.py').exists() and (p / 'pipeline_gui.py').exists():
-                _debug_log(f"FOUND app_dir: {p}")
-                return p
+                valid.append(p)
+
+        best = None
+        best_version = None
+        for p in valid:
+            version = _version_key(_tree_version(p))
+            if best is None or version > best_version:
+                best = p
+                best_version = version
+        if best is not None:
+            _debug_log(f"FOUND app_dir: {best}")
+            return best
     else:
         candidates = [
             this_dir / 'pipeline' / 'mazehub',

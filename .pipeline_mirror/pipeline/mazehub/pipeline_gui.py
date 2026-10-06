@@ -5895,6 +5895,14 @@ class MainWindow(QMainWindow):
                 'Close any programs using pipeline files and try again.'
             )
             return
+        if result.failed:
+            QMessageBox.warning(
+                self, 'Update',
+                'Update applied with errors:\n\n'
+                f'{result.summary()}\n\n'
+                'MazeHub will restart to finish the update. Close any '
+                'programs using pipeline files if problems persist.'
+            )
         if result.exe_action == 'staged':
             try:
                 helper = updater.write_update_helper(
