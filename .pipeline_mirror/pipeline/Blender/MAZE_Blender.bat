@@ -3,6 +3,13 @@ setlocal
 
 set "PIPELINE_DIR=%MAZE_PIPELINE%"
 set "SCRIPTS_DIR=%PIPELINE_DIR%\Blender\scripts"
+set "MAZE_STARTUP=%SCRIPTS_DIR%\startup.py"
+
+if not "%MAZE_PROJECT_PIPELINE%"=="" (
+    if exist "%MAZE_PROJECT_PIPELINE%\Blender\scripts\startup.py" (
+        set "MAZE_STARTUP=%MAZE_PROJECT_PIPELINE%\Blender\scripts\startup.py"
+    )
+)
 
 if "%MAZE_CONTEXT_TYPE%"=="shot" (
     set "JOB=%MAZE_CONTEXT_PATH%\blender"
@@ -19,8 +26,15 @@ echo Launching Blender for %MAZE_CONTEXT_TYPE%: %MAZE_CONTEXT_NAME%
 echo START_FRAME=%START_FRAME%  END_FRAME=%END_FRAME%  FRAME_RATE=%FRAME_RATE%
 
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
+if not "%MAZE_PROJECT_PIPELINE%"=="" (
+    if exist "%MAZE_PROJECT_PIPELINE%\OCIO\OCIO_set.bat" (
+        call "%MAZE_PROJECT_PIPELINE%\OCIO\OCIO_set.bat"
+    ) else if exist "%MAZE_PROJECT_PIPELINE%\OCIO\BU_nov2024_config.ocio" (
+        set "OCIO=%MAZE_PROJECT_PIPELINE%\OCIO\BU_nov2024_config.ocio"
+    )
+)
 
-set "SAFE_SCRIPT=%SCRIPTS_DIR:\=/%\startup.py"
+set "SAFE_SCRIPT=%MAZE_STARTUP:\=/%"
 
 set "BLEND_FILE=%~1"
 

@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 
 
 def _get_display_name():
@@ -316,12 +316,15 @@ def setup_environment(project_root, pipeline_dir=None):
     root = str(Path(project_root))
     ROOT_VAR = 'MAZE_PROJECT_ROOT'
     ref = _env_ref(ROOT_VAR)
+    project_pipeline = Path(root) / 'pipeline'
 
     ref_vars = {
         ROOT_VAR: root,
         'MZE': root,
         'MAZE_PROJECT': Path(root).name,
         'MAZE_PIPELINE': str(Path(pipeline_dir)),
+        'MAZE_PROJECT_PIPELINE': (
+            str(project_pipeline) if project_pipeline.is_dir() else ''),
         'MAZE_ASSETS': f'{ref}/asset',
         'MAZE_SEQUENCES': f'{ref}/sequence',
         'MAZE_ONSET': f'{ref}/onset',
@@ -362,11 +365,14 @@ def build_context_env(context, project_root, pipeline_dir=None):
     if pipeline_dir is None:
         pipeline_dir = find_pipeline_dir()
     ctx_path = Path(context['path'])
+    project_pipeline = Path(project_root) / 'pipeline'
     env = {
         'MAZE_CONTEXT_TYPE': context['type'],
         'MAZE_CONTEXT_NAME': context['name'],
         'MAZE_CONTEXT_PATH': str(ctx_path),
         'PIPELINE_DIR': str(Path(pipeline_dir)),
+        'MAZE_PROJECT_PIPELINE': (
+            str(project_pipeline) if project_pipeline.is_dir() else ''),
         'START_FRAME': '',
         'END_FRAME': '',
         'FRAME_RATE': '',

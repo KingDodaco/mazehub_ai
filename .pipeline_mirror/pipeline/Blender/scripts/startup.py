@@ -44,6 +44,12 @@ def setup_scene():
         if scripts_dir not in sys.path:
             sys.path.insert(0, scripts_dir)
 
+    project_pipeline = os.environ.get("MAZE_PROJECT_PIPELINE", "")
+    if project_pipeline:
+        project_scripts = os.path.join(project_pipeline, "Blender", "scripts")
+        if os.path.isdir(project_scripts) and project_scripts not in sys.path:
+            sys.path.insert(0, project_scripts)
+
     print(f"Blender launched for {context_type}: {context_name}")
 
 

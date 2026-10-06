@@ -2448,7 +2448,8 @@ ENV_DESCRIPTIONS = {
     'MZE': 'Root directory of the project (short alias)',
     'MAZE_PROJECT_ROOT': 'Root directory of the project',
     'MAZE_PROJECT': 'Project folder name',
-    'MAZE_PIPELINE': 'Pipeline tools directory',
+    'MAZE_PIPELINE': 'Pipeline tools directory (main install)',
+    'MAZE_PROJECT_PIPELINE': 'Project-level pipeline tools (overrides main)',
     'MAZE_ASSETS': 'Asset storage directory',
     'MAZE_SEQUENCES': 'Shot sequences directory',
     'MAZE_ONSET': 'On-set data directory',
@@ -2756,9 +2757,16 @@ class PreviewPage(QWidget):
             self.project_root,
         )
         launch_env.update(ctx_env)
-        launch_env['HOUDINI_PATH'] = str(self.pipeline_dir / 'Houdini') + ';&;' + launch_env.get('HOUDINI_PATH', '')
+        houdini_roots = []
+        project_houdini = Path(self.project_root) / 'pipeline' / 'Houdini'
+        if project_houdini.is_dir():
+            houdini_roots.append(str(project_houdini))
+        houdini_roots.append(str(self.pipeline_dir / 'Houdini'))
+        launch_env['HOUDINI_PATH'] = ';&;'.join(houdini_roots) + ';&;' + launch_env.get('HOUDINI_PATH', '')
 
-        ocio_config = self.pipeline_dir / 'OCIO' / 'BU_nov2024_config.ocio'
+        ocio_config = Path(self.project_root) / 'pipeline' / 'OCIO' / 'BU_nov2024_config.ocio'
+        if not ocio_config.exists():
+            ocio_config = self.pipeline_dir / 'OCIO' / 'BU_nov2024_config.ocio'
         if ocio_config.exists():
             launch_env['OCIO'] = str(ocio_config)
             launch_env['OCIO_ACTIVE_DISPLAYS'] = 'arri709 - Display:sRGB - Display'
@@ -3380,19 +3388,24 @@ class HelpPage(QWidget):
         <p>Everything is organised by <b>Shots</b> (like SH010, SH020), <b>Assets</b> (characters, props), and <b>Light Rigs</b> (HDRI setups). MazeHub makes sure each app opens in the right place with the right settings, so you don't have to hunt for files.</p>
         """, expanded=True)
 
-        self._add_section(layout, '2 — Home', """
+        self._add_section(layout, '2 — Projects & Extra Tools', """
+        <p>One MazeHub install can open many projects. The project name at the top of the <b>sidebar</b> is a drop-down — pick another project and every page switches to it instantly. You can also manage projects in <b>Settings → Projects</b>: <b>Open</b> (or double-click) switches, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh project, <b>Remove</b> unregisters one (the folder is never deleted). On the very first launch MazeHub simply asks you to pick a project folder.</p>
+        <p><b>Project-level pipeline (extra plugins/tools):</b> if a project needs its own plugins or tools, create a <code>pipeline</code> folder inside it, mirroring the install layout — e.g. <code>MyProject\\pipeline\\Maya\\scripts</code>, <code>MyProject\\pipeline\\Houdini\\Packages</code>, <code>MyProject\\pipeline\\Nuke\\plugins</code>, <code>MyProject\\pipeline\\Blender\\scripts</code>. When MazeHub launches an app it searches <b>the project's pipeline folder first, then the main install folder</b>, so a file in the project overrides the same file in the main pipeline. A project OCIO config (<code>pipeline\\OCIO\\OCIO_set.bat</code> or <code>BU_nov2024_config.ocio</code>) overrides the studio one. The folder is fully optional — MazeHub never creates or deletes it — and executables/launchers always come from the install.</p>
+        """)
+
+        self._add_section(layout, '3 — Home', """
         <p>Your landing page. At the top you see how many shots and assets you have and how much is done overall.</p>
         <p><b>Quick Launch</b> — click a button to open an app quickly. The app launches with the last used version you selected. <b>Recent Files</b> — double-click any file you opened recently to jump straight back in. Right-click to show it in Windows Explorer or remove it from the list.</p>
         """)
 
-        self._add_section(layout, '3 — Launching Apps', """
+        self._add_section(layout, '4 — Launching Apps', """
         <p>Want to work on a specific shot, asset or light rig? Choose <b>Shot</b>, <b>Asset</b> or <b>Light Rig</b> at the top, pick the name from the list, then click the app you need.</p>
         <p>MazeHub opens the app with that context already set as the working area, with the correct frame range and colour settings. You can also choose <b>None</b> to just open an app without a context.</p>
         <p><b>Version Selection:</b> Apps with multiple versions show a small version button on the right of the launch button. Click it to choose which version to launch. The default version is set in Settings under Software Versions.</p>
         <p>The file list below shows you what's already in that folder and lets you open a file directly.</p>
         """)
 
-        self._add_section(layout, '4 — Shots & Assets', """
+        self._add_section(layout, '5 — Shots & Assets', """
         <p>See all your shots and assets in a table with a preview image, progress and basic info. Click a row to see the files inside that shot/asset.</p>
         <p><b>New Shot / New Asset</b> — give it a name, frame range and description. MazeHub creates all the folders you need.<br>
         <b>Edit</b> — change the name or frame settings.<br>
@@ -3400,7 +3413,7 @@ class HelpPage(QWidget):
         Double-click a file below to open it in the right app.</p>
         """)
 
-        self._add_section(layout, '5 — Light Rigs', """
+        self._add_section(layout, '6 — Light Rigs', """
         <p>Manage your HDRI lighting setups. Each light rig can store an HDRI, photogrammetry, USD scene, Nuke script and Houdini scene.</p>
         <p><b>New Light Rig</b> — create a new light rig with name, date, time of day and description. Browse for files to associate with it.<br>
         <b>Edit</b> — modify an existing light rig's settings and files.<br>
@@ -3408,28 +3421,29 @@ class HelpPage(QWidget):
         <p><b>Using as Context:</b> When launching apps, you can select "Light Rig" as the context type. This sets the app's working directory to the light rig folder and exposes light rig file paths as environment variables.</p>
         """)
 
-        self._add_section(layout, '6 — Production Tracking', """
+        self._add_section(layout, '7 — Production Tracking', """
         <p>Keep track of where everything is. There are two tabs: <b>Shots</b> and <b>Assets</b>.</p>
         <p>Each column is a task - for shots that's things like Animation, Lighting, Compositing; for assets it's Modelling, Texturing, Lookdev, etc. Colours show the state: red = Not started, amber = Work in progress, blue = Pending review, green = Finished, grey = Not applicable.</p>
         <p><b>To update:</b> right-click a task cell and pick a new status. The progress bars at the top update automatically.</p>
         """)
 
-        self._add_section(layout, '7 — Rendering', """
+        self._add_section(layout, '8 — Rendering', """
         <p>Render your USD scenes without opening Houdini.</p>
         <p><b>How to:</b> pick a Shot, pick the USD file, choose a version (it suggests the next one), select the Houdini version (22.0 or 21.0), choose Karma XPU or CPU, tick the passes you need, set the frame range and press <b>Render Selected Passes</b>.</p>
         <p>You'll see progress for each frame and pass, with time estimates. You can pause or cancel at any time.</p>
         """)
 
-        self._add_section(layout, '8 — Preview', """
+        self._add_section(layout, '9 — Preview', """
         <p>Want to check a render? Pick a shot and MazeHub finds all the image sequences and videos for you.</p>
         <p>They're grouped by app, name and version. Double-click or press <b>Open in MPlay</b> to view them. Right-click to show the files in Windows Explorer.</p>
         """)
 
-        self._add_section(layout, '9 — Environment Info', """
+        self._add_section(layout, '10 — Environment Info', """
         <p>This page is just for reference. It shows the paths and shot settings MazeHub sets up for your apps (like where to find files and what frame range you're on). You don't need to change anything here - it's there if you need to check what MazeHub is doing behind the scenes.</p>
         """)
 
-        self._add_section(layout, '10 — Settings', """
+        self._add_section(layout, '11 — Settings', """
+        <p><b>Projects:</b> every project this install can open. <b>Open</b> (or double-click) switches to it, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh data-only project, <b>Remove</b> unregisters a project (the folder itself is never deleted).</p>
         <p><b>Husk Render Binary:</b> Path to the husk executable for headless USD rendering. Usually found automatically. If not, use Browse or Auto-Detect.</p>
         <p><b>Software Versions:</b> manage all software versions and their executable paths. For each app you can:<br>
         &bull; <b>Add Version</b> — provide a version key (e.g. 23.0), display label (e.g. Houdini 23.0), and browse for the .exe<br>
@@ -3445,14 +3459,14 @@ class HelpPage(QWidget):
         <p><b>Repair File Structure:</b> if folders are missing, click this to recreate them.</p>
         """)
 
-        self._add_section(layout, '11 — Playblasts & Flipbooks (Houdini / Maya / Nuke)', """
+        self._add_section(layout, '12 — Playblasts & Flipbooks (Houdini / Maya / Nuke)', """
         <p><b>Houdini:</b> open a shot, make a flipbook. It saves to the shot's flipbooks folder. Then in MPlay click <b>MAZE > Send to Dailies</b>, add a comment and it will be posted to Teams with your name.</p>
         <p><b>Maya:</b> open a shot, then <b>MAZE > Playblast</b>. Choose a comment and it renders a playblast and posts it for you.</p>
         <p><b>Nuke:</b> use <b>MAZE > Playblast</b> in the top menu or the Nodes toolbar to create a flipbook node, set the frame range and press <b>Create Flipbook</b>. It renders and posts to Teams. Make sure your script is saved first.</p>
         <p>The video needs to be in your project folder so Teams can link to it.</p>
         """)
 
-        self._add_section(layout, '12 — Tips', """
+        self._add_section(layout, '13 — Tips', """
         <p><b>No preview?</b> Try refreshing the page or check you picked the right shot.<br>
         <b>Can't post to Teams?</b> Make sure your scene/script is saved inside the project and that the Teams links are pasted in Settings.<br>
         <b>Houdini menu not showing?</b> Restart Houdini through MazeHub.<br>

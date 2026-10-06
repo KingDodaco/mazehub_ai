@@ -80,6 +80,11 @@ else:
 
 
 def _plugin_path():
+    project_pipeline = os.environ.get("MAZE_PROJECT_PIPELINE", "")
+    if project_pipeline:
+        project_path = os.path.join(project_pipeline, "Maya", "scripts", PLUGIN_NAME)
+        if os.path.isfile(project_path):
+            return project_path
     pipeline = os.environ.get("MAZE_PIPELINE", "")
     if pipeline:
         return os.path.join(pipeline, "Maya", "scripts", PLUGIN_NAME)

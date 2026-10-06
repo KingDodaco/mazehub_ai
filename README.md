@@ -48,13 +48,18 @@ project_root/
   mazehub/                # Per-project shared settings
     shared_settings.json
   onset/
+  pipeline/               # Optional: project-specific plugins/tools (see Projects)
   rnd/
   sequence/               # Shot directories
 ```
 
-Projects contain **data only** — pipeline tools always come from the install
-folder. Older projects that still contain a `pipeline/` folder keep working;
-delete it once you no longer need the legacy copy.
+Projects contain **data only** by default — pipeline tools always come from
+the install folder. A project may optionally carry a `pipeline/` folder with
+its own extras (project wins over the install, see
+[Projects](#projects)); MazeHub never creates or deletes it. Legacy projects
+that still contain a full `pipeline/` copy are treated the same way — their
+stale files now shadow the install, so trim such a folder down to the extras
+you actually override, or delete it.
 
 ## Installation
 
@@ -94,6 +99,26 @@ active project are stored in `~/.config/mazehub/projects.json`.
 
 Resolution order: `--project` flag → `MAZE_PROJECT_ROOT` → active project
 in the registry → first-launch folder picker.
+
+### Project pipeline (optional)
+
+A project can ship its own plugins and tools in `<project>/pipeline/`,
+mirroring the install layout:
+
+- `pipeline/Houdini/` (+ `Packages/`) — Houdini scripts and packages
+- `pipeline/Maya/scripts/` (+ `123.py` entry) — Maya scripts
+- `pipeline/Nuke/plugins/` — Nuke plugins
+- `pipeline/Blender/scripts/` (+ `startup.py`) — Blender scripts
+- `pipeline/Substance/` — Substance Painter plugins
+- `pipeline/OCIO/` — `OCIO_set.bat` or `BU_nov2024_config.ocio` config override
+
+When MazeHub launches an app, every search path lists the **project folder
+first, then the install folder**, so a project file overrides the same file
+in the main pipeline. A project OCIO config replaces the studio one. Only
+scripts/plugins/configs are overlaid — executables, launcher scripts and
+binaries always come from the install. The folder is optional; when present
+`MAZE_PROJECT_PIPELINE` points at it, otherwise the variable is empty and
+behaviour is identical to a plain project.
 
 ## Usage
 
@@ -226,6 +251,7 @@ MazeHub sets the following environment variables when launched:
 | `MZE` | Alias for `MAZE_PROJECT_ROOT` |
 | `MAZE_PROJECT` | Project folder name |
 | `MAZE_PIPELINE` | Path to the install folder's pipeline tools (not inside the project) |
+| `MAZE_PROJECT_PIPELINE` | Path to the project's optional `pipeline/` folder, or empty if none |
 | `MAZE_ASSETS` | Path to the asset directory |
 | `MAZE_SEQUENCES` | Path to the sequence directory |
 | `MAZE_ONSET` | Path to the onset directory |
@@ -250,9 +276,13 @@ When launching a DCC app with a context, additional variables are set:
 Each DCC app has a `.bat` launcher that:
 
 1. Sets project-specific environment variables
-2. Configures OCIO color management
+2. Configures OCIO color management (install config, then optional project override)
 3. Opens a file if one was selected (from file browser or recent files)
 4. Runs a startup script to configure the timeline
+
+Script/plugin search paths are built project-first
+(`<project>/pipeline/...` before `<install>/pipeline/...`) — see
+[Projects](#projects).
 
 ### Supported Applications
 
