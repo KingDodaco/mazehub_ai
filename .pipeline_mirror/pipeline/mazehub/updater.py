@@ -39,6 +39,9 @@ STALL_TIMEOUT_SECONDS = 45
 SIDECARS_KEY = 'sidecars'
 
 
+SERVER_AUTH_OID = '1.3.6.1.5.5.7.3.1'
+
+
 def _system_ca_pems():
     enum = getattr(ssl, 'enum_certificates', None)
     if enum is None:
@@ -47,14 +50,32 @@ def _system_ca_pems():
     for store_name in ('CA', 'ROOT'):
         try:
             entries = enum(store_name)
-        except OSError:
+        except (OSError, PermissionError):
             continue
-        for _encoding, cert in entries:
+        for entry in entries:
+            if not isinstance(entry, (tuple, list)) or len(entry) < 2:
+                continue
+            if len(entry) >= 3:
+                cert, encoding, trust = entry[0], entry[1], entry[2]
+                if encoding != 'x509_asn':
+                    continue
+                trusted = trust is True or (
+                    bool(trust) and SERVER_AUTH_OID in trust)
+                if not trusted:
+                    continue
+            else:
+                cert = entry[0]
+            if not isinstance(cert, (bytes, bytearray)):
+                cert = next(
+                    (v for v in entry
+                     if isinstance(v, (bytes, bytearray))), None)
+                if cert is None:
+                    continue
             try:
-                if isinstance(cert, bytes) and b'-----BEGIN' in cert[:64]:
-                    pems.append(cert.decode('ascii'))
+                if b'-----BEGIN' in cert[:64]:
+                    pems.append(bytes(cert).decode('ascii'))
                 else:
-                    pems.append(ssl.DER_cert_to_PEM_cert(cert))
+                    pems.append(ssl.DER_cert_to_PEM_cert(bytes(cert)))
             except (ValueError, TypeError, ssl.SSLError):
                 continue
     return pems
@@ -422,11 +443,13 @@ class UpdateLock:
 
 
 def _check_github(timeout):
+    context = _ssl_context()
     req = urllib.request.Request(GITHUB_LATEST_URL, headers=HTTP_HEADERS)
+    body = ''
     try:
         with urllib.request.urlopen(
-                req, timeout=timeout, context=_ssl_context()) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
+                req, timeout=timeout, context=context) as resp:
+            body = resp.read().decode('utf-8', 'replace')
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
@@ -434,8 +457,12 @@ def _check_github(timeout):
             f'GitHub API error {exc.code} ({exc.reason})') from exc
     except urllib.error.URLError as exc:
         raise UpdateError(_net_error('Cannot reach GitHub', exc)) from exc
+    try:
+        data = json.loads(body)
     except ValueError as exc:
-        raise UpdateError(f'Bad GitHub response: {exc}') from exc
+        raise UpdateError(
+            f'Bad GitHub response: {exc}; body starts {body[:160]!r}'
+        ) from exc
     tag = str(data.get('tag_name') or '')
     version = tag.lstrip('vV')
     zip_url = ''
@@ -482,10 +509,17 @@ def _channel_zip_url(channel, zip_name):
 
 def _fetch_json_url(url, timeout):
     if url.startswith('http://') or url.startswith('https://'):
+        context = _ssl_context()
         req = urllib.request.Request(url, headers=HTTP_HEADERS)
         with urllib.request.urlopen(
-                req, timeout=timeout, context=_ssl_context()) as resp:
-            return json.loads(resp.read().decode('utf-8'))
+                req, timeout=timeout, context=context) as resp:
+            body = resp.read().decode('utf-8', 'replace')
+        try:
+            return json.loads(body)
+        except ValueError as exc:
+            raise UpdateError(
+                f'Bad manifest response: {exc}; body starts {body[:160]!r}'
+            ) from exc
     data = _load_json(url)
     if data is None:
         raise UpdateError(f'Cannot read manifest: {url}')
