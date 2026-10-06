@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import re
+import shutil
 import sys
 import tempfile
 import traceback
@@ -39,6 +40,49 @@ def _tree_version(path):
     return match.group(1) if match else None
 
 
+def _pick_app_dir(candidates):
+    valid = []
+    for p in candidates:
+        _debug_log(f"checking: {p} exists={p.exists()}")
+        if p.exists() and (p / 'pipeline_app.py').exists() and (p / 'pipeline_gui.py').exists():
+            valid.append(p)
+    best = None
+    best_version = None
+    for p in valid:
+        version = _version_key(_tree_version(p))
+        if best is None or version > best_version:
+            best = p
+            best_version = version
+    return best
+
+
+def _materialize_install(exe_dir, meipass):
+    src = meipass / 'pipeline'
+    if not src.is_dir() or not (src / 'mazehub').is_dir():
+        return False
+    preserve = {'mazehub/apps.json', 'mazehub/styles.qss', 'mazehub/icon.png'}
+
+    def _copy(s, d):
+        if s.is_dir():
+            d.mkdir(parents=True, exist_ok=True)
+            for child in s.iterdir():
+                _copy(child, d / child.name)
+            return
+        rel = d.relative_to(exe_dir).as_posix()
+        if rel in preserve and d.exists():
+            return
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(s, d)
+
+    try:
+        _copy(src, exe_dir)
+        _debug_log(f"Materialized bundled pipeline into {exe_dir}")
+        return True
+    except OSError as exc:
+        _debug_log(f"Materialize failed: {exc}")
+        return False
+
+
 def _find_app_dir():
     this_dir = Path(__file__).resolve().parent
     _debug_log(f"this_dir: {this_dir}")
@@ -63,19 +107,15 @@ def _find_app_dir():
                 meipass / 'mazehub',
             ]
 
-        valid = []
-        for p in candidates:
-            _debug_log(f"checking: {p} exists={p.exists()}")
-            if p.exists() and (p / 'pipeline_app.py').exists() and (p / 'pipeline_gui.py').exists():
-                valid.append(p)
-
-        best = None
-        best_version = None
-        for p in valid:
-            version = _version_key(_tree_version(p))
-            if best is None or version > best_version:
-                best = p
-                best_version = version
+        best = _pick_app_dir(candidates)
+        if best is not None and meipass:
+            try:
+                best.resolve().relative_to(meipass.resolve())
+                under_bundle = True
+            except ValueError:
+                under_bundle = False
+            if under_bundle and _materialize_install(exe_dir, meipass):
+                best = _pick_app_dir(candidates) or best
         if best is not None:
             _debug_log(f"FOUND app_dir: {best}")
             return best

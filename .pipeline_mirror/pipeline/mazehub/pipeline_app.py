@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.8.5"
+APP_VERSION = "0.8.6"
 
 
 def _get_display_name():
@@ -162,7 +162,15 @@ def _app_dir():
 def find_pipeline_dir():
     app_dir = _app_dir()
     if app_dir.name == 'mazehub':
-        return app_dir.parent
+        app_dir = app_dir.parent
+    if getattr(sys, 'frozen', False):
+        meipass = Path(getattr(sys, '_MEIPASS', '')) if getattr(sys, '_MEIPASS', '') else None
+        if meipass:
+            try:
+                app_dir.resolve().relative_to(meipass.resolve())
+                return Path(sys.executable).resolve().parent
+            except ValueError:
+                pass
     return app_dir
 
 

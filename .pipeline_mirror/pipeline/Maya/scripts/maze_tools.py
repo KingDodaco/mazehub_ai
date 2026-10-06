@@ -300,6 +300,19 @@ def _maya_compile_sequence(input_pattern, output, start_frame):
     raise RuntimeError(f"hffmpeg failed {input_pattern} -> {output} | last: {last_err} | input exists: {os.path.exists(ffmpeg_input.replace('%04d', f'{start_frame:04d}'))}")
 
 
+def _notify_post_failed(kind, detail):
+    print(f"Failed to post {kind}: {detail}")
+    try:
+        cmds.confirmDialog(
+            title=f"{kind} not posted",
+            message=(f"Saved to disk, but the Dailies post failed:\n\n{detail}\n\n"
+                     "Check Settings -> webhooks (Dailies URL) and that the "
+                     "Power Automate flow is turned on."),
+            button=["OK"])
+    except Exception:
+        pass
+
+
 def _post_playblast(output, comment=""):
     import json, getpass, socket, datetime
     try:
@@ -372,7 +385,7 @@ def _post_playblast(output, comment=""):
         if 200 <= r.status_code < 300:
             print("Posted to Teams")
             return True
-        print(f"Failed to post: {r.status_code} - {r.text}")
+        _notify_post_failed('Playblast', f'HTTP {r.status_code}: {r.text[:300]}')
         return False
     except Exception:
         pass
@@ -384,7 +397,7 @@ def _post_playblast(output, comment=""):
             print("Posted to Teams")
             return True
     except Exception as e:
-        print(f"Failed to post: {e}")
+        _notify_post_failed('Playblast', str(e))
         return False
 
 
@@ -459,7 +472,7 @@ def _post_frame(output, comment=""):
         if 200 <= r.status_code < 300:
             print("Posted to Teams")
             return True
-        print(f"Failed to post: {r.status_code} - {r.text}")
+        _notify_post_failed('Frame', f'HTTP {r.status_code}: {r.text[:300]}')
         return False
     except Exception:
         pass
@@ -471,7 +484,7 @@ def _post_frame(output, comment=""):
             print("Posted to Teams")
             return True
     except Exception as e:
-        print(f"Failed to post: {e}")
+        _notify_post_failed('Frame', str(e))
         return False
 
 
@@ -568,6 +581,10 @@ def _do_playblast_frame(*args):
     except Exception as e:
         import traceback; traceback.print_exc()
         cmds.warning(f"Playblast frame failed: {e}")
+        try:
+            cmds.confirmDialog(title="Playblast Frame failed", message=str(e), button=["OK"])
+        except Exception:
+            pass
 
 
 def _do_playblast(*args):
@@ -647,6 +664,10 @@ def _do_playblast(*args):
     except Exception as e:
         import traceback; traceback.print_exc()
         cmds.warning(f"Playblast failed: {e}")
+        try:
+            cmds.confirmDialog(title="Playblast failed", message=str(e), button=["OK"])
+        except Exception:
+            pass
 
 
 def create_maze_menu():
