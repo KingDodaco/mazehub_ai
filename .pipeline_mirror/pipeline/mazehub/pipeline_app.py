@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.2"
 
 
 def _get_display_name():

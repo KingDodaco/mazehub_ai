@@ -5922,7 +5922,9 @@ class MainWindow(QMainWindow):
                 self, 'Updates',
                 f'Could not check for updates:\n\n{message}\n\n'
                 'Check your internet connection or the update channel '
-                'in Settings → Updates.'
+                'in Settings → Updates. If the message mentions an SSL '
+                'certificate, check the system clock or ask IT about '
+                'TLS-inspecting proxies.'
             )
 
     def _on_update_failed(self, message):

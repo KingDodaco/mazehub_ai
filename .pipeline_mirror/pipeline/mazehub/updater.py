@@ -4,6 +4,7 @@ import hashlib
 import os
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,29 @@ HTTP_HEADERS = {
 DOWNLOAD_CHUNK = 256 * 1024
 STALL_TIMEOUT_SECONDS = 45
 SIDECARS_KEY = 'sidecars'
+
+
+def _ssl_context():
+    env_ca = os.environ.get('SSL_CERT_FILE')
+    if env_ca and os.path.isfile(env_ca):
+        return ssl.create_default_context()
+    try:
+        import certifi
+        cafile = certifi.where()
+        if cafile and os.path.isfile(cafile):
+            return ssl.create_default_context(cafile=cafile)
+    except Exception:
+        pass
+    return ssl.create_default_context()
+
+
+def _net_error(prefix, exc):
+    text = f'{prefix}: {exc.reason}'
+    if 'CERTIFICATE' in str(exc).upper():
+        text += (' - SSL certificate could not be verified. Check the '
+                 'system clock, a proxy or firewall inspecting TLS, or '
+                 'update manually from the GitHub releases page.')
+    return text
 
 
 class UpdateError(Exception):
@@ -348,7 +372,8 @@ class UpdateLock:
 def _check_github(timeout):
     req = urllib.request.Request(GITHUB_LATEST_URL, headers=HTTP_HEADERS)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(
+                req, timeout=timeout, context=_ssl_context()) as resp:
             data = json.loads(resp.read().decode('utf-8'))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -356,8 +381,7 @@ def _check_github(timeout):
         raise UpdateError(
             f'GitHub API error {exc.code} ({exc.reason})') from exc
     except urllib.error.URLError as exc:
-        raise UpdateError(
-            f'Cannot reach GitHub: {exc.reason}') from exc
+        raise UpdateError(_net_error('Cannot reach GitHub', exc)) from exc
     except ValueError as exc:
         raise UpdateError(f'Bad GitHub response: {exc}') from exc
     tag = str(data.get('tag_name') or '')
@@ -407,7 +431,8 @@ def _channel_zip_url(channel, zip_name):
 def _fetch_json_url(url, timeout):
     if url.startswith('http://') or url.startswith('https://'):
         req = urllib.request.Request(url, headers=HTTP_HEADERS)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(
+                req, timeout=timeout, context=_ssl_context()) as resp:
             return json.loads(resp.read().decode('utf-8'))
     data = _load_json(url)
     if data is None:
@@ -446,8 +471,8 @@ def check_for_update(current_version, channel=None, timeout=12):
         raise UpdateError(
             f'HTTP {exc.code} while checking ({exc.reason})') from exc
     except urllib.error.URLError as exc:
-        raise UpdateError(
-            f'Cannot reach the update server: {exc.reason}') from exc
+        raise UpdateError(_net_error(
+            'Cannot reach the update server', exc)) from exc
     except Exception as exc:
         raise UpdateError(str(exc) or exc.__class__.__name__) from exc
     if info is None:
@@ -479,7 +504,8 @@ def download_file(url, dest, progress_cb=None, timeout=120,
                 _emit(progress_cb, 'download', copied, total, dest.name)
         return dest
     req = urllib.request.Request(url, headers={'User-Agent': 'MazeHub-Updater'})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(
+            req, timeout=timeout, context=_ssl_context()) as resp:
         total = int(resp.headers.get('Content-Length') or 0)
         sock = getattr(getattr(getattr(resp, 'fp', None), 'raw', None),
                        '_sock', None)

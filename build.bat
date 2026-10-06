@@ -60,6 +60,7 @@ echo Building %APP_NAME%...
     --collect-all PySide6 ^
     --collect-all numpy ^
     --collect-all PIL ^
+    --collect-all certifi ^
     --hidden-import pipeline_gui ^
     --hidden-import pipeline_app ^
     --hidden-import recent_files ^

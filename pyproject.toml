@@ -1,10 +1,11 @@
 [project]
 name = "mazehub-ai"
-version = "0.8.1"
+version = "0.8.2"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "certifi>=2024.2.2",
     "git-filter-repo>=2.47.0",
     "numpy>=1.24",
     "openexr>=3.2",
