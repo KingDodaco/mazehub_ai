@@ -17,18 +17,40 @@ except ImportError:
     urllib = None
 
 
+FLIPBOOK_DISPLAY = "arri709 - Display"
+FLIPBOOK_VIEW = "arri709 - View"
+
+
 def _get_mazehub_settings():
     settings = {}
-    settings_paths = [Path.home() / '.config' / 'mazehub' / 'user_settings.json']
-    project_root = os.environ.get('MAZE_PROJECT_ROOT')
-    if project_root:
-        settings_paths.append(Path(project_root) / 'pipeline' / 'mazehub' / 'shared_settings.json')
-    for settings_path in settings_paths:
+    candidates = []
+    pipeline = os.environ.get('MAZE_PIPELINE')
+    if pipeline:
+        candidates.append(Path(pipeline) / 'mazehub' / 'user_settings.json')
+    candidates.append(Path.home() / '.config' / 'mazehub' / 'user_settings.json')
+    for path in candidates:
         try:
-            with open(settings_path, 'r') as f:
+            with open(path, 'r') as f:
                 settings.update(json.load(f))
+            break
         except Exception:
             pass
+    shared = {}
+    project_root = os.environ.get('MAZE_PROJECT_ROOT')
+    if project_root:
+        for rel in (('pipeline', 'mazehub', 'shared_settings.json'),
+                    ('mazehub', 'shared_settings.json')):
+            try:
+                with open(Path(project_root).joinpath(*rel), 'r') as f:
+                    shared.update(json.load(f))
+            except Exception:
+                pass
+        settings.update(shared)
+    for key in ('teams_webhook_url', 'dailies_webhook_url',
+                'production_webhook_url'):
+        settings.pop(key, None)
+        if key in shared:
+            settings[key] = shared[key]
     return settings
 
 
@@ -368,14 +390,23 @@ def send_frame_to_dailies(node=None):
         tmp_dir = tempfile.mkdtemp(prefix="maze_frame_")
         tmp_png = os.path.join(tmp_dir, "frame.png")
 
+        ocio_node = nuke.nodes.OCIODisplay(name="MazeFrameOCIO")
+        ocio_node.setInput(0, viewer_input)
+        if ocio_node.knob("display"):
+            ocio_node["display"].setValue(FLIPBOOK_DISPLAY)
+        if ocio_node.knob("view"):
+            ocio_node["view"].setValue(FLIPBOOK_VIEW)
+
         write_node = nuke.nodes.Write(
             name="MazeFrameWrite",
             file=tmp_png.replace("\\", "/"),
             file_type="png"
         )
-        write_node.setInput(0, viewer_input)
+        write_node.setInput(0, ocio_node)
         if write_node.knob("create_directories"):
             write_node["create_directories"].setValue(True)
+        if write_node.knob("raw"):
+            write_node["raw"].setValue(True)
 
         try:
             nuke.execute(write_node, start=current_frame, end=current_frame, continueOnError=True)
@@ -385,6 +416,10 @@ def send_frame_to_dailies(node=None):
         finally:
             try:
                 write_node.knob("remove")()
+            except Exception:
+                pass
+            try:
+                ocio_node.knob("remove")()
             except Exception:
                 pass
 
@@ -523,9 +558,9 @@ def create_flipbook_sender_node():
         ocio_node.setInput(0, inp)
 
         if ocio_node.knob("display"):
-            ocio_node["display"].setValue("arri709 - Display")
+            ocio_node["display"].setValue(FLIPBOOK_DISPLAY)
         if ocio_node.knob("view"):
-            ocio_node["view"].setValue("arri709 - View")
+            ocio_node["view"].setValue(FLIPBOOK_VIEW)
 
         dirpath = os.path.dirname(script_path)
         flipdir = _ensure_flip_dir(script_path)

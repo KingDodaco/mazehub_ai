@@ -24,16 +24,34 @@ except ImportError:
 
 def get_mazehub_settings():
     settings = {}
-    settings_paths = [Path.home() / '.config' / 'mazehub' / 'user_settings.json']
-    project_root = os.environ.get('MAZE_PROJECT_ROOT')
-    if project_root:
-        settings_paths.append(Path(project_root) / 'pipeline' / 'mazehub' / 'shared_settings.json')
-    for settings_path in settings_paths:
+    candidates = []
+    pipeline = os.environ.get('MAZE_PIPELINE')
+    if pipeline:
+        candidates.append(Path(pipeline) / 'mazehub' / 'user_settings.json')
+    candidates.append(Path.home() / '.config' / 'mazehub' / 'user_settings.json')
+    for path in candidates:
         try:
-            with open(settings_path, 'r') as f:
+            with open(path, 'r') as f:
                 settings.update(json.load(f))
+            break
         except (OSError, ValueError):
             pass
+    shared = {}
+    project_root = os.environ.get('MAZE_PROJECT_ROOT')
+    if project_root:
+        for rel in (('pipeline', 'mazehub', 'shared_settings.json'),
+                    ('mazehub', 'shared_settings.json')):
+            try:
+                with open(Path(project_root).joinpath(*rel), 'r') as f:
+                    shared.update(json.load(f))
+            except (OSError, ValueError):
+                pass
+        settings.update(shared)
+    for key in ('teams_webhook_url', 'dailies_webhook_url',
+                'production_webhook_url'):
+        settings.pop(key, None)
+        if key in shared:
+            settings[key] = shared[key]
     return settings
 
 

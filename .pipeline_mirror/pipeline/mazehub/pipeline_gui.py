@@ -3390,7 +3390,7 @@ class HelpPage(QWidget):
 
         self._add_section(layout, '2 — Projects & Extra Tools', """
         <p>One MazeHub install can open many projects. The project name at the top of the <b>sidebar</b> is a drop-down — pick another project and every page switches to it instantly. You can also manage projects in <b>Settings → Projects</b>: <b>Open</b> (or double-click) switches, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh project, <b>Remove</b> unregisters one (the folder is never deleted). On the very first launch MazeHub simply asks you to pick a project folder.</p>
-        <p><b>Project-level pipeline (extra plugins/tools):</b> if a project needs its own plugins or tools, create a <code>pipeline</code> folder inside it, mirroring the install layout — e.g. <code>MyProject\\pipeline\\Maya\\scripts</code>, <code>MyProject\\pipeline\\Houdini\\Packages</code>, <code>MyProject\\pipeline\\Nuke\\plugins</code>, <code>MyProject\\pipeline\\Blender\\scripts</code>. When MazeHub launches an app it searches <b>the project's pipeline folder first, then the main install folder</b>, so a file in the project overrides the same file in the main pipeline. A project OCIO config (<code>pipeline\\OCIO\\OCIO_set.bat</code> or <code>BU_nov2024_config.ocio</code>) overrides the studio one. The folder is fully optional — MazeHub never creates or deletes it — and executables/launchers always come from the install.</p>
+        <p><b>Project-level pipeline (extra plugins/tools):</b> new projects come with an empty <code>pipeline</code> skeleton mirroring the install layout — e.g. <code>MyProject\\pipeline\\Maya\\scripts</code>, <code>MyProject\\pipeline\\Houdini\\Packages</code>, <code>MyProject\\pipeline\\Nuke\\plugins</code>, <code>MyProject\\pipeline\\Blender\\scripts</code> — drop your project-specific scripts or plugins there. When MazeHub launches an app it searches <b>the project's pipeline folder first, then the main install folder</b>, so a file in the project overrides the same file in the main pipeline. A project OCIO config (<code>pipeline\\OCIO\\OCIO_set.bat</code> or <code>BU_nov2024_config.ocio</code>) overrides the studio one. MazeHub creates the empty skeleton on project create or repair, never deletes it, and executables/launchers always come from the install.</p>
         """)
 
         self._add_section(layout, '3 — Home', """
@@ -4560,6 +4560,18 @@ class SettingsPage(QWidget):
         layout.addWidget(title)
         layout.addSpacing(16)
 
+        global_header = QLabel('Global settings')
+        global_header_font = QFont()
+        global_header_font.setPointSize(13)
+        global_header_font.setBold(True)
+        global_header.setFont(global_header_font)
+        layout.addWidget(global_header)
+        global_hint = QLabel(
+            'Per-device — the same for every project this install opens.')
+        global_hint.setObjectName('hint')
+        layout.addWidget(global_hint)
+        layout.addSpacing(8)
+
         projects_group = QGroupBox('Projects')
         projects_layout = QVBoxLayout(projects_group)
         projects_layout.addWidget(QLabel(
@@ -4611,43 +4623,6 @@ class SettingsPage(QWidget):
         projects_layout.addStretch()
         layout.addWidget(projects_group)
 
-        husk_group = QGroupBox('Husk Render Binary')
-        husk_layout = QVBoxLayout(husk_group)
-
-        husk_layout.addWidget(QLabel(
-            'Path to the husk executable for headless USD rendering.'
-        ))
-
-        husk_path_row = QHBoxLayout()
-        self.husk_path_input = QLineEdit()
-        self.husk_path_input.setPlaceholderText('Auto-detected from Houdini install...')
-        husk_path_row.addWidget(self.husk_path_input, 1)
-        self.husk_browse_btn = QPushButton('Browse')
-        self.husk_browse_btn.setCursor(Qt.PointingHandCursor)
-        self.husk_browse_btn.clicked.connect(self._browse_husk)
-        husk_path_row.addWidget(self.husk_browse_btn)
-        husk_layout.addLayout(husk_path_row)
-
-        husk_btn_row = QHBoxLayout()
-        self.husk_save_btn = QPushButton('Save')
-        self.husk_save_btn.setCursor(Qt.PointingHandCursor)
-        self.husk_save_btn.clicked.connect(self._save_husk_path)
-        husk_btn_row.addWidget(self.husk_save_btn)
-        self.husk_detect_btn = QPushButton('Auto-Detect')
-        self.husk_detect_btn.setCursor(Qt.PointingHandCursor)
-        self.husk_detect_btn.clicked.connect(self._detect_husk)
-        husk_btn_row.addWidget(self.husk_detect_btn)
-        husk_btn_row.addStretch()
-        husk_layout.addLayout(husk_btn_row)
-
-        self.husk_status = QLabel('')
-        self.husk_status.setWordWrap(True)
-        self.husk_status.setObjectName('hint')
-        husk_layout.addWidget(self.husk_status)
-
-        husk_layout.addStretch()
-        layout.addWidget(husk_group)
-
         versions_group = QGroupBox('Software Versions')
         versions_layout = QVBoxLayout(versions_group)
         versions_layout.addWidget(QLabel(
@@ -4697,6 +4672,43 @@ class SettingsPage(QWidget):
         versions_layout.addStretch()
         layout.addWidget(versions_group)
 
+        husk_group = QGroupBox('Husk Render Binary')
+        husk_layout = QVBoxLayout(husk_group)
+
+        husk_layout.addWidget(QLabel(
+            'Path to the husk executable for headless USD rendering.'
+        ))
+
+        husk_path_row = QHBoxLayout()
+        self.husk_path_input = QLineEdit()
+        self.husk_path_input.setPlaceholderText('Auto-detected from Houdini install...')
+        husk_path_row.addWidget(self.husk_path_input, 1)
+        self.husk_browse_btn = QPushButton('Browse')
+        self.husk_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.husk_browse_btn.clicked.connect(self._browse_husk)
+        husk_path_row.addWidget(self.husk_browse_btn)
+        husk_layout.addLayout(husk_path_row)
+
+        husk_btn_row = QHBoxLayout()
+        self.husk_save_btn = QPushButton('Save')
+        self.husk_save_btn.setCursor(Qt.PointingHandCursor)
+        self.husk_save_btn.clicked.connect(self._save_husk_path)
+        husk_btn_row.addWidget(self.husk_save_btn)
+        self.husk_detect_btn = QPushButton('Auto-Detect')
+        self.husk_detect_btn.setCursor(Qt.PointingHandCursor)
+        self.husk_detect_btn.clicked.connect(self._detect_husk)
+        husk_btn_row.addWidget(self.husk_detect_btn)
+        husk_btn_row.addStretch()
+        husk_layout.addLayout(husk_btn_row)
+
+        self.husk_status = QLabel('')
+        self.husk_status.setWordWrap(True)
+        self.husk_status.setObjectName('hint')
+        husk_layout.addWidget(self.husk_status)
+
+        husk_layout.addStretch()
+        layout.addWidget(husk_group)
+
         yt_group = QGroupBox('YouTube Screensaver')
         yt_layout = QVBoxLayout(yt_group)
 
@@ -4725,6 +4737,12 @@ class SettingsPage(QWidget):
         teams_group = QGroupBox('Teams Notifications')
         teams_layout = QVBoxLayout(teams_group)
         teams_layout.setSpacing(16)
+
+        teams_layout.addWidget(QLabel(
+            'Optional webhooks saved with this project (they switch when '
+            'you switch projects). Leave a field empty to turn that '
+            'notification off.'
+        ))
 
         # — Render Notifications —
         render_label = QLabel('Render Channel')
@@ -4805,10 +4823,8 @@ class SettingsPage(QWidget):
         self.production_status.setObjectName('hint')
         teams_layout.addWidget(self.production_status)
 
-        layout.addWidget(teams_group)
-
-        group = QGroupBox('File Structure')
-        group_layout = QVBoxLayout(group)
+        file_group = QGroupBox('File Structure')
+        group_layout = QVBoxLayout(file_group)
 
         group_layout.addWidget(QLabel(
             'Check the project directory structure and create any missing folders.'
@@ -4826,7 +4842,6 @@ class SettingsPage(QWidget):
         group_layout.addWidget(self.repair_result)
 
         group_layout.addStretch()
-        layout.addWidget(group)
 
         updates_group = QGroupBox('Updates')
         updates_layout = QVBoxLayout(updates_group)
@@ -4873,6 +4888,25 @@ class SettingsPage(QWidget):
 
         updates_layout.addStretch()
         layout.addWidget(updates_group)
+
+        layout.addSpacing(16)
+
+        project_header = QLabel('Project settings')
+        project_header_font = QFont()
+        project_header_font.setPointSize(13)
+        project_header_font.setBold(True)
+        project_header.setFont(project_header_font)
+        layout.addWidget(project_header)
+        project_hint = QLabel(
+            f'Saved with {self.project_root.name} in the project folder '
+            '(mazehub/shared_settings.json) — switching projects switches '
+            'these values.')
+        project_hint.setObjectName('hint')
+        layout.addWidget(project_hint)
+        layout.addSpacing(8)
+
+        layout.addWidget(teams_group)
+        layout.addWidget(file_group)
         layout.addStretch()
 
         self._load_husk_path()

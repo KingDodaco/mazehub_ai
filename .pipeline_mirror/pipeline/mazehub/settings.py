@@ -1,19 +1,68 @@
 import json
 import os
 import platform
+import shutil
 from pathlib import Path
 
-USER_SETTINGS_PATH = Path.home() / '.config' / 'mazehub' / 'user_settings.json'
-PROJECTS_PATH = Path.home() / '.config' / 'mazehub' / 'projects.json'
 
-# Keys that should be shared across machines within a project
+def _config_dir():
+    override = os.environ.get('MAZE_CONFIG_DIR')
+    if override:
+        return Path(override)
+    try:
+        from pipeline_app import _app_dir
+        return _app_dir()
+    except Exception:
+        return Path(__file__).resolve().parent
+
+
+CONFIG_DIR = _config_dir()
+USER_SETTINGS_PATH = CONFIG_DIR / 'user_settings.json'
+PROJECTS_PATH = CONFIG_DIR / 'projects.json'
+_LEGACY_CONFIG_DIR = Path.home() / '.config' / 'mazehub'
+
+_HOME_MIGRATED = False
+
+
+def migrate_home_config(force=False):
+    """One-time move of the legacy ~/.config/mazehub/{user_settings,projects}.json
+    into the install config dir. First writer wins: an existing install copy is
+    never overwritten, so every device converges on the shared files."""
+    global _HOME_MIGRATED
+    if _HOME_MIGRATED and not force:
+        return
+    _HOME_MIGRATED = True
+    for name in ('user_settings.json', 'projects.json'):
+        dest = CONFIG_DIR / name
+        legacy = _LEGACY_CONFIG_DIR / name
+        if dest.exists() or not legacy.exists():
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(legacy, dest)
+        except OSError:
+            pass
+
+
+migrate_home_config()
+
+# Keys scoped to the active project (stored in <project>/mazehub/shared_settings.json).
+# Everything else is global and stored with the install (CONFIG_DIR/user_settings.json)
+# so every device that can see the install sees the same settings.
 SHARED_KEYS = {
     'teams_webhook_url',
     'dailies_webhook_url',
     'production_webhook_url',
-    'husk_path',
-    'yt_screensaver_url',
 }
+
+# Formerly project-scoped; now global.
+_MIGRATED_GLOBAL_KEYS = ('husk_path', 'yt_screensaver_url')
+
+# Project settings files, oldest first so newer paths win on conflict.
+_SHARED_FILE_RELS = (
+    ('pipeline', 'mazehub', 'shared_settings.json'),
+    ('mazehub', 'shared_settings.json'),
+)
 
 
 def _get_project_root():
@@ -145,30 +194,82 @@ def _load_json(path):
 def _save_json(path, data):
     if path:
         _ensure_dir(path)
+        tmp = path.with_name(path.name + '.tmp')
         try:
-            with open(path, 'w') as f:
+            with open(tmp, 'w') as f:
                 json.dump(data, f, indent=2)
+            os.replace(tmp, path)
         except Exception:
-            pass
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _merge_settings(shared, user):
-    """Merge shared and user settings (shared takes precedence for shared keys)."""
-    result = {}
-    result.update(user)
-    result.update(shared)
+    """Merge shared and user settings (strict classification).
+
+    Project-scoped keys are read only from the project file and global keys
+    only from the user file, so webhook values left over in global settings
+    are ignored and project copies of global keys are ignored too.
+    """
+    result = {k: v for k, v in user.items() if k not in SHARED_KEYS}
+    result.update({k: v for k, v in shared.items() if k in SHARED_KEYS})
     return result
 
 
+_MIGRATED = False
+
+
+def migrate_legacy_settings(force=False):
+    """One-time cleanup: move husk_path/yt_screensaver_url from project
+    files into global per-device settings and strip them from projects."""
+    global _MIGRATED
+    if _MIGRATED and not force:
+        return
+    _MIGRATED = True
+    active = _get_project_root()
+    active_shared = {}
+    if active:
+        for rel in _SHARED_FILE_RELS:
+            active_shared.update(_load_json(active.joinpath(*rel)))
+    user = _load_json(USER_SETTINGS_PATH)
+    changed = False
+    for key in _MIGRATED_GLOBAL_KEYS:
+        value = active_shared.get(key)
+        if value and user.get(key) != value:
+            user[key] = value
+            changed = True
+    if changed:
+        _save_json(USER_SETTINGS_PATH, user)
+    roots = {str(active)} if active else set()
+    for entry in _load_registry()['projects']:
+        roots.add(entry['root'])
+    for root in roots:
+        for rel in _SHARED_FILE_RELS:
+            path = Path(root).joinpath(*rel)
+            data = _load_json(path)
+            if not data:
+                continue
+            removed = False
+            for key in _MIGRATED_GLOBAL_KEYS:
+                if key in data:
+                    del data[key]
+                    removed = True
+            if removed:
+                _save_json(path, data)
+
+
 def load_settings():
-    """Load all settings (shared + user)."""
+    """Load all settings (project + global)."""
+    migrate_legacy_settings()
     shared = _load_json(_get_shared_settings_path())
     user = _load_json(USER_SETTINGS_PATH)
     return _merge_settings(shared, user)
 
 
 def save_settings(settings):
-    """Save settings, splitting into shared and user files."""
+    """Save settings, splitting into project and global files."""
     shared = {k: v for k, v in settings.items() if k in SHARED_KEYS}
     user = {k: v for k, v in settings.items() if k not in SHARED_KEYS}
     existing_shared = _load_json(_get_shared_settings_path())

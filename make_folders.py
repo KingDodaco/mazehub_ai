@@ -24,7 +24,16 @@ NEW_PROJECT_DIRECTORY = ['asset',
                          'asset/prop',
                          'asset/misc',
 
-                         'DB/Resolve'
+                         'DB/Resolve',
+
+                         'pipeline',
+                         'pipeline/Houdini',
+                         'pipeline/Houdini/Packages',
+                         'pipeline/Maya/scripts',
+                         'pipeline/Nuke/plugins',
+                         'pipeline/Blender/scripts',
+                         'pipeline/Substance',
+                         'pipeline/OCIO',
                          ]
                          
 NEW_SHOT_LIST = ['_empty_shot_']

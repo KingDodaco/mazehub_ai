@@ -24,18 +24,21 @@ def _migrate_once(path, legacy):
 
 
 def _get_recent_files_path():
+    filename = f'recent_files_{getpass.getuser()}.json'
     try:
-        from settings import _get_project_root
+        from settings import CONFIG_DIR, _get_project_root
         project_root = _get_project_root()
         if project_root:
-            filename = f'recent_files_{getpass.getuser()}.json'
             path = project_root / 'mazehub' / filename
             legacy = project_root / 'pipeline' / 'mazehub' / filename
             _migrate_once(path, legacy)
             return path
+        path = CONFIG_DIR / filename
+        _migrate_once(path, _config_path('recent_files.json'))
+        return path
     except Exception:
         pass
-    return _config_path('recent_files.json')
+    return _config_path(filename)
 
 
 def _ensure_dir(path):
@@ -57,11 +60,16 @@ def load_recent_files():
 def save_recent_files(files):
     path = _get_recent_files_path()
     _ensure_dir(path)
+    tmp = path.with_name(path.name + '.tmp')
     try:
-        with open(path, 'w') as f:
+        with open(tmp, 'w') as f:
             json.dump(files, f, indent=2)
+        os.replace(tmp, path)
     except Exception:
-        pass
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def add_recent_file(path, app_name='', context_type='', context_name='', context_category='', app_key=''):

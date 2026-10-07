@@ -13,9 +13,12 @@ wheels/
 */MazeHub.exe
 publish/*
 
-# Per-user runtime data (never commit)
+# Install/runtime data (never commit)
 recent_files_*.json
 app_versions_*.json
+user_settings.json
+projects.json
+*.json.tmp
 
 # Update state
 .pipeline_mirror/pipeline/mazehub/.update/

@@ -313,6 +313,38 @@ def _notify_post_failed(kind, detail):
         pass
 
 
+def _get_dailies_webhook():
+    import json
+    settings = {}
+    candidates = []
+    pipeline = os.environ.get("MAZE_PIPELINE")
+    if pipeline:
+        candidates.append(os.path.join(pipeline, "mazehub", "user_settings.json"))
+    candidates.append(os.path.expanduser("~/.config/mazehub/user_settings.json"))
+    for settings_path in candidates:
+        try:
+            with open(settings_path, "r") as f:
+                settings.update(json.load(f))
+            break
+        except (OSError, ValueError):
+            pass
+    shared = {}
+    project_root = os.environ.get("MAZE_PROJECT_ROOT", "")
+    if project_root:
+        for rel in (("pipeline", "mazehub", "shared_settings.json"),
+                    ("mazehub", "shared_settings.json")):
+            try:
+                with open(os.path.join(project_root, *rel), "r") as f:
+                    shared.update(json.load(f))
+            except (OSError, ValueError):
+                pass
+        settings.update(shared)
+    settings.pop("dailies_webhook_url", None)
+    if "dailies_webhook_url" in shared:
+        settings["dailies_webhook_url"] = shared["dailies_webhook_url"]
+    return settings.get("dailies_webhook_url") or os.environ.get("MAZE_DAILIES_WEBHOOK") or ""
+
+
 def _post_playblast(output, comment=""):
     import json, getpass, socket, datetime
     try:
@@ -320,18 +352,10 @@ def _post_playblast(output, comment=""):
     except Exception as e:
         print(f"local_to_onedrive_link failed ({e})")
         onedrive_link = output.replace("\\", "/")
-    # settings
-    settings_path = os.path.expanduser("~/.config/mazehub/settings.json")
-    webhook_url = ""
-    try:
-        import json as _j
-        if os.path.exists(settings_path):
-            with open(settings_path) as f:
-                webhook_url = _j.load(f).get("dailies_webhook_url", "")
-    except Exception:
-        pass
+    webhook_url = _get_dailies_webhook()
     if not webhook_url:
-        webhook_url = os.environ.get("MAZE_DAILIES_WEBHOOK") or "https://defaultede29655d09742e4bbb5f38d427fbf.b8.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/cdf54a2c13564d2dba8edc95a608ff50/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PaCvoX6XhuOJC3S4ubnKnOQuuWZUasyKX52AdQp33OA"
+        print("Dailies webhook is not configured for this project in MazeHub settings.")
+        return False
     try:
         username = _get_display_name()
     except Exception:
@@ -408,17 +432,10 @@ def _post_frame(output, comment=""):
     except Exception as e:
         print(f"local_to_onedrive_link failed ({e})")
         onedrive_link = output.replace("\\", "/")
-    settings_path = os.path.expanduser("~/.config/mazehub/settings.json")
-    webhook_url = ""
-    try:
-        import json as _j
-        if os.path.exists(settings_path):
-            with open(settings_path) as f:
-                webhook_url = _j.load(f).get("dailies_webhook_url", "")
-    except Exception:
-        pass
+    webhook_url = _get_dailies_webhook()
     if not webhook_url:
-        webhook_url = os.environ.get("MAZE_DAILIES_WEBHOOK") or "https://defaultede29655d09742e4bbb5f38d427fbf.b8.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/cdf54a2c13564d2dba8edc95a608ff50/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PaCvoX6XhuOJC3S4ubnKnOQuuWZUasyKX52AdQp33OA"
+        print("Dailies webhook is not configured for this project in MazeHub settings.")
+        return False
     try:
         username = _get_display_name()
     except Exception:

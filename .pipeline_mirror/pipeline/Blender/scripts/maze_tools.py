@@ -318,16 +318,32 @@ def _render_playblast_frame(context, output):
 
 def _get_dailies_webhook():
     settings = {}
-    project_root = os.environ.get("MAZE_PROJECT_ROOT", "")
-    settings_paths = [os.path.expanduser("~/.config/mazehub/user_settings.json")]
-    if project_root:
-        settings_paths.append(os.path.join(project_root, "pipeline", "mazehub", "shared_settings.json"))
-    for settings_path in settings_paths:
+    candidates = []
+    pipeline = os.environ.get("MAZE_PIPELINE")
+    if pipeline:
+        candidates.append(os.path.join(pipeline, "mazehub", "user_settings.json"))
+    candidates.append(os.path.expanduser("~/.config/mazehub/user_settings.json"))
+    for settings_path in candidates:
         try:
             with open(settings_path, "r") as settings_file:
                 settings.update(json.load(settings_file))
+            break
         except (OSError, ValueError):
             pass
+    shared = {}
+    project_root = os.environ.get("MAZE_PROJECT_ROOT", "")
+    if project_root:
+        for rel in (("pipeline", "mazehub", "shared_settings.json"),
+                    ("mazehub", "shared_settings.json")):
+            try:
+                with open(os.path.join(project_root, *rel), "r") as settings_file:
+                    shared.update(json.load(settings_file))
+            except (OSError, ValueError):
+                pass
+        settings.update(shared)
+    settings.pop("dailies_webhook_url", None)
+    if "dailies_webhook_url" in shared:
+        settings["dailies_webhook_url"] = shared["dailies_webhook_url"]
     return os.environ.get("MAZE_DAILIES_WEBHOOK") or settings.get("dailies_webhook_url", "")
 
 

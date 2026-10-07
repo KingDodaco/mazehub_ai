@@ -48,18 +48,18 @@ project_root/
   mazehub/                # Per-project shared settings
     shared_settings.json
   onset/
-  pipeline/               # Optional: project-specific plugins/tools (see Projects)
+  pipeline/               # Empty skeleton for project-specific plugins/tools
   rnd/
   sequence/               # Shot directories
 ```
 
 Projects contain **data only** by default — pipeline tools always come from
-the install folder. A project may optionally carry a `pipeline/` folder with
-its own extras (project wins over the install, see
-[Projects](#projects)); MazeHub never creates or deletes it. Legacy projects
-that still contain a full `pipeline/` copy are treated the same way — their
-stale files now shadow the install, so trim such a folder down to the extras
-you actually override, or delete it.
+the install folder. MazeHub creates an empty `pipeline/` skeleton when a
+project is created or repaired; it stays empty until you add your own extras
+(project wins over the install, see [Projects](#projects)), and MazeHub never
+deletes it. Legacy projects that still contain a full `pipeline/` copy are
+treated the same way — their stale files now shadow the install, so trim such
+a folder down to the extras you actually override, or delete it.
 
 ## Installation
 
@@ -82,7 +82,9 @@ uv sync
 ## Projects
 
 An install can open any number of projects. Registered projects and the
-active project are stored in `~/.config/mazehub/projects.json`.
+active project are stored with the install in
+`<install>/mazehub/projects.json`, so every device that opens the same
+install shares one project list.
 
 - **Sidebar switcher** — the project name at the top of the sidebar switches
   projects live: all pages reload against the new project. Switching is
@@ -205,7 +207,7 @@ SHA-256 hashes).
   they are moved to `.update/trash/` instead.
 - Projects are outside the install folder and are never touched by updates.
   Recent files live with the project (`<project>/mazehub/`); app versions
-  live in `~/.config/mazehub/`.
+  and global settings live in the install folder (`<install>/mazehub/`).
 
 ### Settings
 
@@ -251,7 +253,7 @@ MazeHub sets the following environment variables when launched:
 | `MZE` | Alias for `MAZE_PROJECT_ROOT` |
 | `MAZE_PROJECT` | Project folder name |
 | `MAZE_PIPELINE` | Path to the install folder's pipeline tools (not inside the project) |
-| `MAZE_PROJECT_PIPELINE` | Path to the project's optional `pipeline/` folder, or empty if none |
+| `MAZE_PROJECT_PIPELINE` | Path to the project's `pipeline/` folder (empty skeleton by default), or empty if none |
 | `MAZE_ASSETS` | Path to the asset directory |
 | `MAZE_SEQUENCES` | Path to the sequence directory |
 | `MAZE_ONSET` | Path to the onset directory |
@@ -314,8 +316,9 @@ The recent files panel tracks recently opened files with:
 Recent files are stored per project in
 `<project>/mazehub/recent_files_<user>.json` (they follow the active
 project when you switch). With no project active they fall back to
-`~/.config/mazehub/recent_files.json`. Files from the legacy
-`<project>/pipeline/mazehub/` location are migrated automatically.
+`<install>/mazehub/recent_files_<user>.json`. Files from the legacy
+`<project>/pipeline/mazehub/` location and from the old
+`~/.config/mazehub/recent_files.json` fallback are migrated automatically.
 
 ## Building
 
@@ -377,11 +380,18 @@ machines live in `<project>/mazehub/shared_settings.json`. Projects that
 still store it at `<project>/pipeline/mazehub/shared_settings.json` are
 migrated automatically on first load (the legacy file is left in place).
 
-### Per-user config (`~/.config/mazehub/`)
+### Install config (`<install>/mazehub/`)
+
+Global (non-project) settings live with the install, so every device that
+can see the install sees the same configuration — including on a local
+network share. Files from the legacy `~/.config/mazehub/` location are
+migrated on first run (the legacy copy is left in place; the first device
+to run wins, so all devices converge on the install copies). Set
+`MAZE_CONFIG_DIR` to redirect this folder (used by the test suites).
 
 | File | Contents |
 |------|----------|
 | `projects.json` | Registered projects and the active project |
-| `user_settings.json` | Machine-local settings (update channel, toggles) |
-| `app_versions.json` | Last-used app versions |
-| `recent_files.json` | Recent files fallback (no active project) |
+| `user_settings.json` | Global settings (update channel, husk path, toggles) |
+| `app_versions_<user>.json` | Last-used app versions |
+| `recent_files_<user>.json` | Recent files fallback (no active project) |
