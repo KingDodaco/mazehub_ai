@@ -319,6 +319,30 @@ def _save_installed(install_root, data):
     _atomic_write_json(_state_dir(install_root) / 'installed_manifest.json', data)
 
 
+def exe_drift(install_root):
+    installed = load_installed(install_root)
+    if not installed:
+        return None
+    entry = None
+    for item in installed.get('files') or []:
+        if isinstance(item, dict) and item.get('path') == EXE_NAME:
+            entry = item
+            break
+    if not entry:
+        return None
+    exe = Path(install_root) / EXE_NAME
+    if not exe.is_file():
+        return None
+    try:
+        actual = sha256_file(exe)
+    except OSError:
+        return None
+    expected = entry.get('sha256')
+    if expected and actual != expected:
+        return expected, actual
+    return None
+
+
 def get_channel():
     try:
         from settings import get_setting
@@ -1104,6 +1128,7 @@ def write_update_helper(install_root, staged_exe, parent_pid):
     helper_path = helper_dir / 'update_helper.bat'
     install = _batch_quote(install_root)
     staging = _batch_quote(staged_exe.parent)
+    log = _batch_quote(helper_dir / 'update_helper.log')
     lines = [
         '@echo off',
         'setlocal',
@@ -1111,14 +1136,50 @@ def write_update_helper(install_root, staged_exe, parent_pid):
         f'set "STAGING={staging}"',
         f'set "PARENT_PID={int(parent_pid)}"',
         f'set "EXE={EXE_NAME}"',
+        f'set "LOG={log}"',
+        'call :log "start install=%INSTALL% staging=%STAGING% parent=%PARENT_PID%"',
         'powershell -NoProfile -NonInteractive -Command '
         '"Wait-Process -Id %PARENT_PID% -Timeout 180 -ErrorAction SilentlyContinue" >nul 2>&1',
-        'if exist "%INSTALL%\\%EXE%" (',
-        '  if exist "%INSTALL%\\%EXE%.old" del /f /q "%INSTALL%\\%EXE%.old" >nul 2>&1',
-        '  ren "%INSTALL%\\%EXE%" "%EXE%.old" >nul 2>&1',
-        ')',
+        'call :log "parent wait done"',
+        'if not exist "%INSTALL%\\%EXE%" goto swap',
+        'if exist "%INSTALL%\\%EXE%.old" del /f /q "%INSTALL%\\%EXE%.old" >nul 2>&1',
+        'set /a tries=0',
+        ':ren_try',
+        'ren "%INSTALL%\\%EXE%" "%EXE%.old" >nul 2>&1',
+        'if not errorlevel 1 goto ren_ok',
+        'set /a tries+=1',
+        'if %tries% GEQ 12 goto ren_fail',
+        'ping -n 3 127.0.0.1 >nul',
+        'goto ren_try',
+        ':ren_fail',
+        'call :log "FAIL ren locked tries=%tries%"',
+        'goto swap',
+        ':ren_ok',
+        'call :log "ren ok"',
+        ':swap',
+        'set /a tries=0',
+        ':copy_try',
         'copy /Y "%STAGING%\\%EXE%" "%INSTALL%\\%EXE%" >nul 2>&1',
-        'if not exist "%INSTALL%\\%EXE%" goto rollback',
+        'if not errorlevel 1 goto copy_ok',
+        'set /a tries+=1',
+        'if %tries% GEQ 12 goto copy_fail',
+        'ping -n 3 127.0.0.1 >nul',
+        'goto copy_try',
+        ':copy_fail',
+        'call :log "FAIL copy tries=%tries%"',
+        'goto verify',
+        ':copy_ok',
+        'call :log "copy ok"',
+        ':verify',
+        'set "STAGED_SIZE="',
+        'set "INST_SIZE="',
+        'for %%A in ("%STAGING%\\%EXE%") do set "STAGED_SIZE=%%~zA"',
+        'for %%A in ("%INSTALL%\\%EXE%") do set "INST_SIZE=%%~zA"',
+        'call :log "verify staged=%STAGED_SIZE% installed=%INST_SIZE%"',
+        'if "%STAGED_SIZE%"=="" goto rollback',
+        'if "%INST_SIZE%"=="" goto rollback',
+        'if not "%STAGED_SIZE%"=="%INST_SIZE%" goto rollback',
+        'call :log "verify ok, starting new exe"',
         'start "" "%INSTALL%\\%EXE%"',
         'set /a tries=0',
         ':waitup',
@@ -1131,21 +1192,36 @@ def write_update_helper(install_root, staged_exe, parent_pid):
         'ping -n 2 127.0.0.1 >nul',
         'goto waitup',
         ':alive',
+        'call :log "new exe alive"',
         'ping -n 11 127.0.0.1 >nul',
         'powershell -NoProfile -NonInteractive -Command '
         '"if (Get-Process -Name MazeHub -ErrorAction SilentlyContinue) { exit 0 } '
         'else { exit 1 }" >nul 2>&1',
         'if not errorlevel 1 goto cleanup',
+        'call :log "WARN process gone after startup, rolling back"',
         ':rollback',
-        'if exist "%INSTALL%\\%EXE%.old" (',
-        '  del /f /q "%INSTALL%\\%EXE%" >nul 2>&1',
-        '  ren "%INSTALL%\\%EXE%.old" "%EXE%" >nul 2>&1',
-        '  if exist "%INSTALL%\\%EXE%" start "" "%INSTALL%\\%EXE%"',
-        ')',
+        'call :log "rollback"',
+        'if not exist "%INSTALL%\\%EXE%.old" goto rb_norestore',
+        'del /f /q "%INSTALL%\\%EXE%" >nul 2>&1',
+        'ren "%INSTALL%\\%EXE%.old" "%EXE%" >nul 2>&1',
+        ':rb_norestore',
+        'if not exist "%INSTALL%\\%EXE%" copy /Y "%STAGING%\\%EXE%" "%INSTALL%\\%EXE%" >nul 2>&1',
+        'if not exist "%INSTALL%\\%EXE%" goto rb_failed',
+        'call :log "rollback done, starting exe"',
+        'start "" "%INSTALL%\\%EXE%"',
+        'goto cleanup',
+        ':rb_failed',
+        'call :log "FATAL no exe after rollback"',
+        'goto cleanup',
         ':cleanup',
         'if exist "%STAGING%" rmdir /s /q "%STAGING%" >nul 2>&1',
         'if exist "%INSTALL%\\%EXE%.old" del /f /q "%INSTALL%\\%EXE%.old" >nul 2>&1',
+        'call :log "done"',
         'del /f /q "%~f0" >nul 2>&1',
+        'exit /b 0',
+        ':log',
+        '>>"%LOG%" echo [%date% %time%] %~1',
+        'exit /b 0',
     ]
     helper_path.write_bytes(('\r\n'.join(lines) + '\r\n').encode('utf-8'))
     return helper_path
@@ -1158,8 +1234,7 @@ def spawn_update_helper(helper_path):
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0x00000008)
-        | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0x00000200),
+        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0),
     )
 
 

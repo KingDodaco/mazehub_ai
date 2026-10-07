@@ -5957,17 +5957,31 @@ class MainWindow(QMainWindow):
             inst_ver = str(installed.get('version') or '')
             if (inst_ver and updater.semver_key(inst_ver)
                     > updater.semver_key(APP_VERSION)):
-                mismatch = (
-                    f'Installed files are v{inst_ver} but MazeHub is running '
-                    f'v{APP_VERSION}.\n\n'
-                    'The last update did not fully apply. Close all MazeHub '
-                    'windows and any programs using pipeline files, then '
-                    'start MazeHub again.\n\n'
-                    'If it still shows the old version, extract the release '
-                    'zip over your install folder (keep mazehub\\apps.json), '
-                    'or delete the file .update\\installed_manifest.json in '
-                    'your install folder and update once more.'
-                )
+                if updater.exe_drift(install_root):
+                    mismatch = (
+                        f'v{inst_ver} was downloaded but MazeHub is still '
+                        f'running v{APP_VERSION}.\n\n'
+                        'MazeHub.exe could not be replaced — the file was '
+                        'locked, most likely by antivirus or sync software. '
+                        'Check that MazeHub.exe was not quarantined, then '
+                        'run the update again from Settings → Updates.\n\n'
+                        'If it keeps failing, add an antivirus exclusion for '
+                        'MazeHub.exe or move the install folder somewhere '
+                        'else. The last swap attempt is logged in '
+                        '%LOCALAPPDATA%\\MazeHub\\update_helper.log.'
+                    )
+                else:
+                    mismatch = (
+                        f'Installed files are v{inst_ver} but MazeHub is running '
+                        f'v{APP_VERSION}.\n\n'
+                        'The last update did not fully apply. Close all MazeHub '
+                        'windows and any programs using pipeline files, then '
+                        'start MazeHub again.\n\n'
+                        'If it still shows the old version, extract the release '
+                        'zip over your install folder (keep mazehub\\apps.json), '
+                        'or delete the file .update\\installed_manifest.json in '
+                        'your install folder and update once more.'
+                    )
         report = updater.pop_report(install_root)
         if not report and not mismatch:
             return
