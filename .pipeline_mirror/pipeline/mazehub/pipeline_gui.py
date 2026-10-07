@@ -27,7 +27,7 @@ import updater
 from pipeline_app import (
     find_project_root, find_pipeline_dir, setup_environment,
     load_apps_config, save_apps_config,
-    resolve_app_exe,
+    resolve_app_exe, resolve_mplay,
     read_shot_meta, write_shot_meta, DEFAULT_SHOT_META,
     read_light_rig_meta, write_light_rig_meta, list_light_rigs,
     DEFAULT_LIGHT_RIG_META,
@@ -101,8 +101,9 @@ SIDEBAR_ITEMS = [
     ('Production', 'Track production progress across shots and assets'),
     ('Render', 'Headless USD rendering with husk'),
     ('Preview', 'Preview image sequences in MPlay'),
+    ('Projects', 'Manage projects and their settings'),
     ('Env Vars', 'View environment variables'),
-    ('Settings', 'Repair file structure and configure options'),
+    ('Settings', 'Global options: versions, husk path, screensaver, updates'),
     ('Log', 'View application and launch output'),
     ('Help', 'Complete user guide for MazeHub'),
 ]
@@ -2734,20 +2735,13 @@ class PreviewPage(QWidget):
             self.status_label.setText(f'Opened {seq["prefix"]}')
             return
 
-        mplay_path = None
-        houdini_cfg = self.apps_config.get('Houdini', {})
-        versions = houdini_cfg.get('versions', {})
-        default_ver = houdini_cfg.get('default_version', next(iter(versions.keys()), ''))
-        ver_data = versions.get(default_ver, {})
-        houdini_exe = ver_data.get('exe', '') if isinstance(ver_data, dict) else ''
-        if houdini_exe:
-            candidate = Path(houdini_exe).parent / 'mplay.exe'
-            if candidate.exists():
-                mplay_path = candidate
+        houdini_cfg = load_apps_config().get('Houdini', {})
+        mplay_path = resolve_mplay(houdini_cfg)
         if not mplay_path:
-            mplay_path = self.pipeline_dir / 'Houdini' / 'bin' / 'mplay.exe'
-        if not mplay_path.exists():
-            self.status_label.setText('mplay.exe not found')
+            versions = houdini_cfg.get('versions', {})
+            default_ver = houdini_cfg.get('default_version', '') or next(iter(versions), '')
+            suffix = f' (default Houdini {default_ver})' if default_ver else ''
+            self.status_label.setText(f'mplay not found{suffix}')
             return
 
         launch_env = os.environ.copy()
@@ -3389,7 +3383,7 @@ class HelpPage(QWidget):
         """, expanded=True)
 
         self._add_section(layout, '2 — Projects & Extra Tools', """
-        <p>One MazeHub install can open many projects. The project name at the top of the <b>sidebar</b> is a drop-down — pick another project and every page switches to it instantly. You can also manage projects in <b>Settings → Projects</b>: <b>Open</b> (or double-click) switches, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh project, <b>Remove</b> unregisters one (the folder is never deleted). On the very first launch MazeHub simply asks you to pick a project folder.</p>
+        <p>One MazeHub install can open many projects. The project name at the top of the <b>sidebar</b> is a drop-down — pick another project and every page switches to it instantly. You can also manage projects in the <b>Projects</b> tab: <b>Open</b> (or double-click) switches, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh project, <b>Remove</b> unregisters one (the folder is never deleted), and <b>Project Settings…</b> edits the selected project's Teams webhook links and repairs its folder structure — selecting or editing a project never switches it. On the very first launch MazeHub simply asks you to pick a project folder.</p>
         <p><b>Project-level pipeline (extra plugins/tools):</b> new projects come with an empty <code>pipeline</code> skeleton mirroring the install layout — e.g. <code>MyProject\\pipeline\\Maya\\scripts</code>, <code>MyProject\\pipeline\\Houdini\\Packages</code>, <code>MyProject\\pipeline\\Nuke\\plugins</code>, <code>MyProject\\pipeline\\Blender\\scripts</code> — drop your project-specific scripts or plugins there. When MazeHub launches an app it searches <b>the project's pipeline folder first, then the main install folder</b>, so a file in the project overrides the same file in the main pipeline. A project OCIO config (<code>pipeline\\OCIO\\OCIO_set.bat</code> or <code>BU_nov2024_config.ocio</code>) overrides the studio one. MazeHub creates the empty skeleton on project create or repair, never deletes it, and executables/launchers always come from the install.</p>
         """)
 
@@ -3443,7 +3437,7 @@ class HelpPage(QWidget):
         """)
 
         self._add_section(layout, '11 — Settings', """
-        <p><b>Projects:</b> every project this install can open. <b>Open</b> (or double-click) switches to it, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh data-only project, <b>Remove</b> unregisters a project (the folder itself is never deleted).</p>
+        <p>Everything on this page is global — the same for every project this install opens.</p>
         <p><b>Husk Render Binary:</b> Path to the husk executable for headless USD rendering. Usually found automatically. If not, use Browse or Auto-Detect.</p>
         <p><b>Software Versions:</b> manage all software versions and their executable paths. For each app you can:<br>
         &bull; <b>Add Version</b> — provide a version key (e.g. 23.0), display label (e.g. Houdini 23.0), and browse for the .exe<br>
@@ -3451,12 +3445,6 @@ class HelpPage(QWidget):
         &bull; <b>Remove Version</b> — remove a version (cannot remove the last one)<br>
         &bull; <b>Set Default</b> — choose which version launches by default</p>
         <p><b>YouTube Screensaver:</b> paste a YouTube link for the Home page button.</p>
-        <p><b>Teams Notifications:</b> paste your Teams webhook links for<br>
-        &bull; <b>Render</b> — get notified when renders finish<br>
-        &bull; <b>Dailies</b> — share playblasts/flipbooks<br>
-        &bull; <b>Production</b> — get notified when someone updates a task<br>
-        Leave empty if you don't need it. Click Save after pasting.</p>
-        <p><b>Repair File Structure:</b> if folders are missing, click this to recreate them.</p>
         """)
 
         self._add_section(layout, '12 — Playblasts & Flipbooks (Houdini / Maya / Nuke)', """
@@ -3468,7 +3456,7 @@ class HelpPage(QWidget):
 
         self._add_section(layout, '13 — Tips', """
         <p><b>No preview?</b> Try refreshing the page or check you picked the right shot.<br>
-        <b>Can't post to Teams?</b> Make sure your scene/script is saved inside the project and that the Teams links are pasted in Settings.<br>
+        <b>Can't post to Teams?</b> Make sure your scene/script is saved inside the project and that the Teams links are pasted in Projects → Project Settings…<br>
         <b>Houdini menu not showing?</b> Restart Houdini through MazeHub.<br>
         <b>Progress looks wrong?</b> Tasks set to "Not applicable" don't count - set them properly for the right percentage.<br>
         <b>Version not sticking?</b> Make sure you select the version from the dropdown button on the launch button, not from the context menu.</p>
@@ -4529,210 +4517,34 @@ class SyncProgressDialog(QDialog):
         self.reject()
 
 
-class SettingsPage(QWidget):
-    def __init__(self, project_root, parent=None):
+class ProjectSettingsDialog(QDialog):
+    def __init__(self, root, parent=None):
         super().__init__(parent)
-        self.project_root = project_root
-        self._build()
+        self.root = Path(root)
+        self.setWindowTitle(f'Project Settings — {self.root.name}')
+        self.setMinimumSize(560, 540)
 
-    def _build(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+
+        hint = QLabel(
+            'Saved with this project in mazehub/shared_settings.json — '
+            'editing these values does not switch the active project.')
+        hint.setWordWrap(True)
+        hint.setObjectName('hint')
+        outer.addWidget(hint)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, 1)
 
         container = QWidget()
         scroll.setWidget(container)
 
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(24, 24, 24, 24)
-
-        title = QLabel('Settings')
-        title_font = QFont()
-        title_font.setPointSize(16)
-        title_font.setBold(True)
-        title.setFont(title_font)
-        layout.addWidget(title)
-        layout.addSpacing(16)
-
-        global_header = QLabel('Global settings')
-        global_header_font = QFont()
-        global_header_font.setPointSize(13)
-        global_header_font.setBold(True)
-        global_header.setFont(global_header_font)
-        layout.addWidget(global_header)
-        global_hint = QLabel(
-            'Per-device — the same for every project this install opens.')
-        global_hint.setObjectName('hint')
-        layout.addWidget(global_hint)
-        layout.addSpacing(8)
-
-        projects_group = QGroupBox('Projects')
-        projects_layout = QVBoxLayout(projects_group)
-        projects_layout.addWidget(QLabel(
-            'Project folders this install can open. Select a row and press '
-            'Open (or double-click) to switch.'
-        ))
-
-        self.projects_table = QTableWidget()
-        self.projects_table.setColumnCount(2)
-        self.projects_table.setHorizontalHeaderLabels(['Name', 'Path'])
-        self.projects_table.setAlternatingRowColors(True)
-        self.projects_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.projects_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.projects_table.verticalHeader().setVisible(False)
-        self.projects_table.setSelectionMode(QTableWidget.SingleSelection)
-        self.projects_table.horizontalHeader().setStretchLastSection(True)
-        self.projects_table.doubleClicked.connect(lambda *_: self._open_project())
-        projects_layout.addWidget(self.projects_table)
-
-        projects_toolbar = QHBoxLayout()
-        open_proj_btn = QPushButton('Open')
-        open_proj_btn.setMinimumHeight(32)
-        open_proj_btn.setCursor(Qt.PointingHandCursor)
-        open_proj_btn.clicked.connect(self._open_project)
-        projects_toolbar.addWidget(open_proj_btn)
-        add_proj_btn = QPushButton('Add Existing…')
-        add_proj_btn.setMinimumHeight(32)
-        add_proj_btn.setCursor(Qt.PointingHandCursor)
-        add_proj_btn.clicked.connect(self._add_existing_project)
-        projects_toolbar.addWidget(add_proj_btn)
-        create_proj_btn = QPushButton('Create New…')
-        create_proj_btn.setMinimumHeight(32)
-        create_proj_btn.setCursor(Qt.PointingHandCursor)
-        create_proj_btn.clicked.connect(self._create_new_project)
-        projects_toolbar.addWidget(create_proj_btn)
-        remove_proj_btn = QPushButton('Remove')
-        remove_proj_btn.setMinimumHeight(32)
-        remove_proj_btn.setCursor(Qt.PointingHandCursor)
-        remove_proj_btn.clicked.connect(self._remove_project)
-        projects_toolbar.addWidget(remove_proj_btn)
-        projects_toolbar.addStretch()
-        projects_layout.addLayout(projects_toolbar)
-
-        self.projects_status = QLabel('')
-        self.projects_status.setWordWrap(True)
-        self.projects_status.setObjectName('hint')
-        projects_layout.addWidget(self.projects_status)
-
-        projects_layout.addStretch()
-        layout.addWidget(projects_group)
-
-        versions_group = QGroupBox('Software Versions')
-        versions_layout = QVBoxLayout(versions_group)
-        versions_layout.addWidget(QLabel(
-            'Manage software versions and their executable paths.'
-        ))
-
-        self.versions_table = QTableWidget()
-        self.versions_table.setColumnCount(3)
-        self.versions_table.setHorizontalHeaderLabels(['App', 'Versions', 'Default'])
-        self.versions_table.setAlternatingRowColors(True)
-        self.versions_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.versions_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.versions_table.verticalHeader().setVisible(False)
-        self.versions_table.setSelectionMode(QTableWidget.SingleSelection)
-        self.versions_table.horizontalHeader().setStretchLastSection(True)
-        versions_layout.addWidget(self.versions_table)
-
-        versions_toolbar = QHBoxLayout()
-        add_ver_btn = QPushButton('Add Version')
-        add_ver_btn.setMinimumHeight(32)
-        add_ver_btn.setCursor(Qt.PointingHandCursor)
-        add_ver_btn.clicked.connect(self._add_version)
-        versions_toolbar.addWidget(add_ver_btn)
-        edit_ver_btn = QPushButton('Edit Version')
-        edit_ver_btn.setMinimumHeight(32)
-        edit_ver_btn.setCursor(Qt.PointingHandCursor)
-        edit_ver_btn.clicked.connect(self._edit_version)
-        versions_toolbar.addWidget(edit_ver_btn)
-        remove_ver_btn = QPushButton('Remove Version')
-        remove_ver_btn.setMinimumHeight(32)
-        remove_ver_btn.setCursor(Qt.PointingHandCursor)
-        remove_ver_btn.clicked.connect(self._remove_version)
-        versions_toolbar.addWidget(remove_ver_btn)
-        set_default_btn = QPushButton('Set Default')
-        set_default_btn.setMinimumHeight(32)
-        set_default_btn.setCursor(Qt.PointingHandCursor)
-        set_default_btn.clicked.connect(self._set_default_version)
-        versions_toolbar.addWidget(set_default_btn)
-        versions_toolbar.addStretch()
-        versions_layout.addLayout(versions_toolbar)
-
-        self.versions_status = QLabel('')
-        self.versions_status.setWordWrap(True)
-        self.versions_status.setObjectName('hint')
-        versions_layout.addWidget(self.versions_status)
-
-        versions_layout.addStretch()
-        layout.addWidget(versions_group)
-
-        husk_group = QGroupBox('Husk Render Binary')
-        husk_layout = QVBoxLayout(husk_group)
-
-        husk_layout.addWidget(QLabel(
-            'Path to the husk executable for headless USD rendering.'
-        ))
-
-        husk_path_row = QHBoxLayout()
-        self.husk_path_input = QLineEdit()
-        self.husk_path_input.setPlaceholderText('Auto-detected from Houdini install...')
-        husk_path_row.addWidget(self.husk_path_input, 1)
-        self.husk_browse_btn = QPushButton('Browse')
-        self.husk_browse_btn.setCursor(Qt.PointingHandCursor)
-        self.husk_browse_btn.clicked.connect(self._browse_husk)
-        husk_path_row.addWidget(self.husk_browse_btn)
-        husk_layout.addLayout(husk_path_row)
-
-        husk_btn_row = QHBoxLayout()
-        self.husk_save_btn = QPushButton('Save')
-        self.husk_save_btn.setCursor(Qt.PointingHandCursor)
-        self.husk_save_btn.clicked.connect(self._save_husk_path)
-        husk_btn_row.addWidget(self.husk_save_btn)
-        self.husk_detect_btn = QPushButton('Auto-Detect')
-        self.husk_detect_btn.setCursor(Qt.PointingHandCursor)
-        self.husk_detect_btn.clicked.connect(self._detect_husk)
-        husk_btn_row.addWidget(self.husk_detect_btn)
-        husk_btn_row.addStretch()
-        husk_layout.addLayout(husk_btn_row)
-
-        self.husk_status = QLabel('')
-        self.husk_status.setWordWrap(True)
-        self.husk_status.setObjectName('hint')
-        husk_layout.addWidget(self.husk_status)
-
-        husk_layout.addStretch()
-        layout.addWidget(husk_group)
-
-        yt_group = QGroupBox('YouTube Screensaver')
-        yt_layout = QVBoxLayout(yt_group)
-
-        yt_layout.addWidget(QLabel(
-            'URL to open when the YT Screensaver button is clicked.'
-        ))
-
-        yt_url_row = QHBoxLayout()
-        self.yt_url_input = QLineEdit()
-        self.yt_url_input.setPlaceholderText('https://youtube.com/...')
-        yt_url_row.addWidget(self.yt_url_input, 1)
-        self.yt_save_btn = QPushButton('Save')
-        self.yt_save_btn.setCursor(Qt.PointingHandCursor)
-        self.yt_save_btn.clicked.connect(self._save_yt_url)
-        yt_url_row.addWidget(self.yt_save_btn)
-        yt_layout.addLayout(yt_url_row)
-
-        self.yt_status = QLabel('')
-        self.yt_status.setWordWrap(True)
-        self.yt_status.setObjectName('hint')
-        yt_layout.addWidget(self.yt_status)
-
-        yt_layout.addStretch()
-        layout.addWidget(yt_group)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         teams_group = QGroupBox('Teams Notifications')
         teams_layout = QVBoxLayout(teams_group)
@@ -4744,7 +4556,6 @@ class SettingsPage(QWidget):
             'notification off.'
         ))
 
-        # — Render Notifications —
         render_label = QLabel('Render Channel')
         rf = QFont()
         rf.setBold(True)
@@ -4772,7 +4583,6 @@ class SettingsPage(QWidget):
         sep1.setStyleSheet('color: #444;')
         teams_layout.addWidget(sep1)
 
-        # — Dailies Channel —
         dailies_label = QLabel('Dailies Channel')
         df = QFont()
         df.setBold(True)
@@ -4800,7 +4610,6 @@ class SettingsPage(QWidget):
         sep2.setStyleSheet('color: #444;')
         teams_layout.addWidget(sep2)
 
-        # — Production Tracking Channel —
         prod_label = QLabel('Production Tracking Channel')
         pf = QFont()
         pf.setBold(True)
@@ -4823,6 +4632,9 @@ class SettingsPage(QWidget):
         self.production_status.setObjectName('hint')
         teams_layout.addWidget(self.production_status)
 
+        teams_layout.addStretch()
+        layout.addWidget(teams_group)
+
         file_group = QGroupBox('File Structure')
         group_layout = QVBoxLayout(file_group)
 
@@ -4842,83 +4654,195 @@ class SettingsPage(QWidget):
         group_layout.addWidget(self.repair_result)
 
         group_layout.addStretch()
-
-        updates_group = QGroupBox('Updates')
-        updates_layout = QVBoxLayout(updates_group)
-        updates_layout.addWidget(QLabel(
-            'MazeHub checks GitHub for new versions and updates itself. '
-            'Your settings, app versions, and any local file changes are preserved.'
-        ))
-
-        self.upd_version_label = QLabel(f'Current version: v{APP_VERSION}')
-        self.upd_version_label.setObjectName('hint')
-        updates_layout.addWidget(self.upd_version_label)
-
-        self.upd_last_label = QLabel('Never checked for updates.')
-        self.upd_last_label.setWordWrap(True)
-        self.upd_last_label.setObjectName('hint')
-        updates_layout.addWidget(self.upd_last_label)
-
-        self.upd_auto_check = QCheckBox('Check for updates on launch')
-        self.upd_auto_check.setCursor(Qt.PointingHandCursor)
-        self.upd_auto_check.toggled.connect(self._toggle_auto_check)
-        updates_layout.addWidget(self.upd_auto_check)
-
-        channel_row = QHBoxLayout()
-        self.upd_channel_input = QLineEdit()
-        self.upd_channel_input.setPlaceholderText(
-            'GitHub releases (leave empty) or a folder/URL with manifest.json')
-        channel_row.addWidget(self.upd_channel_input, 1)
-        upd_channel_save = QPushButton('Save')
-        upd_channel_save.setCursor(Qt.PointingHandCursor)
-        upd_channel_save.clicked.connect(self._save_update_channel)
-        channel_row.addWidget(upd_channel_save)
-        updates_layout.addLayout(channel_row)
-
-        self.upd_check_btn = QPushButton('Check for Updates')
-        self.upd_check_btn.setMinimumHeight(36)
-        self.upd_check_btn.setCursor(Qt.PointingHandCursor)
-        self.upd_check_btn.clicked.connect(self._check_updates_now)
-        updates_layout.addWidget(self.upd_check_btn)
-
-        self.upd_status = QLabel('')
-        self.upd_status.setWordWrap(True)
-        self.upd_status.setObjectName('hint')
-        updates_layout.addWidget(self.upd_status)
-
-        updates_layout.addStretch()
-        layout.addWidget(updates_group)
-
-        layout.addSpacing(16)
-
-        project_header = QLabel('Project settings')
-        project_header_font = QFont()
-        project_header_font.setPointSize(13)
-        project_header_font.setBold(True)
-        project_header.setFont(project_header_font)
-        layout.addWidget(project_header)
-        project_hint = QLabel(
-            f'Saved with {self.project_root.name} in the project folder '
-            '(mazehub/shared_settings.json) — switching projects switches '
-            'these values.')
-        project_hint.setObjectName('hint')
-        layout.addWidget(project_hint)
-        layout.addSpacing(8)
-
-        layout.addWidget(teams_group)
         layout.addWidget(file_group)
-        layout.addStretch()
 
-        self._load_husk_path()
-        self._load_versions_table()
-        self._load_yt_url()
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton('Close')
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        outer.addLayout(btn_row)
+
         self._load_teams_url()
         self._load_dailies_url()
         self._load_production_url()
-        self._load_projects_table()
-        self.refresh_updates_section()
 
-    def _refresh(self):
+    def _save_teams_url(self):
+        from settings import set_setting
+        url = self.teams_url_input.text().strip()
+        set_setting('teams_webhook_url', url, root=self.root)
+        if url:
+            self.teams_status.setText(f'Saved: {url}')
+            self.teams_status.setStyleSheet('color: #00c853;')
+        else:
+            self.teams_status.setText('URL cleared.')
+            self.teams_status.setStyleSheet('')
+
+    def _load_teams_url(self):
+        from settings import get_setting
+        url = get_setting('teams_webhook_url', '', root=self.root)
+        self.teams_url_input.setText(url)
+        if url:
+            self.teams_status.setText('')
+            self.teams_status.setStyleSheet('')
+        else:
+            self.teams_status.setText('No webhook URL configured.')
+            self.teams_status.setStyleSheet('color: #ffa726;')
+
+    def _save_dailies_url(self):
+        from settings import set_setting
+        url = self.dailies_url_input.text().strip()
+        set_setting('dailies_webhook_url', url, root=self.root)
+        if url:
+            self.dailies_status.setText(f'Saved: {url}')
+            self.dailies_status.setStyleSheet('color: #00c853;')
+        else:
+            self.dailies_status.setText('URL cleared.')
+            self.dailies_status.setStyleSheet('')
+
+    def _load_dailies_url(self):
+        from settings import get_setting
+        url = get_setting('dailies_webhook_url', '', root=self.root)
+        self.dailies_url_input.setText(url)
+        if url:
+            self.dailies_status.setText('')
+            self.dailies_status.setStyleSheet('')
+        else:
+            self.dailies_status.setText('No webhook URL configured.')
+            self.dailies_status.setStyleSheet('color: #ffa726;')
+
+    def _save_production_url(self):
+        from settings import set_setting
+        url = self.production_url_input.text().strip()
+        set_setting('production_webhook_url', url, root=self.root)
+        if url:
+            self.production_status.setText(f'Saved: {url}')
+            self.production_status.setStyleSheet('color: #00c853;')
+        else:
+            self.production_status.setText('URL cleared.')
+            self.production_status.setStyleSheet('')
+
+    def _load_production_url(self):
+        from settings import get_setting
+        url = get_setting('production_webhook_url', '', root=self.root)
+        self.production_url_input.setText(url)
+        if url:
+            self.production_status.setText('')
+            self.production_status.setStyleSheet('')
+        else:
+            self.production_status.setText('No webhook URL configured.')
+            self.production_status.setStyleSheet('color: #ffa726;')
+
+    def _repair(self):
+        from make_folders import repair_project_structure
+        self.repair_btn.setEnabled(False)
+        self.repair_btn.setText('Repairing...')
+        self.repair_result.setText('')
+        QApplication.processEvents()
+        try:
+            missing = repair_project_structure(self.root)
+            if missing:
+                lines = '\n'.join(f'  - {p}' for p in missing[:20])
+                extra = f' (+{len(missing) - 20} more)' if len(missing) > 20 else ''
+                self.repair_result.setText(f'Created {len(missing)} missing folder(s):\n{lines}{extra}')
+            else:
+                self.repair_result.setText('All project directories exist — nothing to repair.')
+        except Exception as e:
+            self.repair_result.setText(f'Error: {e}')
+        finally:
+            self.repair_btn.setEnabled(True)
+            self.repair_btn.setText('Repair File Structure')
+
+
+class ProjectsPage(QWidget):
+    def __init__(self, project_root, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self._build()
+
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        outer.addWidget(scroll)
+
+        container = QWidget()
+        scroll.setWidget(container)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        title = QLabel('Projects')
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        layout.addSpacing(8)
+
+        hint = QLabel(
+            'Project folders this install can open. Selecting a row only '
+            'selects it — press Open (or double-click) to switch, or '
+            'Project Settings… to edit that project.')
+        hint.setWordWrap(True)
+        hint.setObjectName('hint')
+        layout.addWidget(hint)
+        layout.addSpacing(16)
+
+        self.projects_table = QTableWidget()
+        self.projects_table.setColumnCount(2)
+        self.projects_table.setHorizontalHeaderLabels(['Name', 'Path'])
+        self.projects_table.setAlternatingRowColors(True)
+        self.projects_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.projects_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.projects_table.verticalHeader().setVisible(False)
+        self.projects_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.projects_table.horizontalHeader().setStretchLastSection(True)
+        self.projects_table.doubleClicked.connect(lambda *_: self._open_project())
+        layout.addWidget(self.projects_table)
+
+        projects_toolbar = QHBoxLayout()
+        open_proj_btn = QPushButton('Open')
+        open_proj_btn.setMinimumHeight(32)
+        open_proj_btn.setCursor(Qt.PointingHandCursor)
+        open_proj_btn.clicked.connect(self._open_project)
+        projects_toolbar.addWidget(open_proj_btn)
+        add_proj_btn = QPushButton('Add Existing…')
+        add_proj_btn.setMinimumHeight(32)
+        add_proj_btn.setCursor(Qt.PointingHandCursor)
+        add_proj_btn.clicked.connect(self._add_existing_project)
+        projects_toolbar.addWidget(add_proj_btn)
+        create_proj_btn = QPushButton('Create New…')
+        create_proj_btn.setMinimumHeight(32)
+        create_proj_btn.setCursor(Qt.PointingHandCursor)
+        create_proj_btn.clicked.connect(self._create_new_project)
+        projects_toolbar.addWidget(create_proj_btn)
+        remove_proj_btn = QPushButton('Remove')
+        remove_proj_btn.setMinimumHeight(32)
+        remove_proj_btn.setCursor(Qt.PointingHandCursor)
+        remove_proj_btn.clicked.connect(self._remove_project)
+        projects_toolbar.addWidget(remove_proj_btn)
+        proj_settings_btn = QPushButton('Project Settings…')
+        proj_settings_btn.setMinimumHeight(32)
+        proj_settings_btn.setCursor(Qt.PointingHandCursor)
+        proj_settings_btn.clicked.connect(self._open_project_settings)
+        projects_toolbar.addWidget(proj_settings_btn)
+        projects_toolbar.addStretch()
+        layout.addLayout(projects_toolbar)
+
+        self.projects_status = QLabel('')
+        self.projects_status.setWordWrap(True)
+        self.projects_status.setObjectName('hint')
+        layout.addWidget(self.projects_status)
+
+        layout.addStretch()
+
         self._load_projects_table()
 
     def _load_projects_table(self):
@@ -5080,6 +5004,223 @@ class SettingsPage(QWidget):
         self._load_projects_table()
         self.projects_status.setText(f'Removed project: {root}')
         self.projects_status.setStyleSheet('color: #00c853;')
+
+    def _open_project_settings(self):
+        root = self._selected_project_root()
+        if not root:
+            self.projects_status.setText('Select a project row first.')
+            self.projects_status.setStyleSheet('color: #ffa726;')
+            return
+        dlg = ProjectSettingsDialog(root, self)
+        dlg.exec()
+
+
+class SettingsPage(QWidget):
+    def __init__(self, project_root, parent=None):
+        super().__init__(parent)
+        self.project_root = project_root
+        self._build()
+
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        outer.addWidget(scroll)
+
+        container = QWidget()
+        scroll.setWidget(container)
+
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        title = QLabel('Settings')
+        title_font = QFont()
+        title_font.setPointSize(16)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title)
+        layout.addSpacing(16)
+
+        global_header = QLabel('Global settings')
+        global_header_font = QFont()
+        global_header_font.setPointSize(13)
+        global_header_font.setBold(True)
+        global_header.setFont(global_header_font)
+        layout.addWidget(global_header)
+        global_hint = QLabel(
+            'Per-device — the same for every project this install opens.')
+        global_hint.setObjectName('hint')
+        layout.addWidget(global_hint)
+        layout.addSpacing(8)
+
+        versions_group = QGroupBox('Software Versions')
+        versions_layout = QVBoxLayout(versions_group)
+        versions_layout.addWidget(QLabel(
+            'Manage software versions and their executable paths.'
+        ))
+
+        self.versions_table = QTableWidget()
+        self.versions_table.setColumnCount(3)
+        self.versions_table.setHorizontalHeaderLabels(['App', 'Versions', 'Default'])
+        self.versions_table.setAlternatingRowColors(True)
+        self.versions_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.versions_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.versions_table.verticalHeader().setVisible(False)
+        self.versions_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.versions_table.horizontalHeader().setStretchLastSection(True)
+        versions_layout.addWidget(self.versions_table)
+
+        versions_toolbar = QHBoxLayout()
+        add_ver_btn = QPushButton('Add Version')
+        add_ver_btn.setMinimumHeight(32)
+        add_ver_btn.setCursor(Qt.PointingHandCursor)
+        add_ver_btn.clicked.connect(self._add_version)
+        versions_toolbar.addWidget(add_ver_btn)
+        edit_ver_btn = QPushButton('Edit Version')
+        edit_ver_btn.setMinimumHeight(32)
+        edit_ver_btn.setCursor(Qt.PointingHandCursor)
+        edit_ver_btn.clicked.connect(self._edit_version)
+        versions_toolbar.addWidget(edit_ver_btn)
+        remove_ver_btn = QPushButton('Remove Version')
+        remove_ver_btn.setMinimumHeight(32)
+        remove_ver_btn.setCursor(Qt.PointingHandCursor)
+        remove_ver_btn.clicked.connect(self._remove_version)
+        versions_toolbar.addWidget(remove_ver_btn)
+        set_default_btn = QPushButton('Set Default')
+        set_default_btn.setMinimumHeight(32)
+        set_default_btn.setCursor(Qt.PointingHandCursor)
+        set_default_btn.clicked.connect(self._set_default_version)
+        versions_toolbar.addWidget(set_default_btn)
+        versions_toolbar.addStretch()
+        versions_layout.addLayout(versions_toolbar)
+
+        self.versions_status = QLabel('')
+        self.versions_status.setWordWrap(True)
+        self.versions_status.setObjectName('hint')
+        versions_layout.addWidget(self.versions_status)
+
+        versions_layout.addStretch()
+        layout.addWidget(versions_group)
+
+        husk_group = QGroupBox('Husk Render Binary')
+        husk_layout = QVBoxLayout(husk_group)
+
+        husk_layout.addWidget(QLabel(
+            'Path to the husk executable for headless USD rendering.'
+        ))
+
+        husk_path_row = QHBoxLayout()
+        self.husk_path_input = QLineEdit()
+        self.husk_path_input.setPlaceholderText('Auto-detected from Houdini install...')
+        husk_path_row.addWidget(self.husk_path_input, 1)
+        self.husk_browse_btn = QPushButton('Browse')
+        self.husk_browse_btn.setCursor(Qt.PointingHandCursor)
+        self.husk_browse_btn.clicked.connect(self._browse_husk)
+        husk_path_row.addWidget(self.husk_browse_btn)
+        husk_layout.addLayout(husk_path_row)
+
+        husk_btn_row = QHBoxLayout()
+        self.husk_save_btn = QPushButton('Save')
+        self.husk_save_btn.setCursor(Qt.PointingHandCursor)
+        self.husk_save_btn.clicked.connect(self._save_husk_path)
+        husk_btn_row.addWidget(self.husk_save_btn)
+        self.husk_detect_btn = QPushButton('Auto-Detect')
+        self.husk_detect_btn.setCursor(Qt.PointingHandCursor)
+        self.husk_detect_btn.clicked.connect(self._detect_husk)
+        husk_btn_row.addWidget(self.husk_detect_btn)
+        husk_btn_row.addStretch()
+        husk_layout.addLayout(husk_btn_row)
+
+        self.husk_status = QLabel('')
+        self.husk_status.setWordWrap(True)
+        self.husk_status.setObjectName('hint')
+        husk_layout.addWidget(self.husk_status)
+
+        husk_layout.addStretch()
+        layout.addWidget(husk_group)
+
+        yt_group = QGroupBox('YouTube Screensaver')
+        yt_layout = QVBoxLayout(yt_group)
+
+        yt_layout.addWidget(QLabel(
+            'URL to open when the YT Screensaver button is clicked.'
+        ))
+
+        yt_url_row = QHBoxLayout()
+        self.yt_url_input = QLineEdit()
+        self.yt_url_input.setPlaceholderText('https://youtube.com/...')
+        yt_url_row.addWidget(self.yt_url_input, 1)
+        self.yt_save_btn = QPushButton('Save')
+        self.yt_save_btn.setCursor(Qt.PointingHandCursor)
+        self.yt_save_btn.clicked.connect(self._save_yt_url)
+        yt_url_row.addWidget(self.yt_save_btn)
+        yt_layout.addLayout(yt_url_row)
+
+        self.yt_status = QLabel('')
+        self.yt_status.setWordWrap(True)
+        self.yt_status.setObjectName('hint')
+        yt_layout.addWidget(self.yt_status)
+
+        yt_layout.addStretch()
+        layout.addWidget(yt_group)
+
+        updates_group = QGroupBox('Updates')
+        updates_layout = QVBoxLayout(updates_group)
+        updates_layout.addWidget(QLabel(
+            'MazeHub checks GitHub for new versions and updates itself. '
+            'Your settings, app versions, and any local file changes are preserved.'
+        ))
+
+        self.upd_version_label = QLabel(f'Current version: v{APP_VERSION}')
+        self.upd_version_label.setObjectName('hint')
+        updates_layout.addWidget(self.upd_version_label)
+
+        self.upd_last_label = QLabel('Never checked for updates.')
+        self.upd_last_label.setWordWrap(True)
+        self.upd_last_label.setObjectName('hint')
+        updates_layout.addWidget(self.upd_last_label)
+
+        self.upd_auto_check = QCheckBox('Check for updates on launch')
+        self.upd_auto_check.setCursor(Qt.PointingHandCursor)
+        self.upd_auto_check.toggled.connect(self._toggle_auto_check)
+        updates_layout.addWidget(self.upd_auto_check)
+
+        channel_row = QHBoxLayout()
+        self.upd_channel_input = QLineEdit()
+        self.upd_channel_input.setPlaceholderText(
+            'GitHub releases (leave empty) or a folder/URL with manifest.json')
+        channel_row.addWidget(self.upd_channel_input, 1)
+        upd_channel_save = QPushButton('Save')
+        upd_channel_save.setCursor(Qt.PointingHandCursor)
+        upd_channel_save.clicked.connect(self._save_update_channel)
+        channel_row.addWidget(upd_channel_save)
+        updates_layout.addLayout(channel_row)
+
+        self.upd_check_btn = QPushButton('Check for Updates')
+        self.upd_check_btn.setMinimumHeight(36)
+        self.upd_check_btn.setCursor(Qt.PointingHandCursor)
+        self.upd_check_btn.clicked.connect(self._check_updates_now)
+        updates_layout.addWidget(self.upd_check_btn)
+
+        self.upd_status = QLabel('')
+        self.upd_status.setWordWrap(True)
+        self.upd_status.setObjectName('hint')
+        updates_layout.addWidget(self.upd_status)
+
+        updates_layout.addStretch()
+        layout.addWidget(updates_group)
+
+        layout.addStretch()
+
+        self._load_husk_path()
+        self._load_versions_table()
+        self._load_yt_url()
+        self.refresh_updates_section()
 
     def _load_versions_table(self):
         config = load_apps_config()
@@ -5397,93 +5538,6 @@ class SettingsPage(QWidget):
             self.yt_status.setText('No URL configured.')
             self.yt_status.setStyleSheet('color: #ffa726;')
 
-    def _save_teams_url(self):
-        from settings import set_setting
-        url = self.teams_url_input.text().strip()
-        set_setting('teams_webhook_url', url)
-        if url:
-            self.teams_status.setText(f'Saved: {url}')
-            self.teams_status.setStyleSheet('color: #00c853;')
-        else:
-            self.teams_status.setText('URL cleared.')
-            self.teams_status.setStyleSheet('')
-
-    def _load_teams_url(self):
-        from settings import get_setting
-        url = get_setting('teams_webhook_url', '')
-        self.teams_url_input.setText(url)
-        if url:
-            self.teams_status.setText('')
-            self.teams_status.setStyleSheet('')
-        else:
-            self.teams_status.setText('No webhook URL configured.')
-            self.teams_status.setStyleSheet('color: #ffa726;')
-
-    def _save_dailies_url(self):
-        from settings import set_setting
-        url = self.dailies_url_input.text().strip()
-        set_setting('dailies_webhook_url', url)
-        if url:
-            self.dailies_status.setText(f'Saved: {url}')
-            self.dailies_status.setStyleSheet('color: #00c853;')
-        else:
-            self.dailies_status.setText('URL cleared.')
-            self.dailies_status.setStyleSheet('')
-
-    def _load_dailies_url(self):
-        from settings import get_setting
-        url = get_setting('dailies_webhook_url', '')
-        self.dailies_url_input.setText(url)
-        if url:
-            self.dailies_status.setText('')
-            self.dailies_status.setStyleSheet('')
-        else:
-            self.dailies_status.setText('No webhook URL configured.')
-            self.dailies_status.setStyleSheet('color: #ffa726;')
-
-    def _save_production_url(self):
-        from settings import set_setting
-        url = self.production_url_input.text().strip()
-        set_setting('production_webhook_url', url)
-        if url:
-            self.production_status.setText(f'Saved: {url}')
-            self.production_status.setStyleSheet('color: #00c853;')
-        else:
-            self.production_status.setText('URL cleared.')
-            self.production_status.setStyleSheet('')
-
-    def _load_production_url(self):
-        from settings import get_setting
-        url = get_setting('production_webhook_url', '')
-        self.production_url_input.setText(url)
-        if url:
-            self.production_status.setText('')
-            self.production_status.setStyleSheet('')
-        else:
-            self.production_status.setText('No webhook URL configured.')
-            self.production_status.setStyleSheet('color: #ffa726;')
-
-    def _repair(self):
-        from make_folders import repair_project_structure
-        self.repair_btn.setEnabled(False)
-        self.repair_btn.setText('Repairing...')
-        self.repair_result.setText('')
-        QApplication.processEvents()
-        try:
-            missing = repair_project_structure(self.project_root)
-            if missing:
-                lines = '\n'.join(f'  - {p}' for p in missing[:20])
-                extra = f' (+{len(missing) - 20} more)' if len(missing) > 20 else ''
-                self.repair_result.setText(f'Created {len(missing)} missing folder(s):\n{lines}{extra}')
-            else:
-                self.repair_result.setText('All project directories exist — nothing to repair.')
-        except Exception as e:
-            self.repair_result.setText(f'Error: {e}')
-        finally:
-            self.repair_btn.setEnabled(True)
-            self.repair_btn.setText('Repair File Structure')
-
-
 class UpdateSignals(QObject):
     checked = Signal(object)
     check_error = Signal(str)
@@ -5646,7 +5700,7 @@ class MainWindow(QMainWindow):
     def _create_pages(self):
         page_classes = [DashboardPage, LaunchAppsPage, ShotExplorerPage,
                         LightRigsPage, AssetExplorerPage, ProductionPage,
-                        RenderPage, PreviewPage,
+                        RenderPage, PreviewPage, ProjectsPage,
                         EnvVarsPage, SettingsPage, LogPage, HelpPage]
         page_args = [
             (self.project_root, self.env_vars, self.apps_config, self.pipeline_dir),
@@ -5656,7 +5710,8 @@ class MainWindow(QMainWindow):
             (self.project_root, self.apps_config, self.pipeline_dir),
             (self.project_root, self.pipeline_dir),
             (self.project_root, self.pipeline_dir, self.apps_config),
-            (self.project_root, self.pipeline_dir),
+            (self.project_root, self.pipeline_dir, self.apps_config),
+            (self.project_root,),
             (self.env_vars,),
             (self.project_root,),
             (),
@@ -5699,7 +5754,7 @@ class MainWindow(QMainWindow):
         if index == self.project_combo.count() - 1:
             self._sync_project_combo()
             for i, (label, _tooltip) in enumerate(SIDEBAR_ITEMS):
-                if label == 'Settings':
+                if label == 'Projects':
                     self._switch_page(i)
                     break
             return

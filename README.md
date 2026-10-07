@@ -77,7 +77,7 @@ uv sync
    anywhere, e.g. `C:\Tools\MazeHub`.
 2. Create a shortcut to `MazeHub.exe` (optionally add `--project <path>`).
 3. On first launch choose **Add Existing Folder…** and point MazeHub at your
-   project — or create a new one in Settings → Projects.
+   project — or create a new one from the **Projects** tab.
 
 ## Projects
 
@@ -89,11 +89,13 @@ install shares one project list.
 - **Sidebar switcher** — the project name at the top of the sidebar switches
   projects live: all pages reload against the new project. Switching is
   blocked while an update is running or an app launch/render is in flight.
-- **Settings → Projects** — list all registered projects. **Open**
+- **Projects tab** — list all registered projects. **Open**
   (or double-click) switches, **Add Existing…** registers a folder,
   **Create New…** builds a data-only project (optional sample shot/asset/
   shoot-day scaffolds) and opens it, **Remove** unregisters a project
-  (the folder itself is never deleted).
+  (the folder itself is never deleted). Selecting a row only selects it;
+  **Project Settings…** edits the selected project's Teams webhooks and
+  repairs its folder structure without switching to it.
 - **CLI override** — `MazeHub.exe --project D:\work\MyProject` (or
   `python main.py --project ...`) opens that project for the session only;
   the stored active project is unchanged. The `MAZE_PROJECT_ROOT`
@@ -238,10 +240,15 @@ Browse existing assets organized by category. Create new assets with automatic f
 
 View all environment variables set by MazeHub for the current project and context.
 
+### Projects
+
+Manage projects (open/add/create/remove) and, via **Project Settings…**,
+edit the selected project's webhook URLs and repair its file structure.
+
 ### Settings
 
-Manage projects (open/add/create/remove), repair file structure, app
-versions, webhook URLs, and updates.
+Global per-install options: app versions, husk path, YouTube screensaver,
+and updates.
 
 ## Environment Variables
 

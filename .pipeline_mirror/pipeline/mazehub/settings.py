@@ -85,8 +85,8 @@ def _migrate_legacy_shared(legacy_path, new_path):
             _save_json(USER_SETTINGS_PATH, user)
 
 
-def _get_shared_settings_path():
-    root = _get_project_root()
+def _get_shared_settings_path(root=None):
+    root = Path(root) if root else _get_project_root()
     if not root:
         return None
     path = root / 'mazehub' / 'shared_settings.json'
@@ -260,35 +260,35 @@ def migrate_legacy_settings(force=False):
                 _save_json(path, data)
 
 
-def load_settings():
-    """Load all settings (project + global)."""
+def load_settings(root=None):
+    """Load all settings (project at root + global)."""
     migrate_legacy_settings()
-    shared = _load_json(_get_shared_settings_path())
+    shared = _load_json(_get_shared_settings_path(root))
     user = _load_json(USER_SETTINGS_PATH)
     return _merge_settings(shared, user)
 
 
-def save_settings(settings):
-    """Save settings, splitting into project and global files."""
+def save_settings(settings, root=None):
+    """Save settings, splitting into project (at root) and global files."""
     shared = {k: v for k, v in settings.items() if k in SHARED_KEYS}
     user = {k: v for k, v in settings.items() if k not in SHARED_KEYS}
-    existing_shared = _load_json(_get_shared_settings_path())
+    existing_shared = _load_json(_get_shared_settings_path(root))
     existing_shared.update(shared)
     existing_user = _load_json(USER_SETTINGS_PATH)
     existing_user.update(user)
-    _save_json(_get_shared_settings_path(), existing_shared)
+    _save_json(_get_shared_settings_path(root), existing_shared)
     _save_json(USER_SETTINGS_PATH, existing_user)
 
 
-def get_setting(key, default=None):
-    settings = load_settings()
+def get_setting(key, default=None, root=None):
+    settings = load_settings(root)
     return settings.get(key, default)
 
 
-def set_setting(key, value):
-    settings = load_settings()
+def set_setting(key, value, root=None):
+    settings = load_settings(root)
     settings[key] = value
-    save_settings(settings)
+    save_settings(settings, root)
 
 
 def _default_husk_candidates():

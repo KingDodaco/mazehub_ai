@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.8.9"
+APP_VERSION = "0.9.0"
 
 
 def _get_display_name():
@@ -486,6 +486,68 @@ def resolve_app_exe(config, version_key=None):
         return ver.get('exe', '') if isinstance(ver, dict) else ''
     first = next(iter(versions.values()))
     return first.get('exe', '') if isinstance(first, dict) else ''
+
+
+def _houdini_install_dirs(ver=''):
+    system = platform.system()
+    roots = []
+    if system == 'Windows':
+        for base in (os.environ.get('PROGRAMFILES', r'C:\Program Files'),
+                     os.environ.get('PROGRAMFILES(X86)', r'C:\Program Files (x86)')):
+            sidefx = Path(base) / 'Side Effects Software'
+            if sidefx.is_dir():
+                roots.append(sidefx)
+    elif system == 'Darwin':
+        roots.append(Path('/Applications'))
+    else:
+        roots.extend([Path('/opt'), Path('/usr/local')])
+
+    if system in ('Windows', 'Darwin'):
+        patterns = ([f'Houdini {ver}*'] if ver else []) + ['Houdini*']
+    else:
+        patterns = ([f'hfs{ver}*', f'houdini{ver}*'] if ver else []) + ['hfs*', 'houdini*']
+
+    seen = set()
+    dirs = []
+    for pattern in patterns:
+        for root in roots:
+            try:
+                hits = sorted(root.glob(pattern), reverse=True)
+            except OSError:
+                hits = []
+            for d in hits:
+                if d not in seen:
+                    seen.add(d)
+                    dirs.append(d)
+    return dirs
+
+
+def resolve_mplay(config):
+    """Locate mplay for the default Houdini installation in an app config.
+
+    Order: mplay next to the default version's exe, then the default
+    version's install folder, then any installed Houdini, then $HFS."""
+    name = 'mplay.exe' if platform.system() == 'Windows' else 'mplay'
+    exe = resolve_app_exe(config)
+    if exe:
+        candidate = Path(exe).parent / name
+        if candidate.exists():
+            return str(candidate)
+    versions = config.get('versions', {}) or {}
+    ver = config.get('default_version', '') or next(iter(versions), '')
+    for d in _houdini_install_dirs(ver):
+        if platform.system() == 'Darwin':
+            candidate = d / 'Frameworks' / 'Houdini.framework' / 'Versions' / 'Current' / 'Resources' / 'bin' / name
+        else:
+            candidate = d / 'bin' / name
+        if candidate.exists():
+            return str(candidate)
+    hfs = os.environ.get('HFS')
+    if hfs:
+        candidate = Path(hfs) / 'bin' / name
+        if candidate.exists():
+            return str(candidate)
+    return ''
 
 
 def list_apps(apps_config):
