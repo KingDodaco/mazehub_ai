@@ -920,7 +920,12 @@ def _apply_locked(install_root, release_root, manifest, exe_mode, progress_cb):
                 new_base[rel] = base_idx[rel]
 
         if not failed:
-            new_base[rel] = entry
+            if (action in ('preserve', 'collision')
+                    and rel not in MERGE_PATHS and rel not in PRESERVE_PATHS
+                    and disk_hash):
+                new_base[rel] = dict(entry, sha256=disk_hash)
+            else:
+                new_base[rel] = entry
             if made_sidecar:
                 new_sidecars.add(rel)
             elif rel in sidecars and action in ('write', 'restore', 'merge'):
@@ -984,7 +989,7 @@ def _apply_locked(install_root, release_root, manifest, exe_mode, progress_cb):
     new_sidecars.update(result.preserved)
     new_sidecars.update(result.collisions)
 
-    final_files = [inc_idx[rel] for rel in sorted(new_base)]
+    final_files = [new_base[rel] for rel in sorted(new_base)]
     installed_data = {
         'name': manifest.get('name', 'MazeHub'),
         'version': result.version,

@@ -5951,14 +5951,34 @@ class MainWindow(QMainWindow):
         install_root = updater.find_install_root()
         if not install_root:
             return
+        mismatch = ''
+        installed = updater.load_installed(install_root)
+        if installed:
+            inst_ver = str(installed.get('version') or '')
+            if (inst_ver and updater.semver_key(inst_ver)
+                    > updater.semver_key(APP_VERSION)):
+                mismatch = (
+                    f'Installed files are v{inst_ver} but MazeHub is running '
+                    f'v{APP_VERSION}.\n\n'
+                    'The last update did not fully apply. Close all MazeHub '
+                    'windows and any programs using pipeline files, then '
+                    'start MazeHub again.\n\n'
+                    'If it still shows the old version, extract the release '
+                    'zip over your install folder (keep mazehub\\apps.json), '
+                    'or delete the file .update\\installed_manifest.json in '
+                    'your install folder and update once more.'
+                )
         report = updater.pop_report(install_root)
-        if not report:
+        if not report and not mismatch:
             return
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle('Update Applied')
-        box.setText(updater.summary_from_report(report))
-        box.exec()
+        if mismatch:
+            QMessageBox.warning(self, 'Update Incomplete', mismatch)
+        if report:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle('Update Applied')
+            box.setText(updater.summary_from_report(report))
+            box.exec()
 
 
 def _load_styles(app, styles_dir):
