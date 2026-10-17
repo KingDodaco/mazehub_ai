@@ -25,17 +25,15 @@ if not "%MAZE_PROJECT_PIPELINE%"=="" (
     )
 )
 
-(
-    echo MAZE_CONTEXT_TYPE=%MAZE_CONTEXT_TYPE%
-    echo MAZE_CONTEXT_NAME=%MAZE_CONTEXT_NAME%
-    echo MAZE_CONTEXT_PATH=%MAZE_CONTEXT_PATH%
-    echo JOB=%JOB%
-    echo HOUDINI_JOB=%HOUDINI_JOB%
-) > "%TEMP%\mazehub_houdini_launch.log"
+> "%TEMP%\mazehub_houdini_launch.log" echo MAZE_CONTEXT_TYPE="%MAZE_CONTEXT_TYPE%"
+>> "%TEMP%\mazehub_houdini_launch.log" echo MAZE_CONTEXT_NAME="%MAZE_CONTEXT_NAME%"
+>> "%TEMP%\mazehub_houdini_launch.log" echo MAZE_CONTEXT_PATH="%MAZE_CONTEXT_PATH%"
+>> "%TEMP%\mazehub_houdini_launch.log" echo JOB="%JOB%"
+>> "%TEMP%\mazehub_houdini_launch.log" echo HOUDINI_JOB="%HOUDINI_JOB%"
 
-echo Launching Houdini for %MAZE_CONTEXT_TYPE%: %MAZE_CONTEXT_NAME%
-echo JOB=%JOB%
-echo START_FRAME=%START_FRAME%  END_FRAME=%END_FRAME%  FRAME_RATE=%FRAME_RATE%
+echo Launching Houdini for "%MAZE_CONTEXT_TYPE%": "%MAZE_CONTEXT_NAME%"
+echo JOB="%JOB%"
+echo START_FRAME="%START_FRAME%"  END_FRAME="%END_FRAME%"  FRAME_RATE="%FRAME_RATE%"
 
 call "%PIPELINE_DIR%\OCIO\OCIO_set.bat"
 if not "%MAZE_PROJECT_PIPELINE%"=="" (

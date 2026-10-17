@@ -3,25 +3,33 @@ import os
 
 print("Setting timeline settings")
 
-if "START_FRAME" not in os.environ or "END_FRAME" not in os.environ or "FRAME_RATE" not in os.environ:
-    print("Required environment variables (START_FRAME, END_FRAME, FRAME_RATE) are not set. Launching Houdini with default timeline settings.")
-    
+start_raw = os.environ.get("START_FRAME", "")
+end_raw = os.environ.get("END_FRAME", "")
+fps_raw = os.environ.get("FRAME_RATE", "")
+
+print(f"START_FRAME: {start_raw!r}, END_FRAME: {end_raw!r}, FRAME_RATE: {fps_raw!r}")
+
+try:
+    start_frame = int(float(start_raw))
+    end_frame = int(float(end_raw))
+    fps = float(fps_raw)
+    if fps <= 0:
+        raise ValueError(f"invalid frame rate: {fps_raw!r}")
+except (TypeError, ValueError) as e:
+    print(f"Timeline environment not usable ({e}). Launching Houdini with default timeline settings.")
     hou.setFps(24)
-    
+
     hou.playbar.setFrameRange(1001, 1240)
     hou.playbar.setPlaybackRange(1001, 1240)
 
     hou.setFrame(1001)
-
 else:
-    print(f"START_FRAME: {os.environ.get('START_FRAME')}, END_FRAME: {os.environ.get('END_FRAME')}, FRAME_RATE: {os.environ.get('FRAME_RATE')}")
+    hou.setFps(fps)
 
-    hou.setFps(int(os.environ.get("FRAME_RATE")))
-    
-    hou.playbar.setFrameRange(int(os.environ.get("START_FRAME")), int(os.environ.get("END_FRAME")))
-    hou.playbar.setPlaybackRange(int(os.environ.get("START_FRAME")), int(os.environ.get("END_FRAME")))
+    hou.playbar.setFrameRange(start_frame, end_frame)
+    hou.playbar.setPlaybackRange(start_frame, end_frame)
 
-    hou.setFrame(int(os.environ.get("START_FRAME")))
+    hou.setFrame(start_frame)
 
 # Default flipbook output to $JOB/flipbooks so native Flipbook button saves to disk for MPlay Send
 def _maze_set_flipbook_output():

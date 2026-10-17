@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.9.1"
 
 
 def _get_display_name():
@@ -214,8 +214,12 @@ DEFAULT_SHOT_META = {
 def read_shot_meta(shot_path):
     meta_path = Path(shot_path) / SHOT_META_FILENAME
     if meta_path.exists():
-        with open(meta_path) as f:
-            stored = json.load(f)
+        try:
+            with open(meta_path) as f:
+                stored = json.load(f)
+        except (OSError, ValueError):
+            stored = {}
+        if isinstance(stored, dict):
             result = dict(DEFAULT_SHOT_META)
             result.update(stored)
             return result
@@ -247,8 +251,12 @@ DEFAULT_LIGHT_RIG_META = {
 def read_light_rig_meta(rig_path):
     meta_path = Path(rig_path) / LIGHT_RIG_META_FILENAME
     if meta_path.exists():
-        with open(meta_path) as f:
-            stored = json.load(f)
+        try:
+            with open(meta_path) as f:
+                stored = json.load(f)
+        except (OSError, ValueError):
+            stored = {}
+        if isinstance(stored, dict):
             result = dict(DEFAULT_LIGHT_RIG_META)
             result.update(stored)
             return result
@@ -402,6 +410,24 @@ APP_CONTEXT_ENV = {
 }
 
 
+def _parse_frame_range(value):
+    parts = str(value or '').split('-')
+    if len(parts) < 2:
+        return '', ''
+    try:
+        return str(int(float(parts[0].strip()))), str(int(float(parts[1].strip())))
+    except ValueError:
+        return '', ''
+
+
+def _parse_frame_rate(value):
+    try:
+        fps = int(round(float(str(value).strip())))
+    except ValueError:
+        return ''
+    return str(fps) if fps > 0 else ''
+
+
 def build_context_env(context, project_root, pipeline_dir=None):
     if not context:
         return {}
@@ -428,14 +454,9 @@ def build_context_env(context, project_root, pipeline_dir=None):
 
     if context['type'] == 'shot':
         meta = read_shot_meta(ctx_path)
-        fr = meta.get('frame_range', '')
-        if fr and '-' in fr:
-            parts = fr.split('-')
-            env['START_FRAME'] = parts[0]
-            env['END_FRAME'] = parts[1]
-        fps = meta.get('frame_rate', '')
-        if fps:
-            env['FRAME_RATE'] = fps
+        env['START_FRAME'], env['END_FRAME'] = _parse_frame_range(
+            meta.get('frame_range', ''))
+        env['FRAME_RATE'] = _parse_frame_rate(meta.get('frame_rate', ''))
     elif context['type'] == 'light_rig':
         meta = read_light_rig_meta(ctx_path)
         env['MAZE_LIGHT_RIG_HDRI'] = meta.get('hdri_path', '')
