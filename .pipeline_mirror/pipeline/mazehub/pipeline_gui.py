@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
     QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog, QTabWidget,
     QMenu, QCheckBox, QSpinBox, QProgressBar, QDateEdit,
-    QMessageBox, QProgressDialog,
+    QMessageBox, QProgressDialog, QRadioButton,
 )
 
 import updater
@@ -40,6 +40,8 @@ from pipeline_app import (
     read_production, write_production, production_score,
     PRODUCTION_STATUSES, PRODUCTION_VALUES,
     ASSET_CATEGORIES, SHOT_CATEGORIES,
+    list_backup_items, collect_backup_files, backup_total_size,
+    scan_project_size, human_size, run_backup, BACKUP_RULES,
 )
 
 
@@ -971,6 +973,30 @@ class LightRigDialog(QDialog):
         return self._result
 
 
+class ProjectSizeWorker(QThread):
+    result_ready = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, project_root, parent=None):
+        super().__init__(parent)
+        self.project_root = Path(project_root)
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            result = scan_project_size(
+                self.project_root,
+                cancel_check=lambda: self._cancelled)
+        except Exception as e:
+            self.failed.emit(str(e))
+            return
+        if not self._cancelled:
+            self.result_ready.emit(result)
+
+
 class DashboardPage(QWidget):
     def __init__(self, project_root, env_vars, apps_config, pipeline_dir, parent=None):
         super().__init__(parent)
@@ -1026,8 +1052,13 @@ class DashboardPage(QWidget):
             if color:
                 progress_card.findChild(QLabel).setStyleSheet(f'color: {color.name()};')
         stats_layout.addWidget(progress_card)
+        self.size_card = self._stat_card('Size', '…')
+        stats_layout.addWidget(self.size_card)
+        stats_layout.addStretch()
         layout.addLayout(stats_layout)
         layout.addSpacing(16)
+        self._size_cache = None
+        self._size_worker = None
 
         quick_group = QGroupBox('Quick Launch')
         quick_layout = QVBoxLayout(quick_group)
@@ -1098,6 +1129,7 @@ class DashboardPage(QWidget):
         layout.addWidget(recent_group)
 
         self._refresh_recent_files()
+        self._refresh_size()
 
         layout.addStretch()
 
@@ -1151,6 +1183,52 @@ class DashboardPage(QWidget):
 
     def _refresh_all(self):
         self._refresh_recent_files()
+        self._refresh_size(force=True)
+
+    def _refresh(self):
+        self._refresh_recent_files()
+        self._refresh_size()
+
+    def _refresh_size(self, force=False):
+        if self._size_worker is not None and self._size_worker.isRunning():
+            return
+        now = time.time()
+        if self._size_cache and not force and \
+                now - self._size_cache[0] < 60 and \
+                self._size_cache[2] == str(self.project_root):
+            self._apply_size_result(self._size_cache[1])
+            return
+        self.size_card.findChild(QLabel).setText('…')
+        self._size_worker = ProjectSizeWorker(self.project_root, self)
+        self._size_worker.result_ready.connect(self._on_size_result)
+        self._size_worker.failed.connect(self._on_size_failed)
+        self._size_worker.start()
+
+    def _on_size_result(self, result):
+        self._size_cache = (time.time(), result, str(self.project_root))
+        self._apply_size_result(result)
+
+    def _on_size_failed(self, message):
+        self.size_card.findChild(QLabel).setText('?')
+        self.size_card.setToolTip(f'Could not calculate project size: {message}')
+
+    def _apply_size_result(self, result):
+        value = self.size_card.findChild(QLabel)
+        value.setText(human_size(result['bytes']))
+        lines = [
+            f"{result['count']:,} files · {human_size(result['bytes'])}",
+        ]
+        if result['online_count']:
+            lines.append(
+                f"{result['online_count']:,} online-only files "
+                f"({human_size(result['online_bytes'])}) — sizes from "
+                "cloud metadata")
+        if result['unsized_count']:
+            lines.append(
+                f"{result['unsized_count']:,} files report 0 bytes — "
+                'size unknown')
+        lines.append(f"Updated {time.strftime('%H:%M')}")
+        self.size_card.setToolTip('\n'.join(lines))
 
     def _refresh_recent_files(self):
         files = load_recent_files()[:8]
@@ -4517,6 +4595,422 @@ class SyncProgressDialog(QDialog):
         self.reject()
 
 
+class _BackupPreviewWorker(QThread):
+    ready = Signal(int, object)
+
+    def __init__(self, project_root, item_paths, rule_ids, generation, parent=None):
+        super().__init__(parent)
+        self.project_root = Path(project_root)
+        self.item_paths = [Path(p) for p in item_paths]
+        self.rule_ids = list(rule_ids)
+        self.generation = generation
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            files = collect_backup_files(
+                self.project_root, self.item_paths, self.rule_ids,
+                cancel_check=lambda: self._cancelled)
+            if self._cancelled:
+                return
+            result = backup_total_size(files)
+        except Exception as e:
+            result = {'error': str(e)}
+        if not self._cancelled:
+            self.ready.emit(self.generation, result)
+
+
+class BackupProgressDialog(QDialog):
+    def __init__(self, project_root, item_paths, rule_ids, dest, fmt, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Backing Up Project')
+        self.setMinimumWidth(480)
+        self.setModal(True)
+        self._project_root = Path(project_root)
+        self._item_paths = [Path(p) for p in item_paths]
+        self._rule_ids = list(rule_ids)
+        self._dest = Path(dest)
+        self._fmt = fmt
+        self._thread = None
+        self._result = None
+        layout = QVBoxLayout(self)
+        self.status_label = QLabel('Collecting files…')
+        layout.addWidget(self.status_label)
+        self.progress = QProgressBar()
+        self.progress.setMinimum(0)
+        self.progress.setMaximum(0)
+        self.progress.setTextVisible(True)
+        layout.addWidget(self.progress)
+        self.detail_label = QLabel('')
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setObjectName('hint')
+        layout.addWidget(self.detail_label)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.cancel_btn = QPushButton('Cancel')
+        self.cancel_btn.setCursor(Qt.PointingHandCursor)
+        self.cancel_btn.clicked.connect(self._cancel)
+        btn_row.addWidget(self.cancel_btn)
+        layout.addLayout(btn_row)
+        self._start()
+
+    def _start(self):
+        project_root = self._project_root
+        item_paths = self._item_paths
+        rule_ids = self._rule_ids
+        dest = self._dest
+        fmt = self._fmt
+
+        class Worker(QThread):
+            progress = Signal(int, int, str)
+            phase = Signal(str)
+            done = Signal(object)
+
+            def __init__(self):
+                super().__init__()
+                self._cancelled = False
+
+            def cancel(self):
+                self._cancelled = True
+
+            def run(self):
+                self.phase.emit('Collecting files…')
+                files = collect_backup_files(
+                    project_root, item_paths, rule_ids,
+                    cancel_check=lambda: self._cancelled)
+                if self._cancelled:
+                    self.done.emit({
+                        'done': 0, 'total': 0, 'errors': [],
+                        'cancelled': True, 'dest': str(dest)})
+                    return
+                self.phase.emit(
+                    'Copying files…' if fmt == 'copy' else 'Writing zip…')
+                result = run_backup(
+                    files, dest, fmt,
+                    progress_cb=lambda d, t, cur: self.progress.emit(d, t, cur),
+                    cancel_check=lambda: self._cancelled)
+                self.done.emit(result)
+
+        self._thread = Worker()
+        self._thread.progress.connect(self._on_progress)
+        self._thread.phase.connect(self.status_label.setText)
+        self._thread.done.connect(self._on_done)
+        self._thread.start()
+
+    def _on_progress(self, done, total, current):
+        if self.progress.maximum() != total:
+            self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(done)
+        self.detail_label.setText(f'{done}/{total} — {current}')
+
+    def _on_done(self, result):
+        self._result = result
+        self.cancel_btn.setEnabled(False)
+        self.accept()
+
+    def result(self):
+        return self._result or {
+            'done': 0, 'total': 0, 'errors': [], 'cancelled': True,
+            'dest': str(self._dest)}
+
+    def _cancel(self):
+        if self._thread is not None and self._thread.isRunning():
+            self._thread.cancel()
+            self.cancel_btn.setEnabled(False)
+            self.status_label.setText('Cancelling…')
+            return
+        self.accept()
+
+    def reject(self):
+        if self._thread is not None and self._thread.isRunning():
+            self._cancel()
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._thread is not None and self._thread.isRunning():
+            self._cancel()
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
+class BackupDialog(QDialog):
+    def __init__(self, project_root, parent=None):
+        super().__init__(parent)
+        self.project_root = Path(project_root)
+        self.setWindowTitle(f'Backup — {self.project_root.name}')
+        self.setMinimumSize(780, 680)
+        self._preview_gen = 0
+        self._preview_thread = None
+        self._dest_path = None
+        self._backup_data = None
+        self._build()
+
+    def _build(self):
+        layout = QVBoxLayout(self)
+        hint = QLabel(
+            'Choose which folders to back up and what to include, pick a '
+            'destination, then start. Sizes come from file metadata only — '
+            'online-only cloud files are not downloaded during the preview '
+            '(starting the backup downloads them as they are copied).')
+        hint.setWordWrap(True)
+        hint.setObjectName('hint')
+        layout.addWidget(hint)
+
+        top_split = QHBoxLayout()
+
+        folders_group = QGroupBox('What to back up')
+        folders_layout = QVBoxLayout(folders_group)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.setUniformRowHeights(True)
+        folders_layout.addWidget(self.tree)
+        tree_btns = QHBoxLayout()
+        all_btn = QPushButton('Select All')
+        all_btn.setCursor(Qt.PointingHandCursor)
+        all_btn.clicked.connect(lambda: self._set_all_checks(Qt.Checked))
+        tree_btns.addWidget(all_btn)
+        none_btn = QPushButton('Select None')
+        none_btn.setCursor(Qt.PointingHandCursor)
+        none_btn.clicked.connect(lambda: self._set_all_checks(Qt.Unchecked))
+        tree_btns.addWidget(none_btn)
+        tree_btns.addStretch()
+        folders_layout.addLayout(tree_btns)
+        top_split.addWidget(folders_group, 1)
+
+        rules_group = QGroupBox('What to include')
+        rules_layout = QVBoxLayout(rules_group)
+        self.rule_checks = {}
+        self._rule_other_checks = []
+        for rule in BACKUP_RULES:
+            cb = QCheckBox(rule['label'])
+            cb.setChecked(bool(rule['default']))
+            cb.setToolTip(rule['hint'])
+            rules_layout.addWidget(cb)
+            self.rule_checks[rule['id']] = cb
+            if rule['id'] != 'everything':
+                self._rule_other_checks.append(cb)
+        self.rule_checks['everything'].toggled.connect(self._on_everything_toggled)
+        rules_group.setMaximumWidth(320)
+        top_split.addWidget(rules_group, 0)
+        layout.addLayout(top_split)
+
+        self.tree.blockSignals(True)
+        for node in list_backup_items(self.project_root):
+            self._add_tree_node(None, node)
+        self.tree.blockSignals(False)
+
+        format_group = QGroupBox('Format')
+        format_layout = QHBoxLayout(format_group)
+        self.copy_radio = QRadioButton('Copy to folder')
+        self.zip_radio = QRadioButton('ZIP archive')
+        self.zip_radio.setChecked(True)
+        format_layout.addWidget(self.copy_radio)
+        format_layout.addWidget(self.zip_radio)
+        format_layout.addStretch()
+        layout.addWidget(format_group)
+        self.copy_radio.toggled.connect(self._on_format_changed)
+
+        dest_group = QGroupBox('Destination')
+        dest_layout = QHBoxLayout(dest_group)
+        self.dest_edit = QLineEdit()
+        self.dest_edit.setReadOnly(True)
+        self.dest_edit.setPlaceholderText('Choose a destination…')
+        dest_layout.addWidget(self.dest_edit, 1)
+        browse_btn = QPushButton('Browse…')
+        browse_btn.setCursor(Qt.PointingHandCursor)
+        browse_btn.clicked.connect(self._browse_dest)
+        dest_layout.addWidget(browse_btn)
+        layout.addWidget(dest_group)
+
+        self.preview_label = QLabel('Select folders to see a size preview.')
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setObjectName('hint')
+        layout.addWidget(self.preview_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        self.start_btn = QPushButton('Start Backup')
+        self.start_btn.setDefault(True)
+        self.start_btn.setEnabled(False)
+        self.start_btn.clicked.connect(self._start)
+        btn_row.addWidget(self.start_btn)
+        layout.addLayout(btn_row)
+
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.timeout.connect(self._start_preview)
+        self.tree.itemChanged.connect(self._schedule_preview)
+        self._schedule_preview()
+
+    def _add_tree_node(self, parent_item, node):
+        item = QTreeWidgetItem([node['label']])
+        item.setData(0, Qt.UserRole, str(node['path']))
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsAutoTristate)
+        item.setCheckState(0, Qt.Checked)
+        if parent_item is None:
+            self.tree.addTopLevelItem(item)
+            if node['children']:
+                item.setExpanded(True)
+        else:
+            parent_item.addChild(item)
+        for child in node['children']:
+            self._add_tree_node(item, child)
+
+    def _set_all_checks(self, state):
+        self.tree.blockSignals(True)
+
+        def walk(item):
+            item.setCheckState(0, state)
+            for i in range(item.childCount()):
+                walk(item.itemChild(i))
+
+        for i in range(self.tree.topLevelItemCount()):
+            walk(self.tree.topLevelItem(i))
+        self.tree.blockSignals(False)
+        self._schedule_preview()
+
+    def _on_everything_toggled(self, checked):
+        for cb in self._rule_other_checks:
+            cb.setEnabled(not checked)
+
+    def _on_format_changed(self, _):
+        self._dest_path = None
+        self.dest_edit.clear()
+        self.start_btn.setEnabled(False)
+
+    def _browse_dest(self):
+        from PySide6.QtWidgets import QFileDialog
+        default_name = f'{self.project_root.name}_backup_{time.strftime("%Y%m%d_%H%M%S")}'
+        if self.zip_radio.isChecked():
+            suggested = str(self.project_root.parent / f'{default_name}.zip')
+            path, _ = QFileDialog.getSaveFileName(
+                self, 'Save backup archive', suggested, 'ZIP Archives (*.zip)')
+            if not path:
+                return
+            self._dest_path = Path(path)
+        else:
+            start = str(self.project_root.parent)
+            if self._dest_path and self._dest_path.parent:
+                start = str(self._dest_path.parent)
+            parent = QFileDialog.getExistingDirectory(
+                self, 'Choose backup destination folder', start)
+            if not parent:
+                return
+            self._dest_path = Path(parent) / default_name
+        self.dest_edit.setText(str(self._dest_path))
+        self.start_btn.setEnabled(True)
+        self._schedule_preview()
+
+    def _selected_item_paths(self):
+        paths = []
+
+        def walk(item):
+            if item.checkState(0) == Qt.Checked:
+                p = item.data(0, Qt.UserRole)
+                if p:
+                    paths.append(Path(p))
+                return
+            for i in range(item.childCount()):
+                walk(item.itemChild(i))
+
+        for i in range(self.tree.topLevelItemCount()):
+            walk(self.tree.topLevelItem(i))
+        return paths
+
+    def _enabled_rules(self):
+        return [rid for rid, cb in self.rule_checks.items() if cb.isChecked()]
+
+    def _schedule_preview(self, *_):
+        self._preview_timer.start(300)
+
+    def _start_preview(self):
+        paths = self._selected_item_paths()
+        rules = self._enabled_rules()
+        if not paths or not rules:
+            self.preview_label.setText(
+                'Select at least one folder and one content rule to preview '
+                'the backup size.')
+            return
+        self._preview_gen += 1
+        self.preview_label.setText('Computing preview…')
+        self._preview_thread = _BackupPreviewWorker(
+            self.project_root, paths, rules, self._preview_gen, self)
+        self._preview_thread.ready.connect(self._on_preview_ready)
+        self._preview_thread.start()
+
+    def _on_preview_ready(self, generation, result):
+        if generation != self._preview_gen:
+            return
+        if isinstance(result, dict) and 'error' in result:
+            self.preview_label.setText(f'Preview failed: {result["error"]}')
+            return
+        lines = [f"{result['count']:,} files · {human_size(result['bytes'])}"]
+        if result['online_count']:
+            lines.append(
+                f"includes {result['online_count']:,} online-only files "
+                f"({human_size(result['online_bytes'])}) — sizes from cloud "
+                'metadata')
+        if result['unsized_count']:
+            lines.append(
+                f"⚠ {result['unsized_count']:,} files report 0 bytes — "
+                'size unknown without downloading')
+        lines.append(
+            'Note: starting the backup will download online-only files as '
+            'they are copied.')
+        self.preview_label.setText('\n'.join(lines))
+
+    def _start(self):
+        paths = self._selected_item_paths()
+        rules = self._enabled_rules()
+        if not paths:
+            QMessageBox.warning(
+                self, 'Backup', 'Select at least one folder to back up.')
+            return
+        if not rules:
+            QMessageBox.warning(
+                self, 'Backup', 'Select at least one content rule.')
+            return
+        if not self._dest_path:
+            return
+        try:
+            dest = self._dest_path.expanduser().resolve()
+            root = self.project_root.resolve()
+            if dest == root or dest.is_relative_to(root):
+                QMessageBox.warning(
+                    self, 'Backup',
+                    'The destination is inside the project. Choose a location '
+                    'outside the project folder.')
+                return
+        except OSError:
+            pass
+        fmt = 'zip' if self.zip_radio.isChecked() else 'copy'
+        dlg = BackupProgressDialog(
+            self.project_root, paths, rules, self._dest_path, fmt, self)
+        dlg.exec()
+        result = dlg.result()
+        self._backup_data = {'result': result, 'fmt': fmt}
+        if result.get('cancelled'):
+            return
+        self.accept()
+
+    def result_data(self):
+        return self._backup_data
+
+    def reject(self):
+        if self._preview_thread is not None and self._preview_thread.isRunning():
+            self._preview_thread.cancel()
+            self._preview_thread.wait(3000)
+        super().reject()
+
+
 class ProjectSettingsDialog(QDialog):
     def __init__(self, root, parent=None):
         super().__init__(parent)
@@ -4793,6 +5287,9 @@ class ProjectsPage(QWidget):
         hint.setWordWrap(True)
         hint.setObjectName('hint')
         layout.addWidget(hint)
+        self.size_label = QLabel('Active project size: …')
+        self.size_label.setObjectName('hint')
+        layout.addWidget(self.size_label)
         layout.addSpacing(16)
 
         self.projects_table = QTableWidget()
@@ -4833,6 +5330,11 @@ class ProjectsPage(QWidget):
         proj_settings_btn.setCursor(Qt.PointingHandCursor)
         proj_settings_btn.clicked.connect(self._open_project_settings)
         projects_toolbar.addWidget(proj_settings_btn)
+        backup_btn = QPushButton('Backup…')
+        backup_btn.setMinimumHeight(32)
+        backup_btn.setCursor(Qt.PointingHandCursor)
+        backup_btn.clicked.connect(self._backup_project)
+        projects_toolbar.addWidget(backup_btn)
         projects_toolbar.addStretch()
         layout.addLayout(projects_toolbar)
 
@@ -4843,7 +5345,84 @@ class ProjectsPage(QWidget):
 
         layout.addStretch()
 
+        self._size_cache = None
+        self._size_worker = None
+
         self._load_projects_table()
+        self._refresh_size()
+
+    def _refresh(self):
+        self._refresh_size()
+
+    def _refresh_size(self, force=False):
+        if self._size_worker is not None and self._size_worker.isRunning():
+            return
+        now = time.time()
+        if self._size_cache and not force and \
+                now - self._size_cache[0] < 60 and \
+                self._size_cache[2] == str(self.project_root):
+            self._apply_size_result(self._size_cache[1])
+            return
+        self.size_label.setText('Active project size: calculating…')
+        self._size_worker = ProjectSizeWorker(self.project_root, self)
+        self._size_worker.result_ready.connect(self._on_size_result)
+        self._size_worker.failed.connect(self._on_size_failed)
+        self._size_worker.start()
+
+    def _on_size_result(self, result):
+        self._size_cache = (time.time(), result, str(self.project_root))
+        self._apply_size_result(result)
+
+    def _on_size_failed(self, message):
+        self.size_label.setText(f'Active project size: unavailable ({message})')
+
+    def _apply_size_result(self, result):
+        self.size_label.setText(
+            f"Active project size: {human_size(result['bytes'])} · "
+            f"{result['count']:,} files")
+        lines = [
+            f"{result['count']:,} files · {human_size(result['bytes'])}",
+        ]
+        if result['online_count']:
+            lines.append(
+                f"{result['online_count']:,} online-only files "
+                f"({human_size(result['online_bytes'])}) — sizes from "
+                'cloud metadata')
+        if result['unsized_count']:
+            lines.append(
+                f"{result['unsized_count']:,} files report 0 bytes — "
+                'size unknown')
+        lines.append(f"Updated {time.strftime('%H:%M')}")
+        self.size_label.setToolTip('\n'.join(lines))
+
+    def _backup_project(self):
+        dlg = BackupDialog(self.project_root, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        data = dlg.result_data()
+        if not data:
+            return
+        res = data.get('result') or {}
+        if res.get('cancelled'):
+            self.projects_status.setText(
+                f"Backup cancelled — {res.get('done', 0)} files written.")
+            self.projects_status.setStyleSheet('color: #ffa726;')
+            return
+        dest = res.get('dest', '')
+        if res.get('errors'):
+            msg = (f"Backup finished with {len(res['errors'])} error(s) — "
+                   f"{res.get('done', 0)} files written.\n"
+                   f"First error: {res['errors'][0]}")
+            self.projects_status.setText(msg.split('\n')[0])
+            self.projects_status.setStyleSheet('color: #ff6b6b;')
+            QMessageBox.warning(self, 'Backup', msg)
+            return
+        self.projects_status.setText(
+            f"Backup complete: {res.get('done', 0)} files → {dest}")
+        self.projects_status.setStyleSheet('color: #00c853;')
+        QMessageBox.information(
+            self, 'Backup Complete',
+            f"{res.get('done', 0)} files backed up to:\n{dest}")
 
     def _load_projects_table(self):
         from settings import list_projects

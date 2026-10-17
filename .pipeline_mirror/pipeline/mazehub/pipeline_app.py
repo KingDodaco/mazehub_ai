@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.9.1"
+APP_VERSION = "0.10.0"
 
 
 def _get_display_name():
@@ -1009,6 +1009,408 @@ def sync_usd_references(usd_file, progress_callback=None):
             break
         time.sleep(0.5)
     return synced == total
+
+
+# ---------------------------------------------------------------------------
+# Backup
+# ---------------------------------------------------------------------------
+
+BACKUP_EXCLUDE_DIR_NAMES = {'__pycache__', '.git'}
+BACKUP_EXCLUDE_SUBSTR = '_backup'
+
+WORKING_FILE_EXTENSIONS = sorted({
+    ext.lower() for exts in APP_FILE_EXTENSIONS.values() for ext in exts
+})
+
+BACKUP_RULES = [
+    {
+        'id': 'working_files',
+        'label': 'Working files',
+        'hint': 'DCC scene files: .hip/.hipnc/.hiplc, .ma/.mb, .blend, .nk, .psd, .spp, .ztl …',
+        'default': True,
+        'extensions': set(WORKING_FILE_EXTENSIONS),
+        'basenames': None,
+        'path_any': None,
+        'path_none': None,
+    },
+    {
+        'id': 'usd_scenes',
+        'label': 'USD scenes',
+        'hint': '.usd/.usda/.usdc/.usdz anywhere except render folders',
+        'default': True,
+        'extensions': {'.usd', '.usda', '.usdc', '.usdz'},
+        'basenames': None,
+        'path_any': None,
+        'path_none': ('render',),
+    },
+    {
+        'id': 'metadata',
+        'label': 'Metadata & thumbnails',
+        'hint': '_metadata.json, _production.json, _thumbnail.png',
+        'default': True,
+        'extensions': None,
+        'basenames': {'_metadata.json', '_production.json', '_thumbnail.png'},
+        'path_any': None,
+        'path_none': None,
+    },
+    {
+        'id': 'configs',
+        'label': 'Project config files',
+        'hint': '.json/.csv/.txt/.yaml/.env in mazehub/, DB/, pipeline/',
+        'default': True,
+        'extensions': {'.json', '.csv', '.txt', '.yaml', '.yml', '.env'},
+        'basenames': None,
+        'path_any': ('mazehub', 'db', 'pipeline'),
+        'path_none': None,
+    },
+    {
+        'id': 'input_footage',
+        'label': 'Input footage',
+        'hint': 'Any file under input/, plates/, footage/ (e.g. live-action plates)',
+        'default': False,
+        'extensions': None,
+        'basenames': None,
+        'path_any': ('input', 'plates', 'footage'),
+        'path_none': None,
+    },
+    {
+        'id': 'onset_media',
+        'label': 'Onset media',
+        'hint': 'Camera/plate media (.mov .ari .r3d .exr …) under onset/, lensgrid/, grainref/',
+        'default': False,
+        'extensions': {'.mov', '.mp4', '.mxf', '.ari', '.r3d', '.braw', '.exr', '.dpx'},
+        'basenames': None,
+        'path_any': ('onset', 'lensgrid', 'grainref'),
+        'path_none': None,
+    },
+    {
+        'id': 'hdri_photogrammetry',
+        'label': 'HDRI & photogrammetry',
+        'hint': 'Images under hdri/, photogrammetry/, panorama/ (stitched HDRIs etc.)',
+        'default': False,
+        'extensions': {'.exr', '.hdr', '.tif', '.tiff', '.jpg', '.jpeg', '.png'},
+        'basenames': None,
+        'path_any': ('hdri', 'photogrammetry', 'panorama'),
+        'path_none': None,
+    },
+    {
+        'id': 'textures',
+        'label': 'Textures',
+        'hint': 'Any file under texture/, textures/, tex/',
+        'default': False,
+        'extensions': None,
+        'basenames': None,
+        'path_any': ('texture', 'textures', 'tex'),
+        'path_none': None,
+    },
+    {
+        'id': 'caches_geo',
+        'label': 'Caches, geo & exports',
+        'hint': 'Any file under cache/, geo/, export/',
+        'default': False,
+        'extensions': None,
+        'basenames': None,
+        'path_any': ('cache', 'geo', 'export'),
+        'path_none': None,
+    },
+    {
+        'id': 'renders',
+        'label': 'Renders',
+        'hint': 'Any file under render/ and images/',
+        'default': False,
+        'extensions': None,
+        'basenames': None,
+        'path_any': ('render', 'images'),
+        'path_none': None,
+    },
+    {
+        'id': 'reference',
+        'label': 'Reference & concept',
+        'hint': 'Any file under reference/, concept/, storyboard/, annotations/',
+        'default': False,
+        'extensions': None,
+        'basenames': None,
+        'path_any': ('reference', 'concept', 'storyboard', 'annotations'),
+        'path_none': None,
+    },
+    {
+        'id': 'everything',
+        'label': 'Everything',
+        'hint': 'All files in the selected folders, ignoring the rules above',
+        'default': False,
+        'extensions': None,
+        'basenames': None,
+        'path_any': None,
+        'path_none': None,
+    },
+]
+
+BACKUP_TOP_LEVEL = [
+    ('sequence', 'Shots'),
+    ('asset', 'Assets'),
+    ('lightrigs', 'Light Rigs'),
+    ('onset', 'Onset'),
+    ('development', 'Development'),
+    ('IO', 'IO'),
+    ('rnd', 'rnd'),
+    ('MISC', 'MISC'),
+    ('DB', 'DB'),
+    ('mazehub', 'mazehub'),
+    ('pipeline', 'pipeline'),
+]
+
+
+def _backup_excluded_part(name):
+    lowered = name.lower()
+    return name in BACKUP_EXCLUDE_DIR_NAMES or BACKUP_EXCLUDE_SUBSTR in lowered
+
+
+def _backup_dir_children(base):
+    if not base.is_dir():
+        return []
+    try:
+        return sorted(
+            (e for e in base.iterdir()
+             if e.is_dir() and not e.name.startswith('_')
+             and not _backup_excluded_part(e.name)),
+            key=lambda p: p.name.lower(),
+        )
+    except OSError:
+        return []
+
+
+def list_backup_items(project_root):
+    root = Path(project_root)
+
+    def _node(path, label=None):
+        return {'label': label or path.name, 'path': path, 'children': []}
+
+    items = []
+    for folder, label in BACKUP_TOP_LEVEL:
+        base = root / folder
+        if not base.is_dir():
+            continue
+        node = _node(base, label)
+        if folder == 'asset':
+            for cat in _backup_dir_children(base):
+                cat_node = _node(cat)
+                cat_node['children'] = [_node(a) for a in _backup_dir_children(cat)]
+                node['children'].append(cat_node)
+        elif folder in ('sequence', 'lightrigs', 'onset'):
+            node['children'] = [_node(c) for c in _backup_dir_children(base)]
+        items.append(node)
+    return items
+
+
+def _rule_matches(rule, name, suffix, parts_lower):
+    extensions = rule.get('extensions')
+    if extensions is not None and suffix not in extensions:
+        return False
+    basenames = rule.get('basenames')
+    if basenames is not None and name not in basenames:
+        return False
+    path_any = rule.get('path_any')
+    if path_any:
+        if not any(sub in part for part in parts_lower for sub in path_any):
+            return False
+    path_none = rule.get('path_none')
+    if path_none:
+        if any(sub in part for part in parts_lower for sub in path_none):
+            return False
+    return True
+
+
+def collect_backup_files(project_root, item_paths, enabled_rule_ids,
+                         progress_cb=None, cancel_check=None):
+    project_root = Path(project_root).resolve()
+    rules_by_id = {r['id']: r for r in BACKUP_RULES}
+    rules = [rules_by_id[rid] for rid in enabled_rule_ids if rid in rules_by_id]
+    catch_all = 'everything' in enabled_rule_ids
+    files = []
+    seen = set()
+    for item in item_paths:
+        item = Path(item)
+        if not item.exists():
+            continue
+        base = item if item.is_dir() else item.parent
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if not _backup_excluded_part(d)]
+            if cancel_check and cancel_check():
+                return files
+            for filename in filenames:
+                if cancel_check and cancel_check():
+                    return files
+                src = Path(dirpath) / filename
+                try:
+                    rel = src.resolve().relative_to(project_root)
+                except (OSError, ValueError):
+                    continue
+                parts_lower = [p.lower() for p in rel.parts]
+                if any(_backup_excluded_part(p) for p in rel.parts):
+                    continue
+                key = str(rel)
+                if key in seen:
+                    continue
+                if not catch_all:
+                    suffix = src.suffix.lower()
+                    if not any(_rule_matches(r, src.name.lower(), suffix, parts_lower)
+                               for r in rules):
+                        continue
+                seen.add(key)
+                files.append((src, rel.as_posix()))
+                if progress_cb:
+                    progress_cb(len(files), key)
+    files.sort(key=lambda pair: pair[1])
+    return files
+
+
+def _is_windows_online_only(path):
+    if platform.system() != 'Windows':
+        return False
+    try:
+        import ctypes
+        GetFileAttributesW = ctypes.windll.kernel32.GetFileAttributesW
+        GetFileAttributesW.argtypes = [ctypes.c_wchar_p]
+        GetFileAttributesW.restype = ctypes.c_uint32
+        attrs = GetFileAttributesW(str(path))
+        if attrs == 0xFFFFFFFF:
+            return False
+        FILE_ATTRIBUTE_OFFLINE = 0x1000
+        FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x40000
+        FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x400000
+        return bool(attrs & (FILE_ATTRIBUTE_OFFLINE |
+                             FILE_ATTRIBUTE_RECALL_ON_OPEN |
+                             FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS))
+    except Exception:
+        return False
+
+
+def scan_file_size(path):
+    """Return (size, is_online_only, is_unsized) from metadata only.
+
+    Never opens the file, so online-only cloud placeholders (OneDrive
+    Files On-Demand, rclone mounts) are not hydrated. On Windows the
+    reported st_size for placeholders is the remote size.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return 0, False, True
+    size = st.st_size
+    online = _is_windows_online_only(path)
+    if size == 0 and not online:
+        return 0, False, True
+    return size, online, False
+
+
+def _size_result():
+    return {
+        'count': 0,
+        'bytes': 0,
+        'online_count': 0,
+        'online_bytes': 0,
+        'unsized_count': 0,
+    }
+
+
+def backup_total_size(files):
+    result = _size_result()
+    for src, _rel in files:
+        size, online, unsized = scan_file_size(src)
+        result['count'] += 1
+        result['bytes'] += size
+        if online:
+            result['online_count'] += 1
+            result['online_bytes'] += size
+        if unsized:
+            result['unsized_count'] += 1
+    return result
+
+
+def scan_project_size(project_root, progress_cb=None, cancel_check=None):
+    """Size of the whole project from metadata only (no file reads)."""
+    root = Path(project_root)
+    result = _size_result()
+    if not root.is_dir():
+        return result
+    scanned = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not _backup_excluded_part(d)]
+        for filename in filenames:
+            if cancel_check and cancel_check():
+                return result
+            size, online, unsized = scan_file_size(Path(dirpath) / filename)
+            result['count'] += 1
+            result['bytes'] += size
+            if online:
+                result['online_count'] += 1
+                result['online_bytes'] += size
+            if unsized:
+                result['unsized_count'] += 1
+            scanned += 1
+            if progress_cb and scanned % 200 == 0:
+                progress_cb(scanned)
+    return result
+
+
+def human_size(num_bytes):
+    size = float(num_bytes or 0)
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+        if size < 1024.0 or unit == 'TB':
+            if unit == 'B':
+                return f'{int(size)} B'
+            return f'{size:.1f} {unit}'
+        size /= 1024.0
+    return f'{size:.1f} TB'
+
+
+def run_backup(files, dest, fmt='copy', progress_cb=None, cancel_check=None):
+    import shutil
+    import zipfile
+    dest = Path(dest)
+    result = {'done': 0, 'total': len(files), 'errors': [], 'cancelled': False,
+              'dest': str(dest)}
+    if fmt == 'zip':
+        if dest.suffix.lower() != '.zip':
+            dest = dest if dest.suffix else dest.with_suffix('.zip')
+            result['dest'] = str(dest)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            result['errors'].append(str(e))
+            return result
+        with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for src, rel in files:
+                if cancel_check and cancel_check():
+                    result['cancelled'] = True
+                    return result
+                try:
+                    zf.write(src, rel)
+                except (OSError, ValueError) as e:
+                    result['errors'].append(f'{rel}: {e}')
+                result['done'] += 1
+                if progress_cb:
+                    progress_cb(result['done'], result['total'], rel)
+    else:
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            result['errors'].append(str(e))
+            return result
+        for src, rel in files:
+            if cancel_check and cancel_check():
+                result['cancelled'] = True
+                return result
+            target = dest / rel
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, target)
+            except (OSError, ValueError) as e:
+                result['errors'].append(f'{rel}: {e}')
+            result['done'] += 1
+            if progress_cb:
+                progress_cb(result['done'], result['total'], rel)
+    return result
 
 
 def print_header(project_root):
