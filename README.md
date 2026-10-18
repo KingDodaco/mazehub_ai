@@ -223,6 +223,11 @@ offline channel — blank means GitHub releases).
 ### Home
 
 Dashboard showing project info and quick launch buttons for each DCC application.
+The stats row includes a **Size** card with the total size of the active project,
+calculated in the background from file metadata only (online-only cloud files
+are counted at their remote size without being downloaded). The value refreshes
+when you press **Refresh** or switch back to the page; hover the card for the
+file count, online-only totals, and last update time.
 
 ### Launch Apps
 
@@ -244,6 +249,27 @@ View all environment variables set by MazeHub for the current project and contex
 
 Manage projects (open/add/create/remove) and, via **Project Settings…**,
 edit the selected project's webhook URLs and repair its file structure.
+The header shows the total size of the active project (metadata-only
+calculation, same as the Home page Size card).
+
+**Backup…** opens a dialog to back up the currently open project to a folder
+or ZIP archive:
+
+- **What to back up** — a tree of all project folders (Shots, Assets, Light
+  Rigs, Onset, Development, IO, rnd, MISC, DB, mazehub, pipeline); tick whole
+  categories or individual items.
+- **What to include** — content rules combining file extensions with folder
+  context. By default only working files (`.hip/.hipnc/.ma/.blend/.nk/…`), USD
+  scenes, metadata, and project config files are included. Toggle rules to add
+  input footage, onset media, HDRI/photogrammetry, textures, caches, renders,
+  or reference — e.g. live-action `.mov` under `input/plates` without the
+  `.mov` previews inside `nuke/render`. "Everything" includes all files.
+- **Format** — copy the files into a folder tree mirroring the project
+  structure, or pack them into a single ZIP.
+- **Preview** — live file count and total size, computed from file metadata
+  only. Online-only cloud files (OneDrive Files On-Demand, rclone mounts) are
+  counted at their remote size without being downloaded; starting the backup
+  downloads them as they are copied.
 
 ### Settings
 
@@ -279,6 +305,8 @@ When launching a DCC app with a context, additional variables are set:
 | `START_FRAME` | Start frame (shots only) |
 | `END_FRAME` | End frame (shots only) |
 | `FRAME_RATE` | Frame rate (shots only) |
+| `JOB` / `HOUDINI_JOB` | `<context>/houdini` for Houdini launches, context root otherwise |
+| `MAYA_PROJECT` | `<context>/maya` for Maya launches |
 
 ## DCC Application Launchers
 

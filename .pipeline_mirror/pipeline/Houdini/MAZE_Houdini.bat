@@ -1,12 +1,16 @@
 @echo off
 setlocal
 
+set "LOG_FILE=%TEMP%\mazehub_launch.log"
+
 set "PIPELINE_DIR=%MAZE_PIPELINE%"
 
 if defined MAZE_CONTEXT_PATH (
     set "JOB=%MAZE_CONTEXT_PATH%\houdini"
     set "CONTEXT_NAME=%MAZE_CONTEXT_NAME%"
 )
+
+if defined JOB if not exist "%JOB%" mkdir "%JOB%"
 
 set "HOUDINI_PACKAGE_DIR=%PIPELINE_DIR%\Houdini\Packages"
 set "HOUDINI_PATH=%PIPELINE_DIR%\Houdini;&;%HOUDINI_PATH%"
@@ -25,11 +29,12 @@ if not "%MAZE_PROJECT_PIPELINE%"=="" (
     )
 )
 
-> "%TEMP%\mazehub_houdini_launch.log" echo MAZE_CONTEXT_TYPE="%MAZE_CONTEXT_TYPE%"
->> "%TEMP%\mazehub_houdini_launch.log" echo MAZE_CONTEXT_NAME="%MAZE_CONTEXT_NAME%"
->> "%TEMP%\mazehub_houdini_launch.log" echo MAZE_CONTEXT_PATH="%MAZE_CONTEXT_PATH%"
->> "%TEMP%\mazehub_houdini_launch.log" echo JOB="%JOB%"
->> "%TEMP%\mazehub_houdini_launch.log" echo HOUDINI_JOB="%HOUDINI_JOB%"
+> "%LOG_FILE%" echo app=Houdini
+>> "%LOG_FILE%" echo MAZE_CONTEXT_TYPE="%MAZE_CONTEXT_TYPE%"
+>> "%LOG_FILE%" echo MAZE_CONTEXT_NAME="%MAZE_CONTEXT_NAME%"
+>> "%LOG_FILE%" echo MAZE_CONTEXT_PATH="%MAZE_CONTEXT_PATH%"
+>> "%LOG_FILE%" echo JOB="%JOB%"
+>> "%LOG_FILE%" echo HOUDINI_JOB="%HOUDINI_JOB%"
 
 echo Launching Houdini for "%MAZE_CONTEXT_TYPE%": "%MAZE_CONTEXT_NAME%"
 echo JOB="%JOB%"
@@ -44,11 +49,26 @@ if not "%MAZE_PROJECT_PIPELINE%"=="" (
     )
 )
 
-if Exist "%MAZE_OPEN_FILE%" (
+if not "%~1"=="" set "MAZE_OPEN_FILE=%~1"
+
+if defined MAZE_OPEN_FILE if exist "%MAZE_OPEN_FILE%" (
     set "HOUDINI_FILE_ARG=%MAZE_OPEN_FILE:\=/%"
 )
 
-if not "%HOUDINI_FILE_ARG%"=="" (
+if not defined MAZE_EXE (
+    >> "%LOG_FILE%" echo ERROR: MAZE_EXE is not set.
+    echo ERROR: MAZE_EXE is not set.
+    exit /b 1
+)
+if not exist "%MAZE_EXE%" (
+    >> "%LOG_FILE%" echo ERROR: Houdini executable not found: "%MAZE_EXE%"
+    echo ERROR: Houdini executable not found: "%MAZE_EXE%"
+    exit /b 1
+)
+
+>> "%LOG_FILE%" echo MAZE_EXE="%MAZE_EXE%"
+
+if defined HOUDINI_FILE_ARG (
     start "" "%MAZE_EXE%" "%HOUDINI_FILE_ARG%"
 ) else (
     start "" "%MAZE_EXE%"

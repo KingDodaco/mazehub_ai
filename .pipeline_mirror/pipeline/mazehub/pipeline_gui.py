@@ -216,10 +216,11 @@ class AppLauncherThread(QThread):
                 launch_env.update(ctx_env)
 
             log.write(f'[launch] Starting {self.config["display_name"]}...')
+            log.write(f'[launch] Bat={exec_path}')
             log.write(f'[launch] MAZE_EXE={launch_env.get("MAZE_EXE", "<not set>")}')
             if platform.system() == 'Windows':
                 import tempfile
-                bat_log = os.path.join(tempfile.gettempdir(), 'mazehub_houdini_launch.log')
+                bat_log = os.path.join(tempfile.gettempdir(), 'mazehub_launch.log')
                 if os.path.exists(bat_log):
                     os.unlink(bat_log)
                 proc = subprocess.Popen(
@@ -236,6 +237,12 @@ class AppLauncherThread(QThread):
                     log.write(f'[launch] No bat log found at {bat_log}')
                 if os.path.exists(bat_log):
                     os.unlink(bat_log)
+                if proc.returncode:
+                    log.write(f'[launch] Bat exited with code {proc.returncode}')
+                    self.finished.emit(
+                        f'{self.config["display_name"]} launcher failed '
+                        f'(exit code {proc.returncode}) — see Log', False)
+                    return
             elif platform.system() == 'Darwin':
                 subprocess.Popen(['open', str(exec_path)], env=launch_env)
             else:
@@ -292,9 +299,10 @@ class FileOpenThread(QThread):
             log.write(f'[open] FRAME_RATE={launch_env.get("FRAME_RATE", "<not set>")}')
             launch_env['MAZE_OPEN_FILE'] = str(self.file_path)
             log.write(f'[open] MAZE_OPEN_FILE={launch_env.get("MAZE_OPEN_FILE", "<not set>")}')
+            log.write(f'[open] Bat={exec_path}')
             if platform.system() == 'Windows':
                 import tempfile
-                bat_log = os.path.join(tempfile.gettempdir(), 'mazehub_houdini_launch.log')
+                bat_log = os.path.join(tempfile.gettempdir(), 'mazehub_launch.log')
                 if os.path.exists(bat_log):
                     os.unlink(bat_log)
                 proc = subprocess.Popen(
@@ -311,6 +319,12 @@ class FileOpenThread(QThread):
                     log.write(f'[open] No bat log found at {bat_log}')
                 if os.path.exists(bat_log):
                     os.unlink(bat_log)
+                if proc.returncode:
+                    log.write(f'[open] Bat exited with code {proc.returncode}')
+                    self.finished.emit(
+                        f'{self.config["display_name"]} launcher failed '
+                        f'(exit code {proc.returncode}) — see Log', False)
+                    return
             elif platform.system() == 'Darwin':
                 subprocess.Popen(['open', str(self.file_path)], env=launch_env)
             else:
@@ -2825,7 +2839,8 @@ class PreviewPage(QWidget):
         launch_env = os.environ.copy()
         ctx_env = build_context_env(
             {'type': 'shot', 'name': self.shot_combo.currentText(),
-             'path': str(self.project_root / 'sequence' / self.shot_combo.currentText())},
+             'path': str(self.project_root / 'sequence' / self.shot_combo.currentText()),
+             'app_name': 'Houdini'},
             self.project_root,
         )
         launch_env.update(ctx_env)

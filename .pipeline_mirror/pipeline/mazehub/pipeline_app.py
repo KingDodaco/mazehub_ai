@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.10.0"
+APP_VERSION = "0.10.1"
 
 
 def _get_display_name():
@@ -394,11 +394,11 @@ def setup_environment(project_root, pipeline_dir=None):
 
 APP_CONTEXT_ENV = {
     'Houdini': {
-        'HOUDINI_JOB': '{context_path}',
-        'JOB': '{context_path}',
+        'HOUDINI_JOB': '{context_path}/houdini',
+        'JOB': '{context_path}/houdini',
     },
     'Maya': {
-        'MAYA_PROJECT': '{context_path}',
+        'MAYA_PROJECT': '{context_path}/maya',
     },
     'NukeX': {},
     'Blender': {},

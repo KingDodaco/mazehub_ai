@@ -19,6 +19,18 @@ if project_pipeline:
 import envPathResolver
 envPathResolver.setup()
 
+# Run the project-specific 123.py (if any) after this bootstrap so project
+# settings always take priority while install tools still register.
+if project_pipeline:
+    project_123 = os.path.join(project_pipeline, "Maya", "scripts", "123.py")
+    if os.path.isfile(project_123) and os.path.abspath(project_123) != os.path.abspath(__file__):
+        print(f"Running project 123.py: {project_123}")
+        try:
+            with open(project_123, "r", encoding="utf-8") as f:
+                exec(compile(f.read(), project_123, "exec"))
+        except Exception as e:
+            print(f"Failed to run project 123.py ({project_123}): {e}")
+
 START_FRAME = os.environ.get("START_FRAME")
 END_FRAME = os.environ.get("END_FRAME")
 FRAME_RATE = os.environ.get("FRAME_RATE")
