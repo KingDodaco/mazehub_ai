@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.10.1"
+APP_VERSION = "0.10.2"
 
 
 def _get_display_name():
@@ -911,103 +911,285 @@ def is_usd_ascii(usd_file):
         return False
 
 
-def parse_usd_references(usd_file):
-    usd_file = Path(usd_file)
-    if not usd_file.exists():
-        return []
-    ext = usd_file.suffix.lower()
+USD_ASSET_ENDINGS = (
+    '.vdb', '.usd', '.usda', '.usdc', '.usdz',
+    '.bgeo', '.bgeo.sc', '.bgeo.lc', '.bgeo.nc',
+    '.abc', '.obj', '.fbx', '.pyro',
+    '.exr', '.png', '.jpg', '.jpeg', '.tif', '.tiff', '.dpx',
+    '.tx', '.rat', '.mov', '.mp4',
+    '.hip', '.hipnc', '.hiplc', '.ma', '.mb', '.blend', '.nk',
+)
+USD_LAYER_ENDINGS = ('.usd', '.usda', '.usdc', '.usdz')
+USD_TOKEN_RE = re.compile(r'<(UDIM|F\d*|face|frame)>', re.IGNORECASE)
+
+
+def _ref_looks_like_asset(path_str):
+    low = str(path_str).lower()
+    return any(low.endswith(e) for e in USD_ASSET_ENDINGS)
+
+
+def _is_usd_layer_name(path_str):
+    low = str(path_str).lower()
+    return any(low.endswith(e) for e in USD_LAYER_ENDINGS)
+
+
+def _usd_token_regex(name):
+    if name.upper() == 'UDIM':
+        return r'\d{4}'
+    return r'\d+'
+
+
+def _extract_refs_from_text(text):
     refs = set()
-    if ext == '.usdc':
-        try:
-            from pxr import Usd, Sdf
-            stage = Usd.Stage.Open(str(usd_file))
-            for prim in stage.Traverse():
-                for rel in prim.GetRelationships():
-                    for target in rel.GetTargets():
-                        if not target.pathString.startswith('/'):
-                            refs.add(target.pathString)
-                for attr in prim.GetAttributes():
-                    if attr.GetTypeName() == Sdf.AssetPathType:
-                        val = attr.Get()
-                        if val and val.GetResolvedPath():
-                            p = val.GetResolvedPath()
-                            if not p.startswith('/') and not p.startswith('<'):
-                                refs.add(p)
-        except Exception:
-            pass
-    else:
-        ascii_mode = ext == '.usda' or is_usd_ascii(usd_file)
-        if not ascii_mode:
-            return []
-        try:
-            text = usd_file.read_text(errors='ignore')
-            refs.update(re.findall(r'@([^@\n]+?)@', text))
-        except Exception:
-            pass
-    resolved = set()
-    for ref in refs:
-        if ref.startswith('<') or ref.startswith('/'):
+    for token in re.findall(r'@([^@\n]+?)@', text):
+        token = token.strip()
+        if not token or token.startswith('<'):
             continue
-        resolved.add(ref)
-    return sorted(resolved)
+        if token.startswith('/') and not _ref_looks_like_asset(token):
+            continue
+        if _ref_looks_like_asset(token) or USD_TOKEN_RE.search(token):
+            refs.add(token)
+    for token in re.findall(r'"([^"\n]+)"', text):
+        token = token.strip()
+        if not token:
+            continue
+        if _ref_looks_like_asset(token) or USD_TOKEN_RE.search(token):
+            refs.add(token)
+    return refs
+
+
+def _find_usdcat():
+    try:
+        from settings import find_husk
+        husk = find_husk()
+        if husk:
+            bin_dir = Path(husk).parent
+            for name in ('usdcat.exe', 'usdcat'):
+                candidate = bin_dir / name
+                if candidate.exists():
+                    return str(candidate)
+    except Exception:
+        pass
+    import shutil
+    return shutil.which('usdcat')
+
+
+def _usdcat_to_text(usd_file):
+    import tempfile
+    usdcat = _find_usdcat()
+    if not usdcat:
+        return None
+    try:
+        result = subprocess.run(
+            [usdcat, str(usd_file), '--stdout'],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
+    except Exception:
+        pass
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(suffix='.usda')
+        os.close(fd)
+        result = subprocess.run(
+            [usdcat, str(usd_file), '-o', tmp_path],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode == 0:
+            return Path(tmp_path).read_text(errors='ignore')
+    except Exception:
+        pass
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    return None
+
+
+def _read_usd_text(usd_file):
+    ext = usd_file.suffix.lower()
+    if ext == '.usda' or is_usd_ascii(usd_file):
+        try:
+            return usd_file.read_text(errors='ignore')
+        except OSError:
+            return None
+    if ext in ('.usdc', '.usd', '.usdz'):
+        try:
+            from pxr import Sdf
+            layer = Sdf.Layer.FindOrOpen(str(usd_file))
+            if layer:
+                return layer.ExportToString()
+        except Exception:
+            pass
+        return _usdcat_to_text(usd_file)
+    return None
+
+
+def parse_usd_references(usd_file, _visited=None, _depth=0):
+    usd_file = Path(usd_file)
+    if _visited is None:
+        _visited = set()
+    if _depth > 8:
+        return []
+    try:
+        key = str(usd_file.resolve())
+    except OSError:
+        key = str(usd_file)
+    if key in _visited:
+        return []
+    _visited.add(key)
+    if not usd_file.exists() or not usd_file.is_file():
+        return []
+    text = _read_usd_text(usd_file)
+    if not text:
+        return []
+    refs = _extract_refs_from_text(text)
+    all_refs = set()
+    anchor = usd_file.parent
+    for ref in refs:
+        all_refs.add(ref)
+        if not _is_usd_layer_name(ref) or USD_TOKEN_RE.search(ref):
+            continue
+        child_str = _expand_ref_path(ref)
+        child = Path(child_str) if os.path.isabs(child_str) else anchor / child_str
+        try:
+            if not child.exists() or not child.is_file():
+                continue
+        except OSError:
+            continue
+        for sub in parse_usd_references(child, _visited, _depth + 1):
+            if os.path.isabs(sub) or (len(sub) > 1 and sub[1] == ':'):
+                all_refs.add(sub)
+            else:
+                all_refs.add(str(child.parent / sub))
+    return sorted(all_refs)
+
+
+def _expand_ref_path(ref):
+    expanded = os.path.expandvars(str(ref))
+    match = re.match(r'^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?', expanded)
+    if match and match.group(1) in os.environ:
+        expanded = os.path.expandvars(expanded)
+    return expanded
+
+
+def _expand_usd_tokens(anchor, pattern):
+    dir_str, _, name = pattern.replace('\\', '/').rpartition('/')
+    parts = []
+    last = 0
+    for m in USD_TOKEN_RE.finditer(name):
+        parts.append(re.escape(name[last:m.start()]))
+        parts.append(_usd_token_regex(m.group(1)))
+        last = m.end()
+    parts.append(re.escape(name[last:]))
+    try:
+        regex = re.compile('^' + ''.join(parts) + '$', re.IGNORECASE)
+    except re.error:
+        return []
+    base = Path(dir_str) if dir_str else anchor
+    if not base.is_absolute():
+        base = anchor / base
+    try:
+        if not base.is_dir():
+            return []
+        return sorted(f for f in base.iterdir() if f.is_file() and regex.match(f.name))
+    except OSError:
+        return []
 
 
 def _resolve_references(usd_file, refs):
     usd_file = Path(usd_file)
     resolved = []
+    missing = []
+    seen = set()
     for ref in refs:
-        p = usd_file.parent / ref
-        if p.exists():
-            resolved.append(p)
-    return resolved
+        expanded = _expand_ref_path(ref)
+        if USD_TOKEN_RE.search(expanded):
+            matches = _expand_usd_tokens(usd_file.parent, expanded)
+            if matches:
+                for m in matches:
+                    if str(m) not in seen:
+                        seen.add(str(m))
+                        resolved.append(m)
+            else:
+                missing.append(str(ref))
+            continue
+        p = Path(expanded)
+        if not p.is_absolute():
+            p = usd_file.parent / p
+        try:
+            if p.exists():
+                if str(p) not in seen:
+                    seen.add(str(p))
+                    resolved.append(p)
+            else:
+                missing.append(str(p))
+        except OSError:
+            missing.append(str(p))
+    return resolved, missing
 
 
-def sync_file(file_path, timeout=30):
+def needs_sync(path):
+    """True if the file is an online-only cloud placeholder or a 0-byte stub."""
+    path = Path(path)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    if _is_windows_online_only(path):
+        return True
+    return st.st_size == 0
+
+
+def sync_file(file_path, timeout=60):
     file_path = Path(file_path)
     if not file_path.exists():
         return False
-    if file_path.stat().st_size > 0:
+    if not needs_sync(file_path):
         return True
+    # Read the file through: opening alone can leave a cloud placeholder
+    # only partially hydrated — reading to EOF forces the full download.
     try:
-        file_path.open('rb').close()
-    except Exception:
+        with open(file_path, 'rb') as f:
+            while f.read(1024 * 1024):
+                pass
+        if file_path.stat().st_size > 0:
+            return True
+    except OSError:
         pass
+    # Still 0 bytes (async stub) — poll until the download lands.
     import time
     deadline = time.time() + timeout
     while time.time() < deadline:
-        try:
-            if file_path.stat().st_size > 0:
-                return True
-        except Exception:
-            pass
+        if file_path.exists() and not needs_sync(file_path):
+            return True
         time.sleep(0.5)
-    return False
+    return file_path.exists() and not needs_sync(file_path)
 
 
-def sync_usd_references(usd_file, progress_callback=None):
+def sync_usd_references(usd_file, progress_callback=None, cancel_check=None):
+    """Parse a USD file (recursively) and hydrate its dependencies.
+
+    progress_callback(done, total, path) is called per file.
+    """
+    usd_file = Path(usd_file)
     refs = parse_usd_references(usd_file)
-    if not refs:
-        return True
-    resolved = _resolve_references(usd_file, refs)
-    unsynced = [p for p in resolved if p.stat().st_size == 0]
-    if not unsynced:
-        return True
-    for p in unsynced:
-        try:
-            p.open('rb').close()
-        except Exception:
-            pass
+    resolved, _missing = _resolve_references(usd_file, refs)
+    unsynced = [p for p in resolved if needs_sync(p)]
     total = len(unsynced)
     synced = 0
-    import time
-    deadline = time.time() + 60
-    while synced < total and time.time() < deadline:
-        synced = sum(1 for p in unsynced if p.exists() and p.stat().st_size > 0)
+    for p in unsynced:
+        if cancel_check and cancel_check():
+            return False
         if progress_callback:
-            progress_callback(synced, total)
-        if synced == total:
-            break
-        time.sleep(0.5)
+            progress_callback(synced, total, str(p))
+        if sync_file(p):
+            synced += 1
+    if progress_callback and total:
+        progress_callback(synced, total, '')
     return synced == total
 
 

@@ -3739,7 +3739,11 @@ class RenderProgressDialog(QDialog):
         self.frame_time_label = QLabel('—')
         self.info_layout.addWidget(self.frame_time_label, 1, 1)
 
-        self._avg_row = 2
+        self.info_layout.addWidget(QLabel('Sync time:'), 2, 0)
+        self.sync_time_label = QLabel('—')
+        self.info_layout.addWidget(self.sync_time_label, 2, 1)
+
+        self._avg_row = 3
         self._avg_labels = {}
 
         layout.addWidget(info_group)
@@ -3775,6 +3779,9 @@ class RenderProgressDialog(QDialog):
 
     def start_render(self):
         self._render_start = time.monotonic()
+
+    def set_sync_time(self, seconds):
+        self.sync_time_label.setText(self._format_duration(max(seconds, 0)))
         self._clock_timer.start()
         self._tick_clock()
 
@@ -4238,14 +4245,6 @@ class RenderPage(QWidget):
             self._status(f'USD file not found: {usd_file}', False)
             return
 
-        self.log_output.append(f'[info] Syncing USD references for {usd_name}...')
-        sync_dlg = SyncProgressDialog(usd_file, self.window())
-        sync_dlg.start()
-        if sync_dlg.exec() != QDialog.Accepted:
-            self.log_output.append('[warning] USD sync cancelled or timed out — rendering may fail')
-        else:
-            self.log_output.append('[info] USD references synced')
-
         start = self.start_frame_spin.value()
         end = self.end_frame_spin.value()
         interval = self.interval_spin.value()
@@ -4297,6 +4296,19 @@ class RenderPage(QWidget):
         self.log_output.append(f'Commands: {len(commands)}')
         self.log_output.append('')
 
+        self.log_output.append(f'[info] Syncing USD references for {usd_name}...')
+        sync_dlg = SyncProgressDialog(usd_file, self.window())
+        sync_dlg.start()
+        sync_accepted = sync_dlg.exec() == QDialog.Accepted
+        sync_seconds = sync_dlg.elapsed()
+        sync_time_str = sync_dlg._format_duration(sync_seconds)
+        if not sync_accepted:
+            self.log_output.append(
+                f'[warning] USD sync cancelled — rendering may fail (sync time {sync_time_str})')
+        else:
+            self.log_output.append(
+                f'[info] USD references synced in {sync_time_str} (sync time is tracked separately)')
+
         self.render_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
 
@@ -4311,6 +4323,7 @@ class RenderPage(QWidget):
             'render_engine': render_engine,
             'start_time': time.strftime('%Y-%m-%d %H:%M:%S'),
             'end_time': '',
+            'sync_seconds': round(sync_seconds, 1),
         }
 
         render_env = {
@@ -4327,6 +4340,7 @@ class RenderPage(QWidget):
         self._render_dialog.set_total(0, len(commands))
         self._render_dialog.set_shot(shot_name)
         self._render_dialog.init_passes(passes)
+        self._render_dialog.set_sync_time(sync_seconds)
 
         self._render_thread.output.connect(self._on_render_output)
         self._render_thread.finished.connect(self._on_render_finished)
@@ -4354,6 +4368,7 @@ class RenderPage(QWidget):
     def _on_render_finished(self, exit_code):
         self.render_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        meta = getattr(self, '_render_meta', None)
 
         render_time = ''
         if self._render_dialog:
@@ -4365,6 +4380,17 @@ class RenderPage(QWidget):
                 render_time = f'{h}:{m:02d}:{s:02d}'
             self._render_dialog.finish_render()
 
+        if render_time or (meta and meta.get('sync_seconds')):
+            self.log_output.append('')
+            if meta and meta.get('sync_seconds'):
+                ss = meta['sync_seconds']
+                h, m, s = int(ss) // 3600, (int(ss) % 3600) // 60, int(ss) % 60
+                self.log_output.append(
+                    f'[info] Sync time: {h}:{m:02d}:{s:02d} (not counted in render time)')
+            if render_time:
+                self.log_output.append(
+                    f'[info] Render time: {render_time} (excludes file sync)')
+
         if exit_code == 0:
             self.log_output.append('')
             self.log_output.append('[render complete]')
@@ -4374,7 +4400,6 @@ class RenderPage(QWidget):
             self.log_output.append(f'[render finished with errors (exit code {exit_code})]')
             self._status(f'Render finished with errors', False)
 
-        meta = getattr(self, '_render_meta', None)
         if meta:
             meta['end_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
             first_frame_path = ''
@@ -4535,6 +4560,9 @@ class SyncProgressDialog(QDialog):
         layout.addWidget(self.progress)
         self.detail_label = QLabel('')
         layout.addWidget(self.detail_label)
+        self.sync_timer_label = QLabel('Sync time: 0:00:00')
+        self.sync_timer_label.setObjectName('hint')
+        layout.addWidget(self.sync_timer_label)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         self.cancel_btn = QPushButton('Cancel')
@@ -4543,9 +4571,18 @@ class SyncProgressDialog(QDialog):
         layout.addLayout(btn_row)
         self._cancelled = False
         self._thread = None
+        self._sync_start = 0
+        self.sync_seconds = 0.0
+        self._clock = QTimer(self)
+        self._clock.setInterval(1000)
+        self._clock.timeout.connect(self._tick_sync_clock)
 
     def start(self):
         from PySide6.QtCore import QThread, Signal
+        self._sync_start = time.monotonic()
+        self.sync_seconds = 0.0
+        self.sync_timer_label.setText('Sync time: 0:00:00')
+        self._clock.start()
 
         class Worker(QThread):
             progress = Signal(int, int, str)
@@ -4560,36 +4597,18 @@ class SyncProgressDialog(QDialog):
                 self._cancelled = True
 
             def run(self):
-                from pipeline_app import parse_usd_references, sync_file
-                refs = parse_usd_references(self.usd_file)
-                if not refs:
-                    self.finished.emit(True)
-                    return
-                resolved = []
-                for ref in refs:
-                    p = self.usd_file.parent / ref
-                    if p.exists():
-                        resolved.append((ref, p))
-                unsynced = [(ref, p) for ref, p in resolved if p.stat().st_size == 0]
-                if not unsynced:
-                    self.finished.emit(True)
-                    return
-                import time
-                for ref, p in unsynced:
-                    try:
-                        p.open('rb').close()
-                    except Exception:
-                        pass
-                total = len(unsynced)
-                deadline = time.time() + 60
-                while time.time() < deadline and not self._cancelled:
-                    synced = sum(1 for _, p in unsynced if p.exists() and p.stat().st_size > 0)
-                    self.progress.emit(synced, total, unsynced[synced][0] if synced < total else '')
-                    if synced == total:
-                        self.finished.emit(True)
-                        return
-                    time.sleep(0.5)
-                self.finished.emit(False)
+                from pipeline_app import sync_usd_references
+                try:
+                    ok = sync_usd_references(
+                        self.usd_file,
+                        progress_callback=lambda done, total, name: (
+                            None if self._cancelled
+                            else self.progress.emit(done, total, name)),
+                        cancel_check=lambda: self._cancelled,
+                    )
+                except Exception:
+                    ok = False
+                self.finished.emit(bool(ok) and not self._cancelled)
 
         self._thread = Worker(self.usd_file)
         self._thread.progress.connect(self._on_progress)
@@ -4601,12 +4620,38 @@ class SyncProgressDialog(QDialog):
         self.progress.setValue(pct)
         self.detail_label.setText(f'{synced}/{total} synced — {current}')
 
+    def _tick_sync_clock(self):
+        if self._sync_start:
+            self.sync_timer_label.setText(
+                f'Sync time: {self._format_duration(time.monotonic() - self._sync_start)}')
+
+    def _stop_sync_clock(self):
+        self._clock.stop()
+        if self._sync_start:
+            self.sync_seconds = time.monotonic() - self._sync_start
+            self._sync_start = 0
+            self.sync_timer_label.setText(
+                f'Sync time: {self._format_duration(self.sync_seconds)}')
+
+    def elapsed(self):
+        if self._sync_start:
+            return time.monotonic() - self._sync_start
+        return self.sync_seconds
+
+    def _format_duration(self, seconds):
+        h = int(seconds) // 3600
+        m = (int(seconds) % 3600) // 60
+        s = int(seconds) % 60
+        return f'{h}:{m:02d}:{s:02d}'
+
     def _on_finished(self, success):
+        self._stop_sync_clock()
         self.accept() if success else self.reject()
 
     def _cancel(self):
         if self._thread:
             self._thread.cancel()
+        self._stop_sync_clock()
         self.reject()
 
 
