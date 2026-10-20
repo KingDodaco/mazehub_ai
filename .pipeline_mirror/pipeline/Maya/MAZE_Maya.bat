@@ -3,7 +3,7 @@ setlocal
 
 set "LOG_FILE=%TEMP%\mazehub_launch.log"
 
-set "PIPELINE_DIR=%MAZE_PIPELINE%"
+if not defined PIPELINE_DIR set "PIPELINE_DIR=%MAZE_PIPELINE%"
 set "SCRIPTS_DIR=%PIPELINE_DIR%\Maya\scripts"
 set "MAZE_123=%SCRIPTS_DIR%\123.py"
 
@@ -40,6 +40,15 @@ if defined JOB set "JOB=%JOB:\=/%"
 >> "%LOG_FILE%" echo MAZE_CONTEXT_TYPE="%MAZE_CONTEXT_TYPE%"
 >> "%LOG_FILE%" echo MAZE_CONTEXT_NAME="%MAZE_CONTEXT_NAME%"
 >> "%LOG_FILE%" echo MAZE_CONTEXT_PATH="%MAZE_CONTEXT_PATH%"
+>> "%LOG_FILE%" echo PIPELINE_DIR="%PIPELINE_DIR%"
+>> "%LOG_FILE%" echo MAZE_PROJECT_PIPELINE="%MAZE_PROJECT_PIPELINE%"
+>> "%LOG_FILE%" echo MAZE_123="%MAZE_123%"
+set "MAZE_123_EXISTS=no"
+if exist "%MAZE_123%" set "MAZE_123_EXISTS=yes"
+>> "%LOG_FILE%" echo MAZE_123_EXISTS=%MAZE_123_EXISTS%
+set "PROJECT_SCRIPTS_EXISTS=no"
+if not "%MAZE_PROJECT_PIPELINE%"=="" if exist "%MAZE_PROJECT_PIPELINE%\Maya\scripts" set "PROJECT_SCRIPTS_EXISTS=yes"
+>> "%LOG_FILE%" echo PROJECT_SCRIPTS_EXISTS=%PROJECT_SCRIPTS_EXISTS%
 >> "%LOG_FILE%" echo JOB="%JOB%"
 >> "%LOG_FILE%" echo MAYA_PROJECT="%MAYA_PROJECT%"
 >> "%LOG_FILE%" echo MAYA_SCRIPT_PATH="%MAYA_SCRIPT_PATH%"
@@ -62,7 +71,13 @@ if not "%~1"=="" set "MAZE_OPEN_FILE=%~1"
 set "SAFE_SCRIPT_PATH=%MAZE_123:\=/%"
 
 set "SET_PROJECT_CMD="
-if defined JOB set "SET_PROJECT_CMD=setProject \"%JOB%\"; "
+if defined JOB set "SET_PROJECT_CMD=catchQuiet(setProject \"%JOB%\"); "
+
+if not exist "%MAZE_123%" (
+    >> "%LOG_FILE%" echo ERROR: MazeHub bootstrap script not found: "%MAZE_123%"
+    echo ERROR: MazeHub bootstrap script not found: "%MAZE_123%"
+    exit /b 1
+)
 
 if not defined MAZE_EXE (
     >> "%LOG_FILE%" echo ERROR: MAZE_EXE is not set.

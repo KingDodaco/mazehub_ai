@@ -11,25 +11,36 @@ if scripts_dir:
         sys.path.insert(0, scripts_dir)
 
 project_pipeline = os.environ.get("MAZE_PROJECT_PIPELINE", "")
+project_scripts = ""
 if project_pipeline:
     project_scripts = os.path.join(project_pipeline, "Maya", "scripts")
-    if os.path.isdir(project_scripts) and project_scripts not in sys.path:
-        sys.path.insert(0, project_scripts)
+    if os.path.isdir(project_scripts):
+        print(f"[MazeHub] project scripts dir: {project_scripts}")
+        if project_scripts not in sys.path:
+            sys.path.insert(0, project_scripts)
+    else:
+        print(f"[MazeHub] project scripts dir missing: {project_scripts}")
+else:
+    print("[MazeHub] MAZE_PROJECT_PIPELINE is not set — skipping project scripts")
 
 import envPathResolver
 envPathResolver.setup()
 
 # Run the project-specific 123.py (if any) after this bootstrap so project
 # settings always take priority while install tools still register.
-if project_pipeline:
-    project_123 = os.path.join(project_pipeline, "Maya", "scripts", "123.py")
-    if os.path.isfile(project_123) and os.path.abspath(project_123) != os.path.abspath(__file__):
-        print(f"Running project 123.py: {project_123}")
-        try:
+if project_scripts:
+    project_123 = os.path.join(project_scripts, "123.py")
+    try:
+        here = globals().get("__file__")
+        is_self = bool(here) and os.path.abspath(project_123) == os.path.abspath(here)
+        if os.path.isfile(project_123) and not is_self:
+            print(f"[MazeHub] Running project 123.py: {project_123}")
             with open(project_123, "r", encoding="utf-8") as f:
                 exec(compile(f.read(), project_123, "exec"))
-        except Exception as e:
-            print(f"Failed to run project 123.py ({project_123}): {e}")
+        elif not os.path.isfile(project_123):
+            print(f"[MazeHub] No project 123.py found at: {project_123}")
+    except Exception as e:
+        print(f"[MazeHub] Failed to run project 123.py ({project_123}): {e}")
 
 START_FRAME = os.environ.get("START_FRAME")
 END_FRAME = os.environ.get("END_FRAME")

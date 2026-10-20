@@ -207,6 +207,11 @@ class AppLauncherThread(QThread):
                 return
 
             launch_env = os.environ.copy()
+            launch_env['MAZE_PIPELINE'] = str(self.pipeline_dir)
+            if self.project_root:
+                proj_pipeline = Path(self.project_root) / 'pipeline'
+                launch_env['MAZE_PROJECT_PIPELINE'] = (
+                    str(proj_pipeline) if proj_pipeline.is_dir() else '')
             exe_path = resolve_app_exe(self.config)
             if exe_path:
                 launch_env['MAZE_EXE'] = exe_path
@@ -277,6 +282,11 @@ class FileOpenThread(QThread):
                 return
 
             launch_env = os.environ.copy()
+            launch_env['MAZE_PIPELINE'] = str(self.pipeline_dir)
+            if self.project_root:
+                proj_pipeline = Path(self.project_root) / 'pipeline'
+                launch_env['MAZE_PROJECT_PIPELINE'] = (
+                    str(proj_pipeline) if proj_pipeline.is_dir() else '')
             exe_path = resolve_app_exe(self.config)
             if exe_path:
                 launch_env['MAZE_EXE'] = exe_path
