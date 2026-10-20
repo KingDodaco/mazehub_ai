@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.10.2"
+APP_VERSION = "0.10.3"
 
 
 def _get_display_name():
@@ -871,6 +871,13 @@ def discover_image_sequences(shot_path):
     return results
 
 
+def _subprocess_flags():
+    """Spawn child processes without flashing console windows."""
+    if os.name == 'nt':
+        return {'creationflags': subprocess.CREATE_NO_WINDOW}
+    return {'start_new_session': True}
+
+
 def discover_husk_passes(husk_path, usd_file):
     if not husk_path or not Path(husk_path).exists():
         return [], ''
@@ -878,12 +885,11 @@ def discover_husk_passes(husk_path, usd_file):
         usd_file = Path(usd_file)
         if not sync_file(usd_file):
             return [], f'USD file is missing or did not sync: {usd_file}'
-        if not sync_usd_references(usd_file):
-            return [], f'USD references did not sync: {usd_file}'
 
         result = subprocess.run(
             [husk_path, '--list-passes', str(usd_file)],
             capture_output=True, text=True, timeout=30,
+            **_subprocess_flags(),
         )
         output = (result.stdout or '') + '\n' + (result.stderr or '')
         passes = []
@@ -983,6 +989,7 @@ def _usdcat_to_text(usd_file):
         result = subprocess.run(
             [usdcat, str(usd_file), '--stdout'],
             capture_output=True, text=True, timeout=60,
+            **_subprocess_flags(),
         )
         if result.returncode == 0 and result.stdout:
             return result.stdout
@@ -995,6 +1002,7 @@ def _usdcat_to_text(usd_file):
         result = subprocess.run(
             [usdcat, str(usd_file), '-o', tmp_path],
             capture_output=True, text=True, timeout=60,
+            **_subprocess_flags(),
         )
         if result.returncode == 0:
             return Path(tmp_path).read_text(errors='ignore')

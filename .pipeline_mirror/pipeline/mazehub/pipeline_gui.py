@@ -3880,6 +3880,24 @@ class RenderProgressDialog(QDialog):
         self.close_btn.setVisible(True)
 
 
+class _PassDiscoveryWorker(QThread):
+    ready = Signal(int, object, str)
+    failed = Signal(int, str)
+
+    def __init__(self, husk_path, usd_file, generation, parent=None):
+        super().__init__(parent)
+        self.husk_path = husk_path
+        self.usd_file = usd_file
+        self.generation = generation
+
+    def run(self):
+        try:
+            passes, raw_output = discover_husk_passes(self.husk_path, self.usd_file)
+            self.ready.emit(self.generation, passes, raw_output or '')
+        except Exception as e:
+            self.failed.emit(self.generation, str(e))
+
+
 class RenderPage(QWidget):
     def __init__(self, project_root, pipeline_dir, apps_config=None, parent=None):
         super().__init__(parent)
@@ -3989,6 +4007,8 @@ class RenderPage(QWidget):
         self.no_passes_label = QLabel('No passes found. Select a USD file to discover passes.')
         self.no_passes_label.setObjectName('hint')
         passes_layout.addWidget(self.no_passes_label)
+        self._no_passes_text = self.no_passes_label.text()
+        self._discover_gen = 0
 
         layout.addWidget(passes_group)
 
@@ -4130,6 +4150,7 @@ class RenderPage(QWidget):
             if w:
                 w.setParent(None)
                 w.deleteLater()
+        self.no_passes_label.setText(self._no_passes_text)
         self.no_passes_label.setVisible(True)
 
     def _resolve_husk_from_houdini(self, version_key=None):
@@ -4150,6 +4171,7 @@ class RenderPage(QWidget):
         return None
 
     def _refresh_passes(self):
+        self._discover_gen += 1
         self._clear_passes()
         usd_name = self.usd_combo.currentText()
         shot_name = self.shot_combo.currentText()
@@ -4168,7 +4190,16 @@ class RenderPage(QWidget):
             return
 
         self.log_output.append(f'[info] Discovering passes: {husk_path} --list-passes {usd_file.name}')
-        passes, raw_output = discover_husk_passes(husk_path, usd_file)
+        self.no_passes_label.setText('Discovering passes…')
+        worker = _PassDiscoveryWorker(husk_path, usd_file, self._discover_gen, self)
+        worker.ready.connect(self._on_passes_ready)
+        worker.failed.connect(self._on_passes_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_passes_ready(self, generation, passes, raw_output):
+        if generation != self._discover_gen:
+            return
         if raw_output:
             self.log_output.append(f'[husk output]\n{raw_output.strip()}')
         if not passes:
@@ -4181,6 +4212,12 @@ class RenderPage(QWidget):
             cb = QCheckBox(p)
             cb.setChecked(True)
             self.passes_layout.addWidget(cb)
+
+    def _on_passes_failed(self, generation, message):
+        if generation != self._discover_gen:
+            return
+        self.log_output.append(f'[error] Pass discovery failed: {message}')
+        self.no_passes_label.setVisible(True)
 
     def _get_selected_passes(self):
         passes = []
