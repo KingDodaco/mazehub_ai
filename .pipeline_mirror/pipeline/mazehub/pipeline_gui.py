@@ -3665,9 +3665,14 @@ class RenderThread(QThread):
         self._env = env
         self._process = None
         self._cancel = False
+        self._skip = False
         self._pause_event = threading.Event()
         self._pause_event.set()
         self._paused = False
+        # Read by the GUI's stall watchdog.
+        self.last_output_time = 0.0
+        self.last_line = ''
+        self.current_label = ''
 
     def run(self):
         exit_code = 0
@@ -3718,6 +3723,9 @@ class RenderThread(QThread):
                 frame_open = True
                 self.output.emit(f'[rendering pass {i + 1}/{total}: {pass_name} frame {frame_num}]')
             self.output.emit(f'  cmd: {" ".join(cmd)}')
+            self.current_label = pass_name if meta else f'{pass_name} frame {frame_num}'
+            self.last_line = ''
+            self.last_output_time = time.monotonic()
             try:
                 cmd_env = os.environ.copy()
                 if self._env:
@@ -3743,6 +3751,8 @@ class RenderThread(QThread):
                         self._process.terminate()
                         break
                     stripped = line.rstrip('\n')
+                    self.last_output_time = time.monotonic()
+                    self.last_line = stripped
                     self.output.emit(stripped)
                     if meta and stripped.startswith('MAZE_FRAME'):
                         m = re.match(r'MAZE_FRAME\s+(-?\d+)', stripped)
@@ -3760,7 +3770,11 @@ class RenderThread(QThread):
                 if frame_open:
                     self.frame_finished.emit()
                 code = self._process.returncode
-                if code != 0:
+                skipped, self._skip = self._skip, False
+                if skipped:
+                    exit_code = 1
+                    self.output.emit(f'[skipped {self.current_label}]')
+                elif code != 0:
                     exit_code = code
                     self.output.emit(f'[warning: husk exited with code {code}]')
                 self._process = None
@@ -3780,6 +3794,20 @@ class RenderThread(QThread):
                 self._process.terminate()
             except Exception:
                 pass
+
+    def skip_current(self):
+        """Stop only the running command; the job continues with the next one."""
+        process = self._process
+        if process:
+            self._skip = True
+            try:
+                process.terminate()
+            except Exception:
+                pass
+
+    @property
+    def process_running(self):
+        return self._process is not None
 
     def pause(self):
         self._paused = True
@@ -3828,6 +3856,12 @@ class RenderProgressDialog(QDialog):
         self.frame_label = QLabel('Frame: —')
         layout.addWidget(self.frame_label)
 
+        self.stall_label = QLabel('')
+        self.stall_label.setWordWrap(True)
+        self.stall_label.setStyleSheet('color: #ffa726;')
+        self.stall_label.setVisible(False)
+        layout.addWidget(self.stall_label)
+
         frame_progress_group = QGroupBox('Frame Progress')
         frame_progress_layout = QVBoxLayout(frame_progress_group)
         self.bucket_progress = QProgressBar()
@@ -3870,6 +3904,10 @@ class RenderProgressDialog(QDialog):
         self.pause_btn.setCursor(Qt.PointingHandCursor)
         self.pause_btn.clicked.connect(self._toggle_pause)
         btn_row.addWidget(self.pause_btn)
+        self.skip_btn = QPushButton('Skip Frame')
+        self.skip_btn.setCursor(Qt.PointingHandCursor)
+        self.skip_btn.setToolTip('Stop the frame/job that is rendering now and continue with the next one.')
+        btn_row.addWidget(self.skip_btn)
         self.cancel_btn = QPushButton('Cancel')
         self.cancel_btn.setCursor(Qt.PointingHandCursor)
         btn_row.addWidget(self.cancel_btn)
@@ -3982,10 +4020,16 @@ class RenderProgressDialog(QDialog):
     def set_render_thread(self, thread):
         self._render_thread = thread
 
+    def set_stall(self, text):
+        self.stall_label.setText(text)
+        self.stall_label.setVisible(bool(text))
+
     def finish_render(self):
         self._clock_timer.stop()
         self.pause_btn.setEnabled(False)
+        self.skip_btn.setEnabled(False)
         self.cancel_btn.setEnabled(False)
+        self.set_stall('')
         self.close_btn.setVisible(True)
 
 
@@ -4138,6 +4182,15 @@ class RenderPage(QWidget):
             'husk mode only: opens one MPlay window that updates as each frame renders. '
             'Closing MPlay stops the current frame.')
         layout.addWidget(self.mplay_cb)
+
+        from settings import get_setting
+        self.save_log_cb = QCheckBox('Save render log to the render folder')
+        self.save_log_cb.setToolTip(
+            'Writes the Output Log to render/<shot>_vNNN/<shot>_vNNN_render_<time>.log, '
+            'next to the pass folders. Written as the render runs, so a hung render still leaves a log.')
+        self.save_log_cb.setChecked(bool(get_setting('render_save_log', True)))
+        self.save_log_cb.toggled.connect(self._on_save_log_toggled)
+        layout.addWidget(self.save_log_cb)
 
         layout.addSpacing(8)
 
@@ -4337,9 +4390,9 @@ class RenderPage(QWidget):
         hip_file = self.project_root / 'sequence' / shot_name / 'houdini' / 'hip' / hip_name
         hython = find_hython(self._resolve_husk())
         if not hython:
-            self.log_output.append('[info] hython not found next to husk — configure husk in Settings')
+            self._log('[info] hython not found next to husk — configure husk in Settings')
             return
-        self.log_output.append(f'[info] Discovering ROPs and passes in {hip_name} (loads the scene in hython)...')
+        self._log(f'[info] Discovering ROPs and passes in {hip_name} (loads the scene in hython)...')
         self.no_passes_label.setText('Discovering ROPs and passes… (loading .hip)')
         worker = _RopDiscoveryWorker(hython, hip_file, self._discover_gen, self)
         worker.ready.connect(self._on_rops_ready)
@@ -4351,15 +4404,15 @@ class RenderPage(QWidget):
             return
         if not rops:
             if raw_output:
-                self.log_output.append(f'[hython output]\n{raw_output.strip()}')
-            self.log_output.append('[info] No ROPs found')
+                self._log(f'[hython output]\n{raw_output.strip()}')
+            self._log('[info] No ROPs found')
             self.no_passes_label.setText(self._no_passes_text)
             self.no_passes_label.setVisible(True)
             return
         self.no_passes_label.setVisible(False)
         for r in rops:
             if r['parms']:
-                self.log_output.append(f'[info] {r["rop"]} pass-related parms: {", ".join(r["parms"])}')
+                self._log(f'[info] {r["rop"]} pass-related parms: {", ".join(r["parms"])}')
             checked = is_renderer_rop(r['type'])
             for render_pass in (r['passes'] or ['']):
                 label = f'{r["rop"]} › {render_pass}' if render_pass else f'{r["rop"]} ({r["type"]})'
@@ -4370,7 +4423,7 @@ class RenderPage(QWidget):
                 cb.setProperty('rop_type', r['type'])
                 self.passes_layout.addWidget(cb)
         count = sum(max(len(r['passes']), 1) for r in rops)
-        self.log_output.append(f'[info] Found {len(rops)} ROPs, {count} renderable entries')
+        self._log(f'[info] Found {len(rops)} ROPs, {count} renderable entries')
 
     def _get_selected_rop_jobs(self):
         jobs = []
@@ -4427,10 +4480,10 @@ class RenderPage(QWidget):
             from settings import find_husk
             husk_path = find_husk()
         if not husk_path:
-            self.log_output.append('[info] husk not found — configure in Settings')
+            self._log('[info] husk not found — configure in Settings')
             return
 
-        self.log_output.append(f'[info] Discovering passes: {husk_path} --list-passes {usd_file.name}')
+        self._log(f'[info] Discovering passes: {husk_path} --list-passes {usd_file.name}')
         self.no_passes_label.setText('Discovering passes…')
         worker = _PassDiscoveryWorker(husk_path, usd_file, self._discover_gen, self)
         worker.ready.connect(self._on_passes_ready)
@@ -4442,12 +4495,12 @@ class RenderPage(QWidget):
         if generation != self._discover_gen:
             return
         if raw_output:
-            self.log_output.append(f'[husk output]\n{raw_output.strip()}')
+            self._log(f'[husk output]\n{raw_output.strip()}')
         if not passes:
-            self.log_output.append('[info] No passes found')
+            self._log('[info] No passes found')
             self.no_passes_label.setVisible(True)
             return
-        self.log_output.append(f'[info] Found {len(passes)} passes: {", ".join(passes)}')
+        self._log(f'[info] Found {len(passes)} passes: {", ".join(passes)}')
         self.no_passes_label.setVisible(False)
         for p in passes:
             cb = QCheckBox(p)
@@ -4457,7 +4510,7 @@ class RenderPage(QWidget):
     def _on_passes_failed(self, generation, message):
         if generation != self._discover_gen:
             return
-        self.log_output.append(f'[error] Pass discovery failed: {message}')
+        self._log(f'[error] Pass discovery failed: {message}')
         self.no_passes_label.setVisible(True)
 
     def _get_selected_passes(self):
@@ -4481,16 +4534,57 @@ class RenderPage(QWidget):
             if item and item.widget() and isinstance(item.widget(), QCheckBox):
                 item.widget().setChecked(False)
 
+    def _on_save_log_toggled(self, checked):
+        from settings import set_setting
+        set_setting('render_save_log', bool(checked))
+
+    def _log(self, text):
+        """Append to the Output Log and, during a render, to the log file."""
+        self.log_output.append(text)
+        fh = getattr(self, '_log_fh', None)
+        if fh:
+            try:
+                stamp = time.strftime('%H:%M:%S')
+                for line in str(text).splitlines() or ['']:
+                    fh.write(f'[{stamp}] {line}\n')
+                fh.flush()
+            except OSError:
+                pass
+
+    def _open_render_log(self, version_dir):
+        self._close_render_log()
+        if not self.save_log_cb.isChecked():
+            return
+        version_dir = Path(version_dir)
+        path = version_dir / f'{version_dir.name}_render_{time.strftime("%Y%m%d_%H%M%S")}.log'
+        try:
+            version_dir.mkdir(parents=True, exist_ok=True)
+            self._log_fh = open(path, 'a', encoding='utf-8')
+        except OSError as e:
+            self._log(f'[warning] Could not open render log file {path}: {e}')
+            return
+        self._log(f'[info] Saving render log to {path}')
+
+    def _close_render_log(self):
+        fh = getattr(self, '_log_fh', None)
+        self._log_fh = None
+        if fh:
+            try:
+                fh.close()
+            except OSError:
+                pass
+
     def _start_render(self):
         try:
             self._do_render()
         except Exception as e:
             import traceback
-            self.log_output.append(f'[error] {e}')
-            self.log_output.append(traceback.format_exc())
+            self._log(f'[error] {e}')
+            self._log(traceback.format_exc())
             self._status(f'Render error: {e}', False)
             self.render_btn.setEnabled(True)
             self.cancel_btn.setEnabled(False)
+            self._close_render_log()
 
     def _do_render(self):
         if self._render_mode() == 'hrender':
@@ -4499,13 +4593,13 @@ class RenderPage(QWidget):
         shot_name = self.shot_combo.currentText()
         usd_name = self.usd_combo.currentText()
         if not shot_name or not usd_name:
-            self.log_output.append('[error] Select a shot and USD file first')
+            self._log('[error] Select a shot and USD file first')
             self._status('Select a shot and USD file first', False)
             return
 
         passes = self._get_selected_passes()
         if not passes:
-            self.log_output.append('[error] Select at least one render pass')
+            self._log('[error] Select at least one render pass')
             self._status('Select at least one render pass', False)
             return
 
@@ -4515,14 +4609,14 @@ class RenderPage(QWidget):
             from settings import find_husk
             husk_path = find_husk()
         if not husk_path:
-            self.log_output.append('[error] husk binary not found — configure in Settings')
+            self._log('[error] husk binary not found — configure in Settings')
             self._status('husk binary not found — configure in Settings', False)
             return
 
         shot_path = self.project_root / 'sequence' / shot_name
         usd_file = shot_path / 'houdini' / 'USD' / usd_name
         if not usd_file.exists():
-            self.log_output.append(f'[error] USD file not found: {usd_file}')
+            self._log(f'[error] USD file not found: {usd_file}')
             self._status(f'USD file not found: {usd_file}', False)
             return
 
@@ -4530,19 +4624,19 @@ class RenderPage(QWidget):
         end = self.end_frame_spin.value()
         interval = self.interval_spin.value()
         if start > end:
-            self.log_output.append('[error] Start frame must be <= end frame')
+            self._log('[error] Start frame must be <= end frame')
             self._status('Start frame must be <= end frame', False)
             return
 
         version = self.version_combo.currentData()
         if version is None:
-            self.log_output.append('[error] Select a render version first')
+            self._log('[error] Select a render version first')
             self._status('Select a render version first', False)
             return
 
         render_engine = self.render_engine_combo.currentData()
         if not render_engine:
-            self.log_output.append('[error] Select a render engine first')
+            self._log('[error] Select a render engine first')
             self._status('Select a render engine first', False)
             return
 
@@ -4572,21 +4666,23 @@ class RenderPage(QWidget):
                 commands.append(cmd)
 
         self.log_output.clear()
-        self.log_output.append(f'Rendering: {usd_name}')
-        self.log_output.append(f'Passes: {", ".join(passes)}')
-        self.log_output.append(f'Frames: {start}-{end} (interval {interval})')
-        self.log_output.append(f'Engine: Karma {render_engine.upper()}')
-        self.log_output.append(f'Commands: {len(commands)}')
-        self.log_output.append('')
+        self._open_render_log(render_base / version_dir_name)
+        self._log(f'Rendering: {usd_name}')
+        self._log(f'Passes: {", ".join(passes)}')
+        self._log(f'Frames: {start}-{end} (interval {interval})')
+        self._log(f'Engine: Karma {render_engine.upper()}')
+        self._log(f'Commands: {len(commands)}')
+        self._log('')
 
-        self.log_output.append(f'[info] Syncing USD references for {usd_name}...')
+        self._log(f'[info] Syncing USD references for {usd_name}...')
         sync_dlg = SyncProgressDialog(usd_file, self.window(), husk_path=husk_path)
         sync_dlg.start()
         sync_accepted = sync_dlg.exec() == QDialog.Accepted
         sync_seconds = sync_dlg.elapsed()
+        self._sync_resolved = list(sync_dlg.report.get('resolved', []))
         sync_time_str = sync_dlg._format_duration(sync_seconds)
         if not sync_accepted:
-            self.log_output.append(
+            self._log(
                 f'[warning] USD sync cancelled — rendering may fail (sync time {sync_time_str})')
         else:
             self._log_sync_report(sync_dlg.report, sync_time_str, len(frames) > 1)
@@ -4607,39 +4703,80 @@ class RenderPage(QWidget):
         }
         self._launch_render(commands, shot_name, shot_path, passes, sync_seconds)
 
+    # Stall watchdog: warn (never kill) when the renderer prints nothing for this long.
+    STALL_SECONDS = 300
+    STALL_CHECK_MS = 30000
+
+    def _skip_frame(self):
+        t = self._render_thread
+        if t and t.process_running:
+            self._log(f'[info] Skipping {t.current_label} (requested)')
+            t.skip_current()
+
+    def _check_stall(self):
+        t = self._render_thread
+        dlg = self._render_dialog
+        if not t or not t.isRunning() or t.is_paused or not t.process_running:
+            return
+        idle = time.monotonic() - t.last_output_time
+        if idle < self.STALL_SECONDS:
+            if self._stall_warned:
+                self._stall_warned = False
+                if dlg:
+                    dlg.set_stall('')
+            return
+        idle_str = f'{int(idle) // 60}:{int(idle) % 60:02d}'
+        if dlg:
+            dlg.set_stall(f'No output for {idle_str} on {t.current_label}. '
+                          'Use Skip Frame if it is stuck.')
+        if self._stall_warned:
+            return
+        self._stall_warned = True
+        self._log(f'[warning] Renderer has printed nothing for {idle_str} on {t.current_label} '
+                  f'— last output: {t.last_line or "<none>"}')
+        from pipeline_app import needs_sync
+        pending = [p for p in getattr(self, '_sync_resolved', []) if needs_sync(p)]
+        if pending:
+            self._log(f'[warning] {len(pending)} dependencies are still cloud-only placeholders '
+                      '(OneDrive may be downloading them, or blocking):')
+            for p in pending[:10]:
+                self._log(f'    {p}')
+            if len(pending) > 10:
+                self._log(f'    ... and {len(pending) - 10} more')
+
     def _do_hrender(self):
         shot_name = self.shot_combo.currentText()
         hip_name = self.hip_combo.currentText()
         if not shot_name or not hip_name:
-            self.log_output.append('[error] Select a shot and HIP file first')
+            self._log('[error] Select a shot and HIP file first')
             self._status('Select a shot and HIP file first', False)
             return
         jobs = self._get_selected_rop_jobs()
         if not jobs:
-            self.log_output.append('[error] Select at least one ROP / pass')
+            self._log('[error] Select at least one ROP / pass')
             self._status('Select at least one ROP / pass', False)
             return
         hython = find_hython(self._resolve_husk())
         if not hython:
-            self.log_output.append('[error] hython not found — configure husk in Settings')
+            self._log('[error] hython not found — configure husk in Settings')
             self._status('hython not found — configure husk in Settings', False)
             return
         shot_path = self.project_root / 'sequence' / shot_name
         hip_file = shot_path / 'houdini' / 'hip' / hip_name
         if not hip_file.exists():
-            self.log_output.append(f'[error] HIP file not found: {hip_file}')
+            self._log(f'[error] HIP file not found: {hip_file}')
             self._status(f'HIP file not found: {hip_file}', False)
             return
         start = self.start_frame_spin.value()
         end = self.end_frame_spin.value()
         interval = max(self.interval_spin.value(), 1)
         if start > end:
-            self.log_output.append('[error] Start frame must be <= end frame')
+            self._log('[error] Start frame must be <= end frame')
             self._status('Start frame must be <= end frame', False)
             return
         version = self.version_combo.currentData()
         if version is None:
-            self.log_output.append('[error] Select a render version first')
+            self._log('[error] Select a render version first')
             self._status('Select a render version first', False)
             return
 
@@ -4660,10 +4797,11 @@ class RenderPage(QWidget):
             job_meta.append({'pass': name, 'frames': frame_count})
 
         self.log_output.clear()
-        self.log_output.append(f'Rendering (hrender): {hip_name}')
-        self.log_output.append(f'Jobs: {", ".join(names)}')
-        self.log_output.append(f'Frames: {start}-{end} (interval {interval})')
-        self.log_output.append('')
+        self._open_render_log(version_dir)
+        self._log(f'Rendering (hrender): {hip_name}')
+        self._log(f'Jobs: {", ".join(names)}')
+        self._log(f'Frames: {start}-{end} (interval {interval})')
+        self._log('')
 
         self._render_meta = {
             'render_mode': 'hrender',
@@ -4681,6 +4819,7 @@ class RenderPage(QWidget):
             'end_time': '',
             'sync_seconds': 0,
         }
+        self._sync_resolved = []
         self._launch_render(commands, shot_name, shot_path, names, 0, job_meta=job_meta)
 
     def _launch_render(self, commands, shot_name, shot_path, passes, sync_seconds, job_meta=None):
@@ -4699,6 +4838,12 @@ class RenderPage(QWidget):
         self._render_dialog = RenderProgressDialog(self.window())
         self._render_dialog.set_render_thread(self._render_thread)
         self._render_dialog.cancel_btn.clicked.connect(self._cancel_render)
+        self._render_dialog.skip_btn.clicked.connect(self._skip_frame)
+        self._stall_warned = False
+        if not hasattr(self, '_stall_timer'):
+            self._stall_timer = QTimer(self)
+            self._stall_timer.timeout.connect(self._check_stall)
+        self._stall_timer.start(self.STALL_CHECK_MS)
         self._render_dialog.set_total(0, len(commands))
         self._render_dialog.set_shot(shot_name)
         self._render_dialog.init_passes(passes)
@@ -4719,35 +4864,35 @@ class RenderPage(QWidget):
     def _log_sync_report(self, report, sync_time_str, multi_frame):
         def log_list(items, limit=10):
             for item in items[:limit]:
-                self.log_output.append(f'    {item}')
+                self._log(f'    {item}')
             if len(items) > limit:
-                self.log_output.append(f'    ... and {len(items) - limit} more')
+                self._log(f'    ... and {len(items) - limit} more')
 
         if report.get('error'):
-            self.log_output.append(f'[warning] USD sync failed: {report["error"]} — rendering may fail')
+            self._log(f'[warning] USD sync failed: {report["error"]} — rendering may fail')
             return
-        self.log_output.append(
+        self._log(
             f'[info] USD references: {report.get("refs", 0)} found, '
             f'{report.get("synced", 0)}/{report.get("total", 0)} downloaded in {sync_time_str} '
             f'(sync time is tracked separately)')
         unreadable = report.get('unreadable_layers', [])
         if unreadable:
-            self.log_output.append(
+            self._log(
                 f'[warning] Could not read {len(unreadable)} USD layer(s) — their dependencies '
                 f'(e.g. VDBs) were not synced and may render empty. No usdcat/hython found '
                 f'next to husk?')
             log_list(unreadable)
         failed = report.get('failed', [])
         if failed:
-            self.log_output.append(f'[warning] {len(failed)} file(s) failed to download:')
+            self._log(f'[warning] {len(failed)} file(s) failed to download:')
             log_list(failed)
         missing = report.get('missing', [])
         if missing:
-            self.log_output.append(f'[warning] {len(missing)} referenced file(s) not found:')
+            self._log(f'[warning] {len(missing)} referenced file(s) not found:')
             log_list(missing)
         static = report.get('static_volumes', [])
         if static and multi_frame:
-            self.log_output.append(
+            self._log(
                 f'[warning] {len(static)} VDB path(s) are not time-sampled — every frame will '
                 f'show the same volume. Add $F to the volume save path in Houdini and re-export:')
             log_list(static)
@@ -4759,11 +4904,13 @@ class RenderPage(QWidget):
             self._render_thread.cancel()
 
     def _on_render_output(self, line):
-        self.log_output.append(line)
+        self._log(line)
         sb = self.log_output.verticalScrollBar()
         sb.setValue(sb.maximum())
 
     def _on_render_finished(self, exit_code):
+        if hasattr(self, '_stall_timer'):
+            self._stall_timer.stop()
         self.render_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         meta = getattr(self, '_render_meta', None)
@@ -4779,23 +4926,23 @@ class RenderPage(QWidget):
             self._render_dialog.finish_render()
 
         if render_time or (meta and meta.get('sync_seconds')):
-            self.log_output.append('')
+            self._log('')
             if meta and meta.get('sync_seconds'):
                 ss = meta['sync_seconds']
                 h, m, s = int(ss) // 3600, (int(ss) % 3600) // 60, int(ss) % 60
-                self.log_output.append(
+                self._log(
                     f'[info] Sync time: {h}:{m:02d}:{s:02d} (not counted in render time)')
             if render_time:
-                self.log_output.append(
+                self._log(
                     f'[info] Render time: {render_time} (excludes file sync)')
 
         if exit_code == 0:
-            self.log_output.append('')
-            self.log_output.append('[render complete]')
+            self._log('')
+            self._log('[render complete]')
             self._status('Render complete', True)
         else:
-            self.log_output.append('')
-            self.log_output.append(f'[render finished with errors (exit code {exit_code})]')
+            self._log('')
+            self._log(f'[render finished with errors (exit code {exit_code})]')
             self._status(f'Render finished with errors', False)
 
         if meta and meta.get('render_mode') == 'hrender' and not meta.get('cancelled'):
@@ -4805,7 +4952,7 @@ class RenderPage(QWidget):
                 except OSError:
                     fresh = False
                 if not fresh:
-                    self.log_output.append(
+                    self._log(
                         f'[warning] No new frames in {out_dir} — the ROP may have ignored the output '
                         f'override. Check its own output path.')
 
@@ -4840,6 +4987,7 @@ class RenderPage(QWidget):
                     end_time=meta.get('end_time', ''),
                     first_frame_path=first_frame_path,
                 )
+        self._close_render_log()
 
     def _status(self, msg, ok=True):
         window = self.window()
@@ -4976,6 +5124,11 @@ class SyncProgressDialog(QDialog):
         layout.addWidget(self.sync_timer_label)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
+        self.continue_btn = QPushButton('Continue')
+        self.continue_btn.setCursor(Qt.PointingHandCursor)
+        self.continue_btn.clicked.connect(self.accept)
+        self.continue_btn.setVisible(False)
+        btn_row.addWidget(self.continue_btn)
         self.cancel_btn = QPushButton('Cancel')
         self.cancel_btn.clicked.connect(self._cancel)
         btn_row.addWidget(self.cancel_btn)
@@ -5059,11 +5212,44 @@ class SyncProgressDialog(QDialog):
         s = int(seconds) % 60
         return f'{h}:{m:02d}:{s:02d}'
 
+    # How long a clean sync summary stays up before the render starts.
+    SUMMARY_SECONDS = 2
+
     def _on_finished(self, report):
         self._stop_sync_clock()
         self.report = report or {}
-        # Sync problems are reported in the render log; only a cancel aborts.
-        self.reject() if self.report.get('cancelled') else self.accept()
+        if self.report.get('cancelled'):
+            self.reject()
+            return
+        # Show the outcome so "nothing synced" is distinguishable from "couldn't read the layers".
+        r = self.report
+        self.progress.setValue(100)
+        if r.get('error'):
+            summary = f'Sync failed: {r["error"]}'
+            problems = [summary]
+        else:
+            summary = (f'{r.get("refs", 0)} references found — '
+                       f'{r.get("synced", 0)}/{r.get("total", 0)} downloaded from the cloud')
+            problems = []
+            if r.get('unreadable_layers'):
+                problems.append(f'{len(r["unreadable_layers"])} USD layer(s) could not be read — '
+                                'their files were not synced')
+            if r.get('failed'):
+                problems.append(f'{len(r["failed"])} file(s) failed to download')
+            if r.get('missing'):
+                problems.append(f'{len(r["missing"])} referenced file(s) not found')
+            if not r.get('refs') and not r.get('unreadable_layers'):
+                problems.append('No referenced files found — fine only if everything is inside this USD')
+        self.status_label.setText(summary)
+        self.detail_label.setText('\n'.join(problems) if problems else 'All dependencies are on disk.')
+        self.detail_label.setStyleSheet('color: #ffa726;' if problems else 'color: #00c853;')
+        if problems:
+            self.continue_btn.setVisible(True)
+            self.continue_btn.setDefault(True)
+            self.cancel_btn.setVisible(False)
+        else:
+            self.cancel_btn.setEnabled(False)
+            QTimer.singleShot(self.SUMMARY_SECONDS * 1000, self.accept)
 
     def _cancel(self):
         if self._thread:

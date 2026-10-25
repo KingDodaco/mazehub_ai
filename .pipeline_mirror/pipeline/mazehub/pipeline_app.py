@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.12.2"
+APP_VERSION = "0.12.3"
 
 
 def _get_display_name():
@@ -1276,6 +1276,7 @@ def sync_usd_references(usd_file, progress_callback=None, cancel_check=None, hus
         'ok': not cancelled and synced == total,
         'cancelled': cancelled,
         'refs': len(resolved),
+        'resolved': [str(p) for p in resolved],
         'total': total,
         'synced': synced,
         'failed': failed,
