@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.10.5"
+APP_VERSION = "0.11.0"
 
 
 def _get_display_name():
@@ -1285,6 +1285,77 @@ def sync_usd_references(usd_file, progress_callback=None, cancel_check=None, hus
     }
 
 
+HIP_EXTENSIONS = {'.hip', '.hipnc', '.hiplc'}
+ROP_RENDER_SCRIPT = Path(__file__).resolve().parent / 'maze_rop_render.py'
+RENDERER_ROP_HINTS = ('usdrender', 'karma', 'ifd', 'opengl', 'redshift', 'arnold')
+
+
+def discover_hip_files(shot_path):
+    hip_dir = Path(shot_path) / 'houdini' / 'hip'
+    if not hip_dir.exists():
+        return []
+    files = [f for f in hip_dir.iterdir() if f.is_file() and f.suffix.lower() in HIP_EXTENSIONS]
+    return sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)
+
+
+def find_hython(husk_path=None):
+    return _find_houdini_tool('hython', husk_path)
+
+
+def is_renderer_rop(type_name):
+    low = type_name.lower()
+    return any(h in low for h in RENDERER_ROP_HINTS)
+
+
+def parse_rop_listing(output):
+    """Parse maze_rop_render.py --list output into [{rop, type, passes, parms}]."""
+    rops = {}
+    order = []
+    for line in output.splitlines():
+        parts = line.rstrip('\r').split('\t')
+        if len(parts) != 3:
+            continue
+        kind, rop, value = parts
+        if kind == 'rop':
+            if rop not in rops:
+                order.append(rop)
+            rops[rop] = {'rop': rop, 'type': value, 'passes': [], 'parms': []}
+        elif kind == 'pass' and rop in rops:
+            rops[rop]['passes'].append(value)
+        elif kind == 'parm' and rop in rops:
+            rops[rop]['parms'].append(value)
+    return [rops[r] for r in order]
+
+
+def discover_hip_rops(hython, hip_file):
+    """List ROPs and their RenderPass prims in a .hip. Returns (rops, raw_output)."""
+    if not hython:
+        return [], 'hython not found next to husk'
+    hip_file = Path(hip_file)
+    if needs_sync(hip_file):
+        sync_file(hip_file)
+    try:
+        result = subprocess.run(
+            [hython, str(ROP_RENDER_SCRIPT), '--list', str(hip_file)],
+            capture_output=True, text=True, timeout=300,
+            **_subprocess_flags(),
+        )
+        output = (result.stdout or '') + (result.stderr or '')
+        return parse_rop_listing(result.stdout or ''), output
+    except subprocess.TimeoutExpired as e:
+        return [], f'ROP discovery timed out: {e}'
+    except Exception as e:
+        return [], f'ROP discovery failed: {e}'
+
+
+def build_rop_render_cmd(hython, hip, rop, render_pass, start, end, inc, out_file):
+    cmd = [hython, str(ROP_RENDER_SCRIPT), '--render', str(hip), '--rop', rop]
+    if render_pass:
+        cmd += ['--pass', render_pass]
+    cmd += ['--frames', str(start), str(end), str(inc), '--out', str(out_file)]
+    return cmd
+
+
 # ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
@@ -1884,7 +1955,7 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
         {'name': 'USD File', 'value': usd_file},
         {'name': 'Interval', 'value': str(interval)},
         {'name': 'Total Frames', 'value': str(total_frames)},
-        {'name': 'Engine', 'value': f'Karma {render_engine.upper()}'},
+        {'name': 'Engine', 'value': f'Karma {render_engine.upper()}' if render_engine in ('xpu', 'cpu') else render_engine},
         {'name': 'Render Time', 'value': render_time},
     ]
     if start_time:

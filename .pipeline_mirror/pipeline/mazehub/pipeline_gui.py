@@ -37,6 +37,7 @@ from pipeline_app import (
     discover_usd_files, discover_husk_passes,
     discover_image_sequences,
     sync_usd_references, parse_usd_references,
+    discover_hip_files, discover_hip_rops, find_hython, build_rop_render_cmd, is_renderer_rop,
     read_production, write_production, production_score,
     PRODUCTION_STATUSES, PRODUCTION_VALUES,
     ASSET_CATEGORIES, SHOT_CATEGORIES,
@@ -3580,9 +3581,12 @@ class RenderThread(QThread):
     frame_finished = Signal()
     bucket_progress = Signal(int)
 
-    def __init__(self, commands, working_dir=None, env=None):
+    def __init__(self, commands, working_dir=None, env=None, job_meta=None):
         super().__init__()
         self.commands = commands
+        # Optional per-command {'pass', 'frames'}: each command renders a whole
+        # frame range and reports frames via MAZE_FRAME lines (hrender mode).
+        self.job_meta = job_meta
         self.working_dir = working_dir
         self._env = env
         self._process = None
@@ -3605,19 +3609,25 @@ class RenderThread(QThread):
             if self._cancel:
                 self.output.emit('[cancelled]')
                 break
+            meta = self.job_meta[i] if self.job_meta else None
             pass_name = ''
             frame_num = 0
-            try:
-                idx = cmd.index('--pass')
-                pass_name = cmd[idx + 1]
-            except (ValueError, IndexError):
-                pass
-            try:
-                idx = cmd.index('-f')
-                frame_num = int(cmd[idx + 1])
-            except (ValueError, IndexError):
-                pass
-            if pass_name != current_pass:
+            if meta:
+                pass_name = meta['pass']
+                pass_frame_count = meta['frames']
+                pass_frames_done = 0
+            else:
+                try:
+                    idx = cmd.index('--pass')
+                    pass_name = cmd[idx + 1]
+                except (ValueError, IndexError):
+                    pass
+                try:
+                    idx = cmd.index('-f')
+                    frame_num = int(cmd[idx + 1])
+                except (ValueError, IndexError):
+                    pass
+            if not meta and pass_name != current_pass:
                 current_pass = pass_name
                 pass_frame_count = sum(
                     1 for c in self.commands
@@ -3625,9 +3635,14 @@ class RenderThread(QThread):
                 ) if '--pass' in cmd else 0
                 pass_frames_done = 0
             self.pass_changed.emit(pass_name)
-            pass_frames_done += 1
-            self.frame_started.emit(frame_num, pass_frame_count, pass_frames_done)
-            self.output.emit(f'[rendering pass {i + 1}/{total}: {pass_name} frame {frame_num}]')
+            frame_open = False
+            if meta:
+                self.output.emit(f'[rendering job {i + 1}/{total}: {pass_name}]')
+            else:
+                pass_frames_done += 1
+                self.frame_started.emit(frame_num, pass_frame_count, pass_frames_done)
+                frame_open = True
+                self.output.emit(f'[rendering pass {i + 1}/{total}: {pass_name} frame {frame_num}]')
             self.output.emit(f'  cmd: {" ".join(cmd)}')
             try:
                 cmd_env = os.environ.copy()
@@ -3655,19 +3670,29 @@ class RenderThread(QThread):
                         break
                     stripped = line.rstrip('\n')
                     self.output.emit(stripped)
+                    if meta and stripped.startswith('MAZE_FRAME'):
+                        m = re.match(r'MAZE_FRAME\s+(-?\d+)', stripped)
+                        if m:
+                            if frame_open:
+                                self.frame_finished.emit()
+                            pass_frames_done += 1
+                            self.frame_started.emit(int(m.group(1)), pass_frame_count, pass_frames_done)
+                            frame_open = True
                     if 'ALF_PROGRESS' in stripped:
                         m = re.search(r'ALF_PROGRESS\s+(\d+)', stripped)
                         if m:
                             self.bucket_progress.emit(int(m.group(1)))
                 self._process.wait()
-                self.frame_finished.emit()
+                if frame_open:
+                    self.frame_finished.emit()
                 code = self._process.returncode
                 if code != 0:
                     exit_code = code
                     self.output.emit(f'[warning: husk exited with code {code}]')
                 self._process = None
             except Exception as e:
-                self.frame_finished.emit()
+                if frame_open:
+                    self.frame_finished.emit()
                 self.output.emit(f'[error: {e}]')
                 exit_code = 1
             self.progress.emit(i + 1, total)
@@ -3908,6 +3933,23 @@ class _PassDiscoveryWorker(QThread):
             self.failed.emit(self.generation, str(e))
 
 
+class _RopDiscoveryWorker(QThread):
+    ready = Signal(int, object, str)
+
+    def __init__(self, hython, hip_file, generation, parent=None):
+        super().__init__(parent)
+        self.hython = hython
+        self.hip_file = hip_file
+        self.generation = generation
+
+    def run(self):
+        try:
+            rops, raw_output = discover_hip_rops(self.hython, self.hip_file)
+        except Exception as e:
+            rops, raw_output = [], f'ROP discovery failed: {e}'
+        self.ready.emit(self.generation, rops, raw_output or '')
+
+
 class RenderPage(QWidget):
     def __init__(self, project_root, pipeline_dir, apps_config=None, parent=None):
         super().__init__(parent)
@@ -3955,13 +3997,38 @@ class RenderPage(QWidget):
         shot_row.addWidget(self.shot_combo, 1)
         layout.addLayout(shot_row)
 
-        usd_row = QHBoxLayout()
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel('Render Mode:'))
+        self.render_mode_combo = QComboBox()
+        self.render_mode_combo.setMinimumWidth(260)
+        self.render_mode_combo.addItem('husk (USD file)', 'husk')
+        self.render_mode_combo.addItem('hrender (.hip file)', 'hrender')
+        self.render_mode_combo.setToolTip(
+            'husk renders an exported USD file. hrender renders ROPs straight from the shot .hip.')
+        self.render_mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_row.addWidget(self.render_mode_combo, 1)
+        layout.addLayout(mode_row)
+
+        self.usd_row_widget = QWidget()
+        usd_row = QHBoxLayout(self.usd_row_widget)
+        usd_row.setContentsMargins(0, 0, 0, 0)
         usd_row.addWidget(QLabel('USD File:'))
         self.usd_combo = QComboBox()
         self.usd_combo.setMinimumWidth(260)
         self.usd_combo.currentTextChanged.connect(self._on_usd_changed)
         usd_row.addWidget(self.usd_combo, 1)
-        layout.addLayout(usd_row)
+        layout.addWidget(self.usd_row_widget)
+
+        self.hip_row_widget = QWidget()
+        hip_row = QHBoxLayout(self.hip_row_widget)
+        hip_row.setContentsMargins(0, 0, 0, 0)
+        hip_row.addWidget(QLabel('HIP File:'))
+        self.hip_combo = QComboBox()
+        self.hip_combo.setMinimumWidth(260)
+        self.hip_combo.currentTextChanged.connect(self._on_usd_changed)
+        hip_row.addWidget(self.hip_combo, 1)
+        layout.addWidget(self.hip_row_widget)
+        self.hip_row_widget.setVisible(False)
 
         version_row = QHBoxLayout()
         version_row.addWidget(QLabel('Version:'))
@@ -3980,7 +4047,9 @@ class RenderPage(QWidget):
         houdini_version_row.addStretch()
         layout.addLayout(houdini_version_row)
 
-        render_engine_row = QHBoxLayout()
+        self.engine_row_widget = QWidget()
+        render_engine_row = QHBoxLayout(self.engine_row_widget)
+        render_engine_row.setContentsMargins(0, 0, 0, 0)
         render_engine_row.addWidget(QLabel('Render Engine:'))
         self.render_engine_combo = QComboBox()
         self.render_engine_combo.setMinimumWidth(260)
@@ -3988,7 +4057,13 @@ class RenderPage(QWidget):
         self.render_engine_combo.addItem('Karma CPU', 'cpu')
         render_engine_row.addWidget(self.render_engine_combo, 1)
         render_engine_row.addStretch()
-        layout.addLayout(render_engine_row)
+        layout.addWidget(self.engine_row_widget)
+
+        self.mplay_cb = QCheckBox('Show frames in MPlay while rendering')
+        self.mplay_cb.setToolTip(
+            'husk mode only: opens one MPlay window that updates as each frame renders. '
+            'Closing MPlay stops the current frame.')
+        layout.addWidget(self.mplay_cb)
 
         layout.addSpacing(8)
 
@@ -4122,6 +4197,12 @@ class RenderPage(QWidget):
             self.usd_combo.addItems([f.name for f in usd_files])
         self.usd_combo.setCurrentIndex(-1)
         self.usd_combo.blockSignals(False)
+        self.hip_combo.blockSignals(True)
+        self.hip_combo.clear()
+        if shot_name:
+            self.hip_combo.addItems([f.name for f in discover_hip_files(shot_path)])
+        self.hip_combo.setCurrentIndex(-1)
+        self.hip_combo.blockSignals(False)
         self._refresh_versions()
         self._on_usd_changed('')
 
@@ -4153,6 +4234,79 @@ class RenderPage(QWidget):
     def _on_usd_changed(self, usd_name):
         self._refresh_passes()
 
+    def _render_mode(self):
+        return self.render_mode_combo.currentData() or 'husk'
+
+    def _on_mode_changed(self, _index=0):
+        hrender = self._render_mode() == 'hrender'
+        self.usd_row_widget.setVisible(not hrender)
+        self.hip_row_widget.setVisible(hrender)
+        self.engine_row_widget.setVisible(not hrender)
+        self.mplay_cb.setEnabled(not hrender)
+        self._no_passes_text = (
+            'No passes found. Select a HIP file to discover ROPs and passes.' if hrender
+            else 'No passes found. Select a USD file to discover passes.')
+        self._refresh_passes()
+
+    def _resolve_husk(self):
+        husk_path = self._resolve_husk_from_houdini(self.houdini_version_combo.currentText())
+        if not husk_path:
+            from settings import find_husk
+            husk_path = find_husk()
+        return husk_path
+
+    def _refresh_rops(self):
+        hip_name = self.hip_combo.currentText()
+        shot_name = self.shot_combo.currentText()
+        if not shot_name or not hip_name:
+            return
+        hip_file = self.project_root / 'sequence' / shot_name / 'houdini' / 'hip' / hip_name
+        hython = find_hython(self._resolve_husk())
+        if not hython:
+            self.log_output.append('[info] hython not found next to husk — configure husk in Settings')
+            return
+        self.log_output.append(f'[info] Discovering ROPs and passes in {hip_name} (loads the scene in hython)...')
+        self.no_passes_label.setText('Discovering ROPs and passes… (loading .hip)')
+        worker = _RopDiscoveryWorker(hython, hip_file, self._discover_gen, self)
+        worker.ready.connect(self._on_rops_ready)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_rops_ready(self, generation, rops, raw_output):
+        if generation != self._discover_gen:
+            return
+        if not rops:
+            if raw_output:
+                self.log_output.append(f'[hython output]\n{raw_output.strip()}')
+            self.log_output.append('[info] No ROPs found')
+            self.no_passes_label.setText(self._no_passes_text)
+            self.no_passes_label.setVisible(True)
+            return
+        self.no_passes_label.setVisible(False)
+        for r in rops:
+            if r['parms']:
+                self.log_output.append(f'[info] {r["rop"]} pass-related parms: {", ".join(r["parms"])}')
+            checked = is_renderer_rop(r['type'])
+            for render_pass in (r['passes'] or ['']):
+                label = f'{r["rop"]} › {render_pass}' if render_pass else f'{r["rop"]} ({r["type"]})'
+                cb = QCheckBox(label)
+                cb.setChecked(checked)
+                cb.setProperty('rop', r['rop'])
+                cb.setProperty('render_pass', render_pass)
+                cb.setProperty('rop_type', r['type'])
+                self.passes_layout.addWidget(cb)
+        count = sum(max(len(r['passes']), 1) for r in rops)
+        self.log_output.append(f'[info] Found {len(rops)} ROPs, {count} renderable entries')
+
+    def _get_selected_rop_jobs(self):
+        jobs = []
+        for i in range(self.passes_layout.count()):
+            item = self.passes_layout.itemAt(i)
+            w = item.widget() if item else None
+            if isinstance(w, QCheckBox) and w.isChecked() and w.property('rop'):
+                jobs.append((w.property('rop'), w.property('render_pass') or '', w.property('rop_type') or ''))
+        return jobs
+
     def _clear_passes(self):
         while self.passes_layout.count():
             item = self.passes_layout.takeAt(0)
@@ -4183,6 +4337,9 @@ class RenderPage(QWidget):
     def _refresh_passes(self):
         self._discover_gen += 1
         self._clear_passes()
+        if self._render_mode() == 'hrender':
+            self._refresh_rops()
+            return
         usd_name = self.usd_combo.currentText()
         shot_name = self.shot_combo.currentText()
         if not shot_name or not usd_name:
@@ -4262,6 +4419,9 @@ class RenderPage(QWidget):
             self.cancel_btn.setEnabled(False)
 
     def _do_render(self):
+        if self._render_mode() == 'hrender':
+            self._do_hrender()
+            return
         shot_name = self.shot_combo.currentText()
         usd_name = self.usd_combo.currentText()
         if not shot_name or not usd_name:
@@ -4331,8 +4491,10 @@ class RenderPage(QWidget):
                     '-o', str(out_file),
                     '--make-output-path',
                     '-V', '2a',
-                    str(usd_file),
                 ]
+                if self.mplay_cb.isChecked():
+                    cmd += ['--mplay-monitor', '-', '--mplay-session', f'mazehub_{shot_name}']
+                cmd.append(str(usd_file))
                 commands.append(cmd)
 
         self.log_output.clear()
@@ -4355,10 +4517,8 @@ class RenderPage(QWidget):
         else:
             self._log_sync_report(sync_dlg.report, sync_time_str, len(frames) > 1)
 
-        self.render_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(True)
-
         self._render_meta = {
+            'render_mode': 'husk',
             'shot': shot_name,
             'usd_file': usd_name,
             'passes': passes,
@@ -4371,6 +4531,87 @@ class RenderPage(QWidget):
             'end_time': '',
             'sync_seconds': round(sync_seconds, 1),
         }
+        self._launch_render(commands, shot_name, shot_path, passes, sync_seconds)
+
+    def _do_hrender(self):
+        shot_name = self.shot_combo.currentText()
+        hip_name = self.hip_combo.currentText()
+        if not shot_name or not hip_name:
+            self.log_output.append('[error] Select a shot and HIP file first')
+            self._status('Select a shot and HIP file first', False)
+            return
+        jobs = self._get_selected_rop_jobs()
+        if not jobs:
+            self.log_output.append('[error] Select at least one ROP / pass')
+            self._status('Select at least one ROP / pass', False)
+            return
+        hython = find_hython(self._resolve_husk())
+        if not hython:
+            self.log_output.append('[error] hython not found — configure husk in Settings')
+            self._status('hython not found — configure husk in Settings', False)
+            return
+        shot_path = self.project_root / 'sequence' / shot_name
+        hip_file = shot_path / 'houdini' / 'hip' / hip_name
+        if not hip_file.exists():
+            self.log_output.append(f'[error] HIP file not found: {hip_file}')
+            self._status(f'HIP file not found: {hip_file}', False)
+            return
+        start = self.start_frame_spin.value()
+        end = self.end_frame_spin.value()
+        interval = max(self.interval_spin.value(), 1)
+        if start > end:
+            self.log_output.append('[error] Start frame must be <= end frame')
+            self._status('Start frame must be <= end frame', False)
+            return
+        version = self.version_combo.currentData()
+        if version is None:
+            self.log_output.append('[error] Select a render version first')
+            self._status('Select a render version first', False)
+            return
+
+        frame_count = len(range(start, end + 1, interval))
+        version_dir = shot_path / 'houdini' / 'render' / f'{shot_name}_v{version:03d}'
+        commands, job_meta, names, out_dirs = [], [], [], []
+        for rop, render_pass, _rop_type in jobs:
+            name = (render_pass or rop).rstrip('/').split('/')[-1]
+            if name in names:
+                name = f'{rop.rstrip("/").split("/")[-1]}_{name}'
+            names.append(name)
+            out_dir = version_dir / name
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_dirs.append(str(out_dir))
+            out_file = out_dir / f'{shot_name}_{name}_v{version:03d}_$F4.exr'
+            commands.append(build_rop_render_cmd(
+                hython, hip_file, rop, render_pass, start, end, interval, out_file))
+            job_meta.append({'pass': name, 'frames': frame_count})
+
+        self.log_output.clear()
+        self.log_output.append(f'Rendering (hrender): {hip_name}')
+        self.log_output.append(f'Jobs: {", ".join(names)}')
+        self.log_output.append(f'Frames: {start}-{end} (interval {interval})')
+        self.log_output.append('')
+
+        self._render_meta = {
+            'render_mode': 'hrender',
+            'shot': shot_name,
+            'usd_file': hip_name,
+            'passes': names,
+            'start_frame': start,
+            'end_frame': end,
+            'interval': interval,
+            'version': version,
+            'render_engine': ', '.join(sorted({t for _r, _p, t in jobs if t})) or 'rop',
+            'start_time': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'start_ts': time.time(),
+            'out_dirs': out_dirs,
+            'end_time': '',
+            'sync_seconds': 0,
+        }
+        self._launch_render(commands, shot_name, shot_path, names, 0, job_meta=job_meta)
+
+    def _launch_render(self, commands, shot_name, shot_path, passes, sync_seconds, job_meta=None):
+        self.render_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
 
         render_env = {
             'MAZE_CONTEXT_NAME': shot_name,
@@ -4378,7 +4619,8 @@ class RenderPage(QWidget):
             'JOB': str(shot_path),
         }
 
-        self._render_thread = RenderThread(commands, working_dir=str(shot_path), env=render_env)
+        self._render_thread = RenderThread(
+            commands, working_dir=str(shot_path), env=render_env, job_meta=job_meta)
 
         self._render_dialog = RenderProgressDialog(self.window())
         self._render_dialog.set_render_thread(self._render_thread)
@@ -4481,6 +4723,17 @@ class RenderPage(QWidget):
             self.log_output.append('')
             self.log_output.append(f'[render finished with errors (exit code {exit_code})]')
             self._status(f'Render finished with errors', False)
+
+        if meta and meta.get('render_mode') == 'hrender' and not meta.get('cancelled'):
+            for out_dir in meta.get('out_dirs', []):
+                try:
+                    fresh = any(f.stat().st_mtime >= meta['start_ts'] for f in Path(out_dir).glob('*.exr'))
+                except OSError:
+                    fresh = False
+                if not fresh:
+                    self.log_output.append(
+                        f'[warning] No new frames in {out_dir} — the ROP may have ignored the output '
+                        f'override. Check its own output path.')
 
         if meta:
             meta['end_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
