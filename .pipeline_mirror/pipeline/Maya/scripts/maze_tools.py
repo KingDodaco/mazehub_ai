@@ -725,4 +725,7 @@ def create_maze_menu():
     )
 
 
-create_maze_menu()
+# 123.py builds the menu once the main window exists; build it here too
+# when the module is imported by hand in an already running session.
+if cmds.window("MayaWindow", exists=True):
+    create_maze_menu()

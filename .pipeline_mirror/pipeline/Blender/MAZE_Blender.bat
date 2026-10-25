@@ -1,15 +1,13 @@
 @echo off
 setlocal
 
-set "PIPELINE_DIR=%MAZE_PIPELINE%"
-set "SCRIPTS_DIR=%PIPELINE_DIR%\Blender\scripts"
-set "MAZE_STARTUP=%SCRIPTS_DIR%\startup.py"
+set "LOG_FILE=%TEMP%\mazehub_launch.log"
+> "%LOG_FILE%" echo app=Blender
 
-if not "%MAZE_PROJECT_PIPELINE%"=="" (
-    if exist "%MAZE_PROJECT_PIPELINE%\Blender\scripts\startup.py" (
-        set "MAZE_STARTUP=%MAZE_PROJECT_PIPELINE%\Blender\scripts\startup.py"
-    )
-)
+if not defined PIPELINE_DIR set "PIPELINE_DIR=%MAZE_PIPELINE%"
+set "SCRIPTS_DIR=%PIPELINE_DIR%\Blender\scripts"
+rem The install startup.py always runs; it runs the project's startup.py (if any) itself.
+set "MAZE_STARTUP=%SCRIPTS_DIR%\startup.py"
 
 if "%MAZE_CONTEXT_TYPE%"=="shot" (
     set "JOB=%MAZE_CONTEXT_PATH%\blender"
@@ -38,12 +36,25 @@ set "SAFE_SCRIPT=%MAZE_STARTUP:\=/%"
 
 set "BLEND_FILE=%~1"
 
-if not defined BLEND_FILE if defined MAZE_CONTEXT_PATH (
-    set "BLEND_DIR=%MAZE_CONTEXT_PATH%\blender\blend"
-    if exist "%BLEND_DIR%\*.blend" (
-        for %%f in ("%BLEND_DIR%\*.blend") do set "BLEND_FILE=%%~f"
-    )
+set "BLEND_DIR="
+if defined MAZE_CONTEXT_PATH set "BLEND_DIR=%MAZE_CONTEXT_PATH%\blender\blend"
+
+if not defined BLEND_FILE if defined BLEND_DIR if exist "%BLEND_DIR%\*.blend" (
+    for %%f in ("%BLEND_DIR%\*.blend") do set "BLEND_FILE=%%~f"
 )
+
+if not defined MAZE_EXE (
+    >> "%LOG_FILE%" echo ERROR: MAZE_EXE is not set.
+    echo ERROR: MAZE_EXE is not set.
+    exit /b 1
+)
+if not exist "%MAZE_EXE%" (
+    >> "%LOG_FILE%" echo ERROR: Blender executable not found: "%MAZE_EXE%"
+    echo ERROR: Blender executable not found: "%MAZE_EXE%"
+    exit /b 1
+)
+
+>> "%LOG_FILE%" echo MAZE_EXE="%MAZE_EXE%"
 
 if defined BLEND_FILE (
     echo Opening: %BLEND_FILE%

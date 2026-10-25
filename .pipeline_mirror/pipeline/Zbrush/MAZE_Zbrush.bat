@@ -1,7 +1,10 @@
 @echo off
 setlocal
 
-set "PIPELINE_DIR=%MAZE_PIPELINE%"
+set "LOG_FILE=%TEMP%\mazehub_launch.log"
+> "%LOG_FILE%" echo app=ZBrush
+
+if not defined PIPELINE_DIR set "PIPELINE_DIR=%MAZE_PIPELINE%"
 
 if "%MAZE_CONTEXT_TYPE%"=="shot" (
     echo Launching ZBrush for shot: %MAZE_CONTEXT_NAME%
@@ -20,6 +23,23 @@ if not "%MAZE_PROJECT_PIPELINE%"=="" (
     )
 )
 
-start "" "%MAZE_EXE%" "%~1"
+if not defined MAZE_EXE (
+    >> "%LOG_FILE%" echo ERROR: MAZE_EXE is not set.
+    echo ERROR: MAZE_EXE is not set.
+    exit /b 1
+)
+if not exist "%MAZE_EXE%" (
+    >> "%LOG_FILE%" echo ERROR: ZBrush executable not found: "%MAZE_EXE%"
+    echo ERROR: ZBrush executable not found: "%MAZE_EXE%"
+    exit /b 1
+)
+
+>> "%LOG_FILE%" echo MAZE_EXE="%MAZE_EXE%"
+
+if "%~1"=="" (
+    start "" "%MAZE_EXE%"
+) else (
+    start "" "%MAZE_EXE%" "%~1"
+)
 
 endlocal

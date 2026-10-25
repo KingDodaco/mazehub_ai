@@ -92,6 +92,6 @@ if not exist "%MAZE_EXE%" (
 
 >> "%LOG_FILE%" echo MAZE_EXE="%MAZE_EXE%"
 
-start "" "%MAZE_EXE%" -command "%SET_PROJECT_CMD%python(\"exec(open('%SAFE_SCRIPT_PATH%').read())\");"
+start "" "%MAZE_EXE%" -command "%SET_PROJECT_CMD%python(\"import runpy; runpy.run_path('%SAFE_SCRIPT_PATH%', run_name='__maze_bootstrap__')\");"
 
 endlocal

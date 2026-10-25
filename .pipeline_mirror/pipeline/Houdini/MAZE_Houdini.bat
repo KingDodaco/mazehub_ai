@@ -3,7 +3,7 @@ setlocal
 
 set "LOG_FILE=%TEMP%\mazehub_launch.log"
 
-set "PIPELINE_DIR=%MAZE_PIPELINE%"
+if not defined PIPELINE_DIR set "PIPELINE_DIR=%MAZE_PIPELINE%"
 
 if defined MAZE_CONTEXT_PATH (
     set "JOB=%MAZE_CONTEXT_PATH%\houdini"
@@ -17,6 +17,12 @@ set "HOUDINI_PATH=%PIPELINE_DIR%\Houdini;&;%HOUDINI_PATH%"
 set "HOUDINI_MENU_PATH=%PIPELINE_DIR%\Houdini;&;%HOUDINI_MENU_PATH%"
 set "MPLAY_MENU_PATH=%PIPELINE_DIR%\Houdini;&;%MPLAY_MENU_PATH%"
 set "HOUDINI_JOB=%JOB%"
+rem Install scripts first so the install 123.py always wins; it runs the project's 123.py itself.
+if defined HOUDINI_SCRIPT_PATH (
+    set "HOUDINI_SCRIPT_PATH=%PIPELINE_DIR%\Houdini\scripts;%HOUDINI_SCRIPT_PATH%"
+) else (
+    set "HOUDINI_SCRIPT_PATH=%PIPELINE_DIR%\Houdini\scripts;&"
+)
 
 if not "%MAZE_PROJECT_PIPELINE%"=="" (
     if exist "%MAZE_PROJECT_PIPELINE%\Houdini\Packages" (

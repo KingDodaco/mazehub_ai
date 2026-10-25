@@ -88,3 +88,24 @@ def _maze_load_manual():
         print(f"[MAZE] Failed to open {path} in Manual mode: {e}")
 
 _maze_load_manual()
+
+# Run the project's own 123.py (if any) last so project settings take priority,
+# in its own namespace so it cannot break the install setup above.
+def _maze_run_project_script():
+    project_pipeline = os.environ.get("MAZE_PROJECT_PIPELINE", "")
+    if not project_pipeline:
+        return
+    path = os.path.join(project_pipeline, "Houdini", "scripts", "123.py")
+    if not os.path.isfile(path):
+        return
+    if os.path.abspath(path) == os.path.abspath(globals().get("__file__", "")):
+        return
+    print(f"[MAZE] Running project 123.py: {path}")
+    try:
+        import runpy
+        runpy.run_path(path, run_name="__maze_project_123__")
+    except Exception:
+        import traceback
+        print(f"[MAZE] Failed to run project 123.py ({path}):\n{traceback.format_exc()}")
+
+_maze_run_project_script()

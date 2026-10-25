@@ -65,3 +65,24 @@ def register_maze_tools():
 print("Running startup script...")
 setup_scene()
 register_maze_tools()
+
+# Run the project's own startup.py (if any) last so project settings take priority,
+# in its own namespace so it cannot break the install setup above.
+def _maze_run_project_script():
+    project_pipeline = os.environ.get("MAZE_PROJECT_PIPELINE", "")
+    if not project_pipeline:
+        return
+    path = os.path.join(project_pipeline, "Blender", "scripts", "startup.py")
+    if not os.path.isfile(path):
+        return
+    if os.path.abspath(path) == os.path.abspath(globals().get("__file__", "")):
+        return
+    print(f"[MAZE] Running project startup.py: {path}")
+    try:
+        import runpy
+        runpy.run_path(path, run_name="__maze_project_startup__")
+    except Exception:
+        import traceback
+        print(f"[MAZE] Failed to run project startup.py ({path}):\n{traceback.format_exc()}")
+
+_maze_run_project_script()

@@ -1,7 +1,10 @@
 @echo off
 setlocal
 
-set "PIPELINE_DIR=%MAZE_PIPELINE%"
+set "LOG_FILE=%TEMP%\mazehub_launch.log"
+> "%LOG_FILE%" echo app=usdview
+
+if not defined PIPELINE_DIR set "PIPELINE_DIR=%MAZE_PIPELINE%"
 
 set "HOUDINI_PACKAGE_DIR=%PIPELINE_DIR%\Houdini\Packages"
 set "HOUDINI_PATH=%PIPELINE_DIR%\Houdini;&;%HOUDINI_PATH%"
@@ -30,9 +33,22 @@ if not "%MAZE_PROJECT_PIPELINE%"=="" (
 )
 
 set "USD_FILE=%MAZE_OPEN_FILE%"
+if defined USD_FILE set "USD_FILE_ARG=%USD_FILE:\=/%"
+
+if not defined MAZE_EXE (
+    >> "%LOG_FILE%" echo ERROR: MAZE_EXE is not set.
+    echo ERROR: MAZE_EXE is not set.
+    exit /b 1
+)
+if not exist "%MAZE_EXE%" (
+    >> "%LOG_FILE%" echo ERROR: usdview executable not found: "%MAZE_EXE%"
+    echo ERROR: usdview executable not found: "%MAZE_EXE%"
+    exit /b 1
+)
+
+>> "%LOG_FILE%" echo MAZE_EXE="%MAZE_EXE%"
 
 if defined USD_FILE (
-    set "USD_FILE_ARG=%USD_FILE:\=/%"
     echo Opening: %USD_FILE%
     start "" "%MAZE_EXE%" "%USD_FILE_ARG%"
 ) else (
