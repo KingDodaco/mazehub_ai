@@ -68,3 +68,23 @@ except Exception:
         _maze_set_flipbook_output()
     except Exception:
         pass
+
+# Open a .hip in Manual update mode (MazeHub "Manual mode" checkbox). The launcher
+# starts Houdini empty so this script runs, then the file is loaded here.
+def _maze_load_manual():
+    path = os.environ.pop("MAZE_HOUDINI_LOAD_FILE", "")
+    if not path:
+        return
+    try:
+        hou.unsetenv("MAZE_HOUDINI_LOAD_FILE")
+    except Exception:
+        pass
+    try:
+        hou.setUpdateMode(hou.updateMode.Manual)
+        hou.hipFile.load(path, suppress_save_prompt=True)
+        hou.setUpdateMode(hou.updateMode.Manual)
+        print(f"[MAZE] Opened {path} in Manual update mode")
+    except Exception as e:
+        print(f"[MAZE] Failed to open {path} in Manual mode: {e}")
+
+_maze_load_manual()

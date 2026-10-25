@@ -68,6 +68,13 @@ if not exist "%MAZE_EXE%" (
 
 >> "%LOG_FILE%" echo MAZE_EXE="%MAZE_EXE%"
 
+rem Manual mode: start Houdini empty so 123.py runs, switches to Manual and loads the file.
+if defined HOUDINI_FILE_ARG if "%MAZE_HOUDINI_MANUAL%"=="1" (
+    set "MAZE_HOUDINI_LOAD_FILE=%HOUDINI_FILE_ARG%"
+    set "HOUDINI_FILE_ARG="
+    >> "%LOG_FILE%" echo MAZE_HOUDINI_MANUAL=1 - loading via 123.py
+)
+
 if defined HOUDINI_FILE_ARG (
     start "" "%MAZE_EXE%" "%HOUDINI_FILE_ARG%"
 ) else (

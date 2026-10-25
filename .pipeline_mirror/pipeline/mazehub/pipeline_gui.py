@@ -263,13 +263,15 @@ class AppLauncherThread(QThread):
 class FileOpenThread(QThread):
     finished = Signal(str, bool)
 
-    def __init__(self, app_config, pipeline_dir, file_path, project_root=None, context=None):
+    def __init__(self, app_config, pipeline_dir, file_path, project_root=None, context=None,
+                 manual_mode=False):
         super().__init__()
         self.config = dict(app_config)
         self.pipeline_dir = pipeline_dir
         self.file_path = file_path
         self.project_root = project_root
         self.context = context
+        self.manual_mode = manual_mode
 
     def run(self):
         log = get_log_stream()
@@ -310,6 +312,9 @@ class FileOpenThread(QThread):
             log.write(f'[open] FRAME_RATE={launch_env.get("FRAME_RATE", "<not set>")}')
             launch_env['MAZE_OPEN_FILE'] = str(self.file_path)
             log.write(f'[open] MAZE_OPEN_FILE={launch_env.get("MAZE_OPEN_FILE", "<not set>")}')
+            if self.manual_mode:
+                launch_env['MAZE_HOUDINI_MANUAL'] = '1'
+                log.write('[open] MAZE_HOUDINI_MANUAL=1 (opening in Manual update mode)')
             log.write(f'[open] Bat={exec_path}')
             if platform.system() == 'Windows':
                 import tempfile
@@ -345,6 +350,14 @@ class FileOpenThread(QThread):
         except Exception as e:
             log.write(f'[open] Failed to open: {e}')
             self.finished.emit(f'Failed: {e}', False)
+
+
+HIP_SUFFIXES = {'.hip', '.hipnc', '.hiplc'}
+MANUAL_MODE_TIP = "Open the .hip with Houdini's update mode set to Manual, so nothing cooks on load."
+
+
+def _is_hip_path(path):
+    return bool(path) and Path(path).suffix.lower() in HIP_SUFFIXES
 
 
 REVERSE_EXT_MAP = {}
@@ -415,6 +428,11 @@ class FileBrowserPanel(QWidget):
         self.version_combo.currentIndexChanged.connect(self._on_version_change)
         btn_row.addWidget(self.version_combo)
 
+        self.manual_cb = QCheckBox('Manual mode')
+        self.manual_cb.setToolTip(MANUAL_MODE_TIP)
+        self.manual_cb.setVisible(False)
+        btn_row.addWidget(self.manual_cb)
+
         self._selected_app_key = None
         self._selected_version_key = None
 
@@ -438,6 +456,7 @@ class FileBrowserPanel(QWidget):
         self.tree.clear()
         self._file_map.clear()
         self.open_btn.setEnabled(False)
+        self.manual_cb.setVisible(False)
         self.version_combo.clear()
         self.version_combo.setEnabled(False)
         self._selected_app_key = None
@@ -447,6 +466,7 @@ class FileBrowserPanel(QWidget):
         self.tree.clear()
         self._file_map.clear()
         self.open_btn.setEnabled(False)
+        self.manual_cb.setVisible(False)
 
         if not self._current_path or not self._current_path.exists():
             self.path_label.setText('Directory not found')
@@ -496,6 +516,7 @@ class FileBrowserPanel(QWidget):
         items = self.tree.selectedItems()
         self.open_btn.setEnabled(bool(items))
         if not items:
+            self.manual_cb.setVisible(False)
             self.version_combo.clear()
             self.version_combo.setEnabled(False)
             self._selected_app_key = None
@@ -504,10 +525,13 @@ class FileBrowserPanel(QWidget):
 
         item = items[0]
         app_key = None
+        selected_fp = None
         for idx, (app_name, fp, rel, tree_item) in self._file_map.items():
             if tree_item is item:
                 app_key = app_name
+                selected_fp = fp
                 break
+        self.manual_cb.setVisible(_is_hip_path(selected_fp))
 
         if not app_key:
             self.version_combo.clear()
@@ -517,6 +541,7 @@ class FileBrowserPanel(QWidget):
             return
 
         self._selected_app_key = app_key
+        self.apps_config = load_apps_config()
         cfg = self.apps_config.get(app_key, {})
         versions = cfg.get('versions', {})
 
@@ -562,6 +587,7 @@ class FileBrowserPanel(QWidget):
                 self.thread = FileOpenThread(
                     cfg, self.pipeline_dir, fp,
                     project_root=self.project_root, context=self._current_context,
+                    manual_mode=_is_hip_path(fp) and self.manual_cb.isChecked(),
                 )
                 self.thread.finished.connect(lambda msg, ok: self._result(msg, ok))
                 self.thread.start()
@@ -1127,9 +1153,7 @@ class DashboardPage(QWidget):
         self.recent_table.itemDoubleClicked.connect(self._open_recent_file)
         self.recent_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.recent_table.customContextMenuRequested.connect(self._show_recent_context_menu)
-        self.recent_table.itemSelectionChanged.connect(
-            lambda: self.open_recent_btn.setEnabled(bool(self.recent_table.selectedItems()))
-        )
+        self.recent_table.itemSelectionChanged.connect(self._on_recent_selection_change)
         recent_layout.addWidget(self.recent_table)
 
         self.empty_label = QLabel('No recent files')
@@ -1145,6 +1169,10 @@ class DashboardPage(QWidget):
         self.open_recent_btn.setEnabled(False)
         self.open_recent_btn.clicked.connect(self._open_selected_recent_file)
         btn_row.addWidget(self.open_recent_btn)
+        self.recent_manual_cb = QCheckBox('Manual mode')
+        self.recent_manual_cb.setToolTip(MANUAL_MODE_TIP)
+        self.recent_manual_cb.setVisible(False)
+        btn_row.addWidget(self.recent_manual_cb)
         btn_row.addStretch()
         clear_btn = QPushButton('Clear History')
         clear_btn.setCursor(Qt.PointingHandCursor)
@@ -1282,6 +1310,19 @@ class DashboardPage(QWidget):
             self.recent_table.setItem(i, 4, QTableWidgetItem(date_str))
         self.recent_table.resizeColumnsToContents()
         self.open_recent_btn.setEnabled(False)
+        self.recent_manual_cb.setVisible(False)
+
+    def _selected_recent_path(self):
+        items = self.recent_table.selectedItems()
+        if not items:
+            return None
+        cell = self.recent_table.item(items[0].row(), 0)
+        return cell.data(Qt.UserRole) if cell else None
+
+    def _on_recent_selection_change(self):
+        path = self._selected_recent_path()
+        self.open_recent_btn.setEnabled(bool(path))
+        self.recent_manual_cb.setVisible(_is_hip_path(path))
 
     def _show_recent_context_menu(self, pos):
         item = self.recent_table.itemAt(pos)
@@ -1322,6 +1363,7 @@ class DashboardPage(QWidget):
         
         app_key = entry.get('app_key', '')
         app_name = entry.get('app_name', '')
+        self.apps_config = load_apps_config()
         cfg = None
         if app_key:
             cfg = self.apps_config.get(app_key)
@@ -1350,6 +1392,7 @@ class DashboardPage(QWidget):
         self.thread = FileOpenThread(
             cfg, self.pipeline_dir, Path(path),
             project_root=self.project_root, context=context,
+            manual_mode=_is_hip_path(path) and self.recent_manual_cb.isChecked(),
         )
         self.thread.finished.connect(lambda msg, ok: self._show_launch_result(msg, ok))
         self.thread.start()
@@ -1372,12 +1415,15 @@ class DashboardPage(QWidget):
         self._refresh_recent_files()
 
     def _quick_launch(self, app_name):
+        # Re-read apps.json so a default version changed in Settings applies immediately.
+        self.apps_config = load_apps_config()
         cfg = self.apps_config.get(app_name)
         if cfg:
+            cfg['_key'] = app_name
             self._run_launch(cfg)
 
     def _run_launch(self, cfg):
-        self.thread = AppLauncherThread(cfg, self.pipeline_dir)
+        self.thread = AppLauncherThread(cfg, self.pipeline_dir, project_root=self.project_root)
         self.thread.finished.connect(lambda msg, ok: self._show_launch_result(msg, ok))
         self.thread.start()
 
@@ -3493,7 +3539,7 @@ class HelpPage(QWidget):
 
         self._add_section(layout, '3 — Home', """
         <p>Your landing page. At the top you see how many shots and assets you have and how much is done overall.</p>
-        <p><b>Quick Launch</b> — click a button to open an app quickly. The app launches with the last used version you selected. <b>Recent Files</b> — double-click any file you opened recently to jump straight back in. Right-click to show it in Windows Explorer or remove it from the list.</p>
+        <p><b>Quick Launch</b> — click a button to open an app quickly. The app launches with the default version set in <b>Settings</b>. <b>Recent Files</b> — double-click any file you opened recently to jump straight back in. When a Houdini <code>.hip</code> file is selected (here or in any file browser), tick <b>Manual mode</b> next to the open button to open it with Houdini's update mode set to Manual, so nothing cooks on load. Right-click to show it in Windows Explorer or remove it from the list.</p>
         """)
 
         self._add_section(layout, '4 — Launching Apps', """
@@ -5652,6 +5698,79 @@ class ProjectSettingsDialog(QDialog):
             self.repair_btn.setText('Repair File Structure')
 
 
+def _browse_create_parent(parent, line_edit):
+    from PySide6.QtWidgets import QFileDialog
+    path = QFileDialog.getExistingDirectory(
+        parent, 'Select parent folder', line_edit.text() or str(Path.home()))
+    if path:
+        line_edit.setText(path)
+
+
+def prompt_create_project(parent, default_parent):
+    """Ask for a project name/location and create it.
+
+    Returns (target, error): target is the new project root, or None if the
+    dialog was cancelled or failed; error is a message to show, or ''.
+    """
+    dialog = QDialog(parent)
+    dialog.setWindowTitle('Create New Project')
+    dlg_layout = QVBoxLayout(dialog)
+    form = QFormLayout()
+    name_input = QLineEdit()
+    name_input.setPlaceholderText('MyProject')
+    form.addRow('Project name:', name_input)
+    parent_input = QLineEdit(str(default_parent))
+    parent_row = QHBoxLayout()
+    parent_row.addWidget(parent_input, 1)
+    browse_btn = QPushButton('Browse')
+    browse_btn.setCursor(Qt.PointingHandCursor)
+    browse_btn.clicked.connect(lambda: _browse_create_parent(dialog, parent_input))
+    parent_row.addWidget(browse_btn)
+    form.addRow('Create in:', parent_row)
+    dlg_layout.addLayout(form)
+    seed_check = QCheckBox(
+        'Create sample shot / asset / shoot-day templates')
+    seed_check.setChecked(True)
+    dlg_layout.addWidget(seed_check)
+    btn_row = QHBoxLayout()
+    btn_row.addStretch()
+    cancel_btn = QPushButton('Cancel')
+    cancel_btn.clicked.connect(dialog.reject)
+    btn_row.addWidget(cancel_btn)
+    create_btn = QPushButton('Create')
+    create_btn.setDefault(True)
+    create_btn.clicked.connect(dialog.accept)
+    btn_row.addWidget(create_btn)
+    dlg_layout.addLayout(btn_row)
+
+    if dialog.exec() != QDialog.Accepted:
+        return None, ''
+    return create_project(name_input.text(), parent_input.text(), seed_check.isChecked())
+
+
+def create_project(name, parent_dir, seed=True):
+    """Validate and create a project folder, then register it. Returns (target, error)."""
+    name = name.strip()
+    if not name:
+        return None, 'Project name is required.'
+    if any(c in name for c in '<>:"/\\|?*'):
+        return None, 'Project name contains invalid characters.'
+    parent = Path(parent_dir.strip()).expanduser()
+    if not parent.is_dir():
+        return None, f'Parent folder not found: {parent}'
+    target = parent / name
+    if target.exists():
+        return None, f'Folder already exists: {target}'
+    try:
+        from make_folders import make_project
+        make_project(name, str(parent), seed=seed)
+    except Exception as e:
+        return None, f'Could not create project: {e}'
+    from settings import add_project
+    add_project(target)
+    return target, ''
+
+
 class ProjectsPage(QWidget):
     def __init__(self, project_root, parent=None):
         super().__init__(parent)
@@ -5878,84 +5997,19 @@ class ProjectsPage(QWidget):
         self.projects_status.setStyleSheet('color: #00c853;')
 
     def _create_new_project(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle('Create New Project')
-        dlg_layout = QVBoxLayout(dialog)
-        form = QFormLayout()
-        name_input = QLineEdit()
-        name_input.setPlaceholderText('MyProject')
-        form.addRow('Project name:', name_input)
-        parent_input = QLineEdit(str(self.project_root.parent))
-        parent_row = QHBoxLayout()
-        parent_row.addWidget(parent_input, 1)
-        browse_btn = QPushButton('Browse')
-        browse_btn.setCursor(Qt.PointingHandCursor)
-        browse_btn.clicked.connect(lambda: self._browse_create_parent(parent_input))
-        parent_row.addWidget(browse_btn)
-        form.addRow('Create in:', parent_row)
-        dlg_layout.addLayout(form)
-        seed_check = QCheckBox(
-            'Create sample shot / asset / shoot-day templates')
-        seed_check.setChecked(True)
-        dlg_layout.addWidget(seed_check)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        cancel_btn = QPushButton('Cancel')
-        cancel_btn.clicked.connect(dialog.reject)
-        btn_row.addWidget(cancel_btn)
-        create_btn = QPushButton('Create')
-        create_btn.setDefault(True)
-        create_btn.clicked.connect(dialog.accept)
-        btn_row.addWidget(create_btn)
-        dlg_layout.addLayout(btn_row)
-
-        if dialog.exec() != QDialog.Accepted:
-            return
-
-        name = name_input.text().strip()
-        if not name:
-            self.projects_status.setText('Project name is required.')
+        target, error = prompt_create_project(self, self.project_root.parent)
+        if error:
+            self.projects_status.setText(error)
             self.projects_status.setStyleSheet('color: #ff6b6b;')
             return
-        if any(c in name for c in '<>:"/\\|?*'):
-            self.projects_status.setText(
-                'Project name contains invalid characters.')
-            self.projects_status.setStyleSheet('color: #ff6b6b;')
+        if not target:
             return
-        parent = Path(parent_input.text().strip()).expanduser()
-        if not parent.is_dir():
-            self.projects_status.setText(f'Parent folder not found: {parent}')
-            self.projects_status.setStyleSheet('color: #ff6b6b;')
-            return
-        target = parent / name
-        if target.exists():
-            self.projects_status.setText(f'Folder already exists: {target}')
-            self.projects_status.setStyleSheet('color: #ff6b6b;')
-            return
-
-        try:
-            from make_folders import make_project
-            make_project(name, str(parent), seed=seed_check.isChecked())
-        except Exception as e:
-            self.projects_status.setText(f'Could not create project: {e}')
-            self.projects_status.setStyleSheet('color: #ff6b6b;')
-            return
-
-        from settings import add_project
-        add_project(target)
         self._load_projects_table()
         w = self.window()
         if hasattr(w, 'switch_project'):
             w.switch_project(target)
         self.projects_status.setText(f'Created project: {target}')
         self.projects_status.setStyleSheet('color: #00c853;')
-
-    def _browse_create_parent(self, line_edit):
-        from PySide6.QtWidgets import QFileDialog
-        path = QFileDialog.getExistingDirectory(
-            self, 'Select parent folder', line_edit.text() or str(Path.home()))
-        if path:
-            line_edit.setText(path)
 
     def _remove_project(self):
         root = self._selected_project_root()
@@ -7091,12 +7145,23 @@ def _first_run_add_project():
         box.setWindowTitle('MazeHub')
         box.setText(
             'No project is configured for this MazeHub install yet.\n\n'
-            'Add an existing project folder to get started.'
+            'Add an existing project folder or create a new one to get started.'
         )
         add_btn = box.addButton('Add Existing Folder…', QMessageBox.AcceptRole)
+        create_btn = box.addButton('Create New Project…', QMessageBox.AcceptRole)
         box.addButton('Quit', QMessageBox.RejectRole)
         box.exec()
-        if box.clickedButton() != add_btn:
+        clicked = box.clickedButton()
+        if clicked == create_btn:
+            target, error = prompt_create_project(None, Path.home())
+            if error:
+                QMessageBox.warning(None, 'MazeHub', error)
+            if not target:
+                continue
+            from settings import set_active_project
+            set_active_project(str(target.resolve()))
+            return target.resolve()
+        if clicked != add_btn:
             return None
         from PySide6.QtWidgets import QFileDialog
         path = QFileDialog.getExistingDirectory(
