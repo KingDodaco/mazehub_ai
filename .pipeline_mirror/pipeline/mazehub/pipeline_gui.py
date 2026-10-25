@@ -47,6 +47,11 @@ from pipeline_app import (
 )
 
 
+def production_enabled(structure):
+    """structure comes from get_project_structure(), which is already normalized."""
+    return structure.get('production_tracking', True)
+
+
 def _score_color(score_str):
     if not score_str:
         return None
@@ -1097,13 +1102,14 @@ class DashboardPage(QWidget):
         stats_layout.addWidget(self._stat_card('Shots', str(seq_count)))
         stats_layout.addWidget(self._stat_card('Assets', str(asset_count)))
         stats_layout.addWidget(self._stat_card('Apps', str(len(self.apps_config))))
-        progress_score = self._calc_overall_score()
-        progress_card = self._stat_card('Progress', progress_score if progress_score else '-')
-        if progress_score:
-            color = _score_color(progress_score)
-            if color:
-                progress_card.findChild(QLabel).setStyleSheet(f'color: {color.name()};')
-        stats_layout.addWidget(progress_card)
+        if production_enabled(get_project_structure(self.project_root)):
+            progress_score = self._calc_overall_score()
+            progress_card = self._stat_card('Progress', progress_score if progress_score else '-')
+            if progress_score:
+                color = _score_color(progress_score)
+                if color:
+                    progress_card.findChild(QLabel).setStyleSheet(f'color: {color.name()};')
+            stats_layout.addWidget(progress_card)
         self.size_card = self._stat_card('Size', '…')
         stats_layout.addWidget(self.size_card)
         stats_layout.addStretch()
@@ -1797,6 +1803,7 @@ class ShotExplorerPage(QWidget):
         self.project_root = project_root
         self.apps_config = apps_config
         self.pipeline_dir = pipeline_dir
+        self._tracking = production_enabled(get_project_structure(project_root))
         self._build()
 
     def _build(self):
@@ -1840,6 +1847,7 @@ class ShotExplorerPage(QWidget):
         self.table.setHorizontalHeaderLabels(
             ['', 'Shot', 'Progress', 'Path', 'Frame Range', 'Frame Rate', 'Date', 'Focal Length', 'ISO', 'ND Filter', 'Light Rig', 'Description', 'Working Dirs']
         )
+        self.table.setColumnHidden(2, not self._tracking)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -1948,11 +1956,13 @@ class ShotExplorerPage(QWidget):
         for i, name in enumerate(shots):
             shot_path = seq_dir / name
             meta = read_shot_meta(shot_path)
-            prod = read_production(shot_path)
-            if not prod:
-                prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
-                write_production(shot_path, prod)
-            score = production_score(prod)
+            score = ''
+            if self._tracking:
+                prod = read_production(shot_path)
+                if not prod:
+                    prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
+                    write_production(shot_path, prod)
+                score = production_score(prod)
             working_count = sum(1 for d in shot_path.iterdir() if d.is_dir() and not d.name.startswith('_'))
             self.table.setRowHeight(i, 64)
             thumb_item = QTableWidgetItem()
@@ -1990,13 +2000,13 @@ class ShotExplorerPage(QWidget):
         row = item.row()
         shot_name = self.table.item(row, 1).text()
         shot_path = self.project_root / 'sequence' / shot_name
-        prod = read_production(shot_path)
+        prod = read_production(shot_path) if self._tracking else {}
 
         menu = QMenu(self)
         _add_explorer_action(menu, shot_path)
         menu.addSeparator()
 
-        for cat in SHOT_CATEGORIES:
+        for cat in (SHOT_CATEGORIES if self._tracking else []):
             status = prod.get(cat, 'Not started')
             cat_menu = menu.addMenu(f'{cat}: {status}')
             for s in PRODUCTION_STATUSES + ['Not applicable']:
@@ -2340,6 +2350,7 @@ class AssetExplorerPage(QWidget):
         self.project_root = project_root
         self.apps_config = apps_config
         self.pipeline_dir = pipeline_dir
+        self._tracking = production_enabled(get_project_structure(project_root))
         self._build()
 
     def _build(self):
@@ -2389,6 +2400,7 @@ class AssetExplorerPage(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(['', 'Asset', 'Progress', 'Category', 'Path', 'Working Dirs', '_folder'])
+        self.table.setColumnHidden(2, not self._tracking)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -2496,12 +2508,14 @@ class AssetExplorerPage(QWidget):
             for asset in sorted(cat_dir.iterdir()):
                 if asset.is_dir() and not asset.name.startswith('_'):
                     meta = read_asset_meta(asset)
-                    prod = read_production(asset)
-                    if not prod:
-                        prod = {cat_name: 'Not applicable' if info == 'optional' else 'Not started'
-                                for cat_name, info in ASSET_CATEGORIES.items()}
-                        write_production(asset, prod)
-                    score = production_score(prod)
+                    score = ''
+                    if self._tracking:
+                        prod = read_production(asset)
+                        if not prod:
+                            prod = {cat_name: 'Not applicable' if info == 'optional' else 'Not started'
+                                    for cat_name, info in ASSET_CATEGORIES.items()}
+                            write_production(asset, prod)
+                        score = production_score(prod)
                     working_count = sum(1 for d in asset.iterdir() if d.is_dir())
                     rows.append((asset.name, meta.get('display_name', asset.name), cat_dir.name, str(asset.relative_to(self.project_root)), score, f'{working_count} dirs'))
         self.table.setRowCount(len(rows))
@@ -2536,14 +2550,14 @@ class AssetExplorerPage(QWidget):
         folder_name = self.table.item(row, 6).text()
         cat = self.table.item(row, 3).text()
         asset_path = self.project_root / 'asset' / cat / folder_name
-        prod = read_production(asset_path)
+        prod = read_production(asset_path) if self._tracking else {}
 
         menu = QMenu(self)
         _add_explorer_action(menu, asset_path)
         menu.addSeparator()
         edit_action = menu.addAction('Edit Asset...')
 
-        for cat_name, cat_type in ASSET_CATEGORIES.items():
+        for cat_name, cat_type in (ASSET_CATEGORIES.items() if self._tracking else []):
             status = prod.get(cat_name, 'Not started')
             label = f'{cat_name} ({cat_type})' if cat_type == 'optional' else cat_name
             cat_menu = menu.addMenu(f'{label}: {status}')
@@ -3547,7 +3561,7 @@ class HelpPage(QWidget):
 
         self._add_section(layout, '2 — Projects & Extra Tools', """
         <p>One MazeHub install can open many projects. The project name at the top of the <b>sidebar</b> is a drop-down — pick another project and every page switches to it instantly. You can also manage projects in the <b>Projects</b> tab: <b>Open</b> (or double-click) switches, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh project, <b>Remove</b> unregisters one (the folder is never deleted), and <b>Project Settings…</b> edits the selected project's Teams webhook links and repairs its folder structure — selecting or editing a project never switches it. On the very first launch MazeHub asks you to pick an existing project folder or create a new one.</p>
-        <p><b>Project structure:</b> when creating a project — and later in <b>Project Settings…</b> — choose which <b>features</b> it uses (Shots, Assets, Light Rigs, Production Tracking), which <b>extra folders</b> to create (Onset, Development, R&amp;D, IO, MISC, DB) and which <b>software</b> it uses. Disabled features hide their tab; only enabled software gets folders inside shots, assets and light rigs, a project pipeline folder, and a launch button. <b>Repair File Structure</b> follows this selection. Turning something off never deletes existing folders.</p>
+        <p><b>Project structure:</b> when creating a project — and later in <b>Project Settings…</b> — choose which <b>features</b> it uses (Shots, Assets, Light Rigs), whether <b>production tracking</b> is on (off hides the Production tab, the explorers' Progress columns and status menus, and the Home progress card), which <b>extra folders</b> to create (Onset, Development, R&amp;D, IO, MISC, DB) and which <b>software</b> it uses. Disabled features hide their tab; only enabled software gets folders inside shots, assets and light rigs, a project pipeline folder, and a launch button. <b>Repair File Structure</b> follows this selection. Turning something off never deletes existing folders.</p>
         <p><b>Project-level pipeline (extra plugins/tools):</b> new projects come with an empty <code>pipeline</code> skeleton mirroring the install layout — e.g. <code>MyProject\\pipeline\\Maya\\scripts</code>, <code>MyProject\\pipeline\\Houdini\\Packages</code>, <code>MyProject\\pipeline\\Nuke\\plugins</code>, <code>MyProject\\pipeline\\Blender\\scripts</code> — drop your project-specific scripts or plugins there. When MazeHub launches an app it searches <b>the project's pipeline folder first, then the main install folder</b>, so a file in the project overrides the same file in the main pipeline. A project OCIO config (<code>pipeline\\OCIO\\OCIO_set.bat</code> or <code>BU_nov2024_config.ocio</code>) overrides the studio one. MazeHub creates the empty skeleton on project create or repair, never deletes it, and executables/launchers always come from the install.</p>
         """)
 
@@ -5563,17 +5577,23 @@ class ProjectSettingsDialog(QDialog):
         self.dailies_status.setObjectName('hint')
         teams_layout.addWidget(self.dailies_status)
 
+        self.production_webhook_widget = QWidget()
+        prod_layout = QVBoxLayout(self.production_webhook_widget)
+        prod_layout.setContentsMargins(0, 0, 0, 0)
+        prod_layout.setSpacing(16)
+        teams_layout.addWidget(self.production_webhook_widget)
+
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.HLine)
         sep2.setStyleSheet('color: #444;')
-        teams_layout.addWidget(sep2)
+        prod_layout.addWidget(sep2)
 
         prod_label = QLabel('Production Tracking Channel')
         pf = QFont()
         pf.setBold(True)
         prod_label.setFont(pf)
-        teams_layout.addWidget(prod_label)
-        teams_layout.addWidget(QLabel(
+        prod_layout.addWidget(prod_label)
+        prod_layout.addWidget(QLabel(
             'Notifies when a task status is changed in the Production tab.'
         ))
         production_url_row = QHBoxLayout()
@@ -5584,11 +5604,13 @@ class ProjectSettingsDialog(QDialog):
         self.production_save_btn.setCursor(Qt.PointingHandCursor)
         self.production_save_btn.clicked.connect(self._save_production_url)
         production_url_row.addWidget(self.production_save_btn)
-        teams_layout.addLayout(production_url_row)
+        prod_layout.addLayout(production_url_row)
         self.production_status = QLabel('')
         self.production_status.setWordWrap(True)
         self.production_status.setObjectName('hint')
-        teams_layout.addWidget(self.production_status)
+        prod_layout.addWidget(self.production_status)
+        self.production_webhook_widget.setVisible(
+            production_enabled(get_project_structure(self.root)))
 
         teams_layout.addStretch()
         layout.addWidget(teams_group)
@@ -5710,7 +5732,9 @@ class ProjectSettingsDialog(QDialog):
             self.production_status.setStyleSheet('color: #ffa726;')
 
     def _save_structure(self):
-        set_project_structure(self.root, self.structure_widget.structure())
+        structure = self.structure_widget.structure()
+        set_project_structure(self.root, structure)
+        self.production_webhook_widget.setVisible(structure['production_tracking'])
         self.structure_changed = True
         self.structure_status.setText('Saved. Existing folders were left untouched.')
         self.structure_status.setStyleSheet('color: #00c853;')
@@ -5772,6 +5796,11 @@ class ProjectStructureWidget(QWidget):
         _, self.feature_boxes = checkbox_grid(
             'Features', FEATURES, 4,
             'Disabled features hide their tab and their folders are not created.')
+        _, tracking_boxes = checkbox_grid(
+            'Production Tracking', {'production_tracking': {'label': 'Enable production tracking'}}, 1,
+            'Progress columns in the explorers, the Home progress card, the Production tab '
+            'and status menus.')
+        self.tracking_cb = tracking_boxes['production_tracking']
         _, self.folder_boxes = checkbox_grid(
             'Extra Folders', EXTRA_FOLDERS, 6,
             'Optional top-level folders. mazehub/ and pipeline/ are always created.')
@@ -5799,12 +5828,14 @@ class ProjectStructureWidget(QWidget):
             cb.setChecked(s['folders'][key])
         for key, cb in self.software_boxes.items():
             cb.setChecked(key in s['software'])
+        self.tracking_cb.setChecked(s['production_tracking'])
 
     def structure(self):
         return {
             'features': {k: cb.isChecked() for k, cb in self.feature_boxes.items()},
             'folders': {k: cb.isChecked() for k, cb in self.folder_boxes.items()},
             'software': [k for k, cb in self.software_boxes.items() if cb.isChecked()],
+            'production_tracking': self.tracking_cb.isChecked(),
         }
 
 
@@ -6897,7 +6928,7 @@ class MainWindow(QMainWindow):
         'Shot Explorer': 'shots',
         'Asset Explorer': 'assets',
         'Light Rigs': 'lightrigs',
-        'Production': 'production',
+        'Production': 'production_tracking',
         'Render': 'shots',
     }
 
@@ -6905,7 +6936,9 @@ class MainWindow(QMainWindow):
         structure = get_project_structure(self.project_root)
         for i, (label, _tooltip) in enumerate(SIDEBAR_ITEMS):
             feature = self.FEATURE_TABS.get(label)
-            if feature:
+            if feature == 'production_tracking':
+                self.sidebar_buttons[i].setVisible(structure['production_tracking'])
+            elif feature:
                 self.sidebar_buttons[i].setVisible(structure['features'][feature])
         if self.sidebar_buttons[self.pages.currentIndex()].isHidden():
             self._switch_page(0)

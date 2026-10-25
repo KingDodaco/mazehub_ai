@@ -23,7 +23,6 @@ FEATURES = {
     'assets': {'label': 'Assets',
                'dirs': ['asset'] + [f'asset/{c}' for c in NEW_ASSET_CATEGORY_LIST]},
     'lightrigs': {'label': 'Light Rigs', 'dirs': ['lightrigs']},
-    'production': {'label': 'Production Tracking', 'dirs': []},
 }
 
 EXTRA_FOLDERS = {
@@ -31,7 +30,7 @@ EXTRA_FOLDERS = {
     'development': {'label': 'Development',
                     'dirs': ['development', 'development/storyboard',
                              'development/concept', 'development/reference']},
-    'rnd': {'label': 'R&D', 'dirs': ['rnd']},
+    'rnd': {'label': 'R&&D', 'dirs': ['rnd']},  # '&&' shows a literal & in Qt labels
     'IO': {'label': 'IO', 'dirs': ['IO', 'IO/incoming', 'IO/outgoing']},
     'MISC': {'label': 'MISC', 'dirs': ['MISC']},
     'DB': {'label': 'DB', 'dirs': ['DB', 'DB/Resolve']},
@@ -91,6 +90,7 @@ def default_structure():
         'features': {k: True for k in FEATURES},
         'folders': {k: True for k in EXTRA_FOLDERS},
         'software': list(SOFTWARE),
+        'production_tracking': True,
     }
 
 
@@ -108,6 +108,11 @@ def normalize_structure(cfg):
     software = cfg.get('software')
     if isinstance(software, list):
         result['software'] = [s for s in SOFTWARE if s in software]
+    tracking = cfg.get('production_tracking')
+    if tracking is None:
+        # v0.12.0 stored it as a feature.
+        tracking = (cfg.get('features') or {}).get('production', True)
+    result['production_tracking'] = bool(tracking)
     return result
 
 
@@ -150,6 +155,10 @@ def app_enabled(app_key, structure=None):
         if app_key in info['apps']:
             return sw in enabled
     return True
+
+
+def production_enabled(structure=None):
+    return normalize_structure(structure)['production_tracking']
 
 
 def feature_enabled(feature, structure=None):
