@@ -4344,7 +4344,7 @@ class RenderPage(QWidget):
         self.log_output.append('')
 
         self.log_output.append(f'[info] Syncing USD references for {usd_name}...')
-        sync_dlg = SyncProgressDialog(usd_file, self.window())
+        sync_dlg = SyncProgressDialog(usd_file, self.window(), husk_path=husk_path)
         sync_dlg.start()
         sync_accepted = sync_dlg.exec() == QDialog.Accepted
         sync_seconds = sync_dlg.elapsed()
@@ -4353,8 +4353,7 @@ class RenderPage(QWidget):
             self.log_output.append(
                 f'[warning] USD sync cancelled — rendering may fail (sync time {sync_time_str})')
         else:
-            self.log_output.append(
-                f'[info] USD references synced in {sync_time_str} (sync time is tracked separately)')
+            self._log_sync_report(sync_dlg.report, sync_time_str, len(frames) > 1)
 
         self.render_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
@@ -4400,6 +4399,42 @@ class RenderPage(QWidget):
 
         self._render_dialog.open()
         self._render_dialog.start_render()
+
+    def _log_sync_report(self, report, sync_time_str, multi_frame):
+        def log_list(items, limit=10):
+            for item in items[:limit]:
+                self.log_output.append(f'    {item}')
+            if len(items) > limit:
+                self.log_output.append(f'    ... and {len(items) - limit} more')
+
+        if report.get('error'):
+            self.log_output.append(f'[warning] USD sync failed: {report["error"]} — rendering may fail')
+            return
+        self.log_output.append(
+            f'[info] USD references: {report.get("refs", 0)} found, '
+            f'{report.get("synced", 0)}/{report.get("total", 0)} downloaded in {sync_time_str} '
+            f'(sync time is tracked separately)')
+        unreadable = report.get('unreadable_layers', [])
+        if unreadable:
+            self.log_output.append(
+                f'[warning] Could not read {len(unreadable)} USD layer(s) — their dependencies '
+                f'(e.g. VDBs) were not synced and may render empty. No usdcat/hython found '
+                f'next to husk?')
+            log_list(unreadable)
+        failed = report.get('failed', [])
+        if failed:
+            self.log_output.append(f'[warning] {len(failed)} file(s) failed to download:')
+            log_list(failed)
+        missing = report.get('missing', [])
+        if missing:
+            self.log_output.append(f'[warning] {len(missing)} referenced file(s) not found:')
+            log_list(missing)
+        static = report.get('static_volumes', [])
+        if static and multi_frame:
+            self.log_output.append(
+                f'[warning] {len(static)} VDB path(s) are not time-sampled — every frame will '
+                f'show the same volume. Add $F to the volume save path in Houdini and re-export:')
+            log_list(static)
 
     def _cancel_render(self):
         if self._render_thread:
@@ -4592,8 +4627,10 @@ class VersionDialog(QDialog):
 
 
 class SyncProgressDialog(QDialog):
-    def __init__(self, usd_file, parent=None):
+    def __init__(self, usd_file, parent=None, husk_path=None):
         super().__init__(parent)
+        self.husk_path = husk_path
+        self.report = {}
         self.setWindowTitle('Syncing USD References')
         self.setMinimumWidth(400)
         self.setModal(True)
@@ -4633,11 +4670,12 @@ class SyncProgressDialog(QDialog):
 
         class Worker(QThread):
             progress = Signal(int, int, str)
-            finished = Signal(bool)
+            finished = Signal(object)
 
-            def __init__(self, usd_file):
+            def __init__(self, usd_file, husk_path):
                 super().__init__()
                 self.usd_file = usd_file
+                self.husk_path = husk_path
                 self._cancelled = False
 
             def cancel(self):
@@ -4646,18 +4684,21 @@ class SyncProgressDialog(QDialog):
             def run(self):
                 from pipeline_app import sync_usd_references
                 try:
-                    ok = sync_usd_references(
+                    report = sync_usd_references(
                         self.usd_file,
                         progress_callback=lambda done, total, name: (
                             None if self._cancelled
                             else self.progress.emit(done, total, name)),
                         cancel_check=lambda: self._cancelled,
+                        husk_path=self.husk_path,
                     )
-                except Exception:
-                    ok = False
-                self.finished.emit(bool(ok) and not self._cancelled)
+                except Exception as e:
+                    report = {'ok': False, 'error': str(e)}
+                if self._cancelled:
+                    report['cancelled'] = True
+                self.finished.emit(report)
 
-        self._thread = Worker(self.usd_file)
+        self._thread = Worker(self.usd_file, self.husk_path)
         self._thread.progress.connect(self._on_progress)
         self._thread.finished.connect(self._on_finished)
         self._thread.start()
@@ -4691,9 +4732,11 @@ class SyncProgressDialog(QDialog):
         s = int(seconds) % 60
         return f'{h}:{m:02d}:{s:02d}'
 
-    def _on_finished(self, success):
+    def _on_finished(self, report):
         self._stop_sync_clock()
-        self.accept() if success else self.reject()
+        self.report = report or {}
+        # Sync problems are reported in the render log; only a cancel aborts.
+        self.reject() if self.report.get('cancelled') else self.accept()
 
     def _cancel(self):
         if self._thread:

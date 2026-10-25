@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.10.4"
+APP_VERSION = "0.10.5"
 
 
 def _get_display_name():
@@ -927,6 +927,9 @@ USD_ASSET_ENDINGS = (
 )
 USD_LAYER_ENDINGS = ('.usd', '.usda', '.usdc', '.usdz')
 USD_TOKEN_RE = re.compile(r'<(UDIM|F\d*|face|frame)>', re.IGNORECASE)
+# Also matches '#' frame runs used by value-clip templateAssetPath ("clip.#.usd").
+USD_PATTERN_RE = re.compile(r'<(UDIM|F\d*|face|frame)>|(#+)', re.IGNORECASE)
+USD_STATIC_VDB_RE = re.compile(r'asset\s+filePath\s*=\s*@([^@\n]+\.vdb)@', re.IGNORECASE)
 
 
 def _ref_looks_like_asset(path_str):
@@ -940,6 +943,8 @@ def _is_usd_layer_name(path_str):
 
 
 def _usd_token_regex(name):
+    if name.startswith('#'):
+        return r'\d+'
     if name.upper() == 'UDIM':
         return r'\d{4}'
     return r'\d+'
@@ -964,25 +969,61 @@ def _extract_refs_from_text(text):
     return refs
 
 
-def _find_usdcat():
+def _houdini_bin_dirs(husk_path=None):
+    dirs = []
+    if husk_path:
+        dirs.append(Path(husk_path).parent)
     try:
         from settings import find_husk
         husk = find_husk()
-        if husk:
-            bin_dir = Path(husk).parent
-            for name in ('usdcat.exe', 'usdcat'):
-                candidate = bin_dir / name
-                if candidate.exists():
-                    return str(candidate)
+        if husk and Path(husk).parent not in dirs:
+            dirs.append(Path(husk).parent)
     except Exception:
         pass
+    return dirs
+
+
+def _find_houdini_tool(tool, husk_path=None):
+    names = (f'{tool}.exe', f'{tool}.cmd', f'{tool}.bat', tool)
+    for bin_dir in _houdini_bin_dirs(husk_path):
+        for name in names:
+            candidate = bin_dir / name
+            if candidate.is_file():
+                return str(candidate)
     import shutil
-    return shutil.which('usdcat')
+    return shutil.which(tool)
 
 
-def _usdcat_to_text(usd_file):
+def _find_usdcat(husk_path=None):
+    return _find_houdini_tool('usdcat', husk_path)
+
+
+def _hython_to_text(usd_file, husk_path=None):
+    hython = _find_houdini_tool('hython', husk_path)
+    if not hython:
+        return None
+    script = (
+        'import sys\n'
+        'from pxr import Sdf\n'
+        'layer = Sdf.Layer.FindOrOpen(sys.argv[1])\n'
+        'sys.stdout.write(layer.ExportToString() if layer else "")\n'
+    )
+    try:
+        result = subprocess.run(
+            [hython, '-c', script, str(usd_file)],
+            capture_output=True, text=True, timeout=180,
+            **_subprocess_flags(),
+        )
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
+    except Exception:
+        pass
+    return None
+
+
+def _usdcat_to_text(usd_file, husk_path=None):
     import tempfile
-    usdcat = _find_usdcat()
+    usdcat = _find_usdcat(husk_path)
     if not usdcat:
         return None
     try:
@@ -1017,7 +1058,7 @@ def _usdcat_to_text(usd_file):
     return None
 
 
-def _read_usd_text(usd_file):
+def _read_usd_text(usd_file, husk_path=None):
     ext = usd_file.suffix.lower()
     if ext == '.usda' or is_usd_ascii(usd_file):
         try:
@@ -1032,11 +1073,16 @@ def _read_usd_text(usd_file):
                 return layer.ExportToString()
         except Exception:
             pass
-        return _usdcat_to_text(usd_file)
+        return _usdcat_to_text(usd_file, husk_path) or _hython_to_text(usd_file, husk_path)
     return None
 
 
-def parse_usd_references(usd_file, _visited=None, _depth=0):
+def parse_usd_references(usd_file, _visited=None, _depth=0, husk_path=None, report=None):
+    """Recursively collect asset paths referenced by a USD layer.
+
+    If report is a dict, it collects 'unreadable_layers', 'static_volumes'
+    and 'has_clips' for diagnostics.
+    """
     usd_file = Path(usd_file)
     if _visited is None:
         _visited = set()
@@ -1051,28 +1097,46 @@ def parse_usd_references(usd_file, _visited=None, _depth=0):
     _visited.add(key)
     if not usd_file.exists() or not usd_file.is_file():
         return []
-    text = _read_usd_text(usd_file)
+    # A cloud placeholder of the layer itself would otherwise parse as empty.
+    if needs_sync(usd_file):
+        sync_file(usd_file)
+    text = _read_usd_text(usd_file, husk_path)
     if not text:
+        if report is not None:
+            report.setdefault('unreadable_layers', []).append(str(usd_file))
         return []
+    if report is not None:
+        if 'templateAssetPath' in text or 'clipSets' in text:
+            report['has_clips'] = True
+        if 'filePath.timeSamples' not in text:
+            for vdb in USD_STATIC_VDB_RE.findall(text):
+                vdb_path = _expand_ref_path(vdb.strip())
+                if not os.path.isabs(vdb_path):
+                    vdb_path = str(usd_file.parent / vdb_path)
+                report.setdefault('static_volumes', []).append(vdb_path)
     refs = _extract_refs_from_text(text)
     all_refs = set()
     anchor = usd_file.parent
     for ref in refs:
         all_refs.add(ref)
-        if not _is_usd_layer_name(ref) or USD_TOKEN_RE.search(ref):
+        if not _is_usd_layer_name(ref):
             continue
         child_str = _expand_ref_path(ref)
-        child = Path(child_str) if os.path.isabs(child_str) else anchor / child_str
-        try:
-            if not child.exists() or not child.is_file():
+        if USD_PATTERN_RE.search(child_str):
+            children = _expand_usd_tokens(anchor, child_str)
+        else:
+            children = [Path(child_str) if os.path.isabs(child_str) else anchor / child_str]
+        for child in children:
+            try:
+                if not child.exists() or not child.is_file():
+                    continue
+            except OSError:
                 continue
-        except OSError:
-            continue
-        for sub in parse_usd_references(child, _visited, _depth + 1):
-            if os.path.isabs(sub) or (len(sub) > 1 and sub[1] == ':'):
-                all_refs.add(sub)
-            else:
-                all_refs.add(str(child.parent / sub))
+            for sub in parse_usd_references(child, _visited, _depth + 1, husk_path, report):
+                if os.path.isabs(sub) or (len(sub) > 1 and sub[1] == ':'):
+                    all_refs.add(sub)
+                else:
+                    all_refs.add(str(child.parent / sub))
     return sorted(all_refs)
 
 
@@ -1088,9 +1152,9 @@ def _expand_usd_tokens(anchor, pattern):
     dir_str, _, name = pattern.replace('\\', '/').rpartition('/')
     parts = []
     last = 0
-    for m in USD_TOKEN_RE.finditer(name):
+    for m in USD_PATTERN_RE.finditer(name):
         parts.append(re.escape(name[last:m.start()]))
-        parts.append(_usd_token_regex(m.group(1)))
+        parts.append(_usd_token_regex(m.group(1) or m.group(2)))
         last = m.end()
     parts.append(re.escape(name[last:]))
     try:
@@ -1115,7 +1179,7 @@ def _resolve_references(usd_file, refs):
     seen = set()
     for ref in refs:
         expanded = _expand_ref_path(ref)
-        if USD_TOKEN_RE.search(expanded):
+        if USD_PATTERN_RE.search(expanded):
             matches = _expand_usd_tokens(usd_file.parent, expanded)
             if matches:
                 for m in matches:
@@ -1178,27 +1242,47 @@ def sync_file(file_path, timeout=60):
     return file_path.exists() and not needs_sync(file_path)
 
 
-def sync_usd_references(usd_file, progress_callback=None, cancel_check=None):
+def sync_usd_references(usd_file, progress_callback=None, cancel_check=None, husk_path=None):
     """Parse a USD file (recursively) and hydrate its dependencies.
 
     progress_callback(done, total, path) is called per file.
+    Returns a report dict: ok, cancelled, refs, total, synced, failed,
+    missing, unreadable_layers, static_volumes.
     """
     usd_file = Path(usd_file)
-    refs = parse_usd_references(usd_file)
-    resolved, _missing = _resolve_references(usd_file, refs)
+    report = {}
+    refs = parse_usd_references(usd_file, husk_path=husk_path, report=report)
+    resolved, missing = _resolve_references(usd_file, refs)
     unsynced = [p for p in resolved if needs_sync(p)]
     total = len(unsynced)
     synced = 0
+    failed = []
+    cancelled = False
     for p in unsynced:
         if cancel_check and cancel_check():
-            return False
+            cancelled = True
+            break
         if progress_callback:
             progress_callback(synced, total, str(p))
         if sync_file(p):
             synced += 1
+        else:
+            failed.append(str(p))
     if progress_callback and total:
         progress_callback(synced, total, '')
-    return synced == total
+    # Per-frame clip layers each hold one static filePath — that's expected.
+    static_volumes = [] if report.get('has_clips') else sorted(set(report.get('static_volumes', [])))
+    return {
+        'ok': not cancelled and synced == total,
+        'cancelled': cancelled,
+        'refs': len(resolved),
+        'total': total,
+        'synced': synced,
+        'failed': failed,
+        'missing': sorted(set(missing)),
+        'unreadable_layers': report.get('unreadable_layers', []),
+        'static_volumes': static_volumes,
+    }
 
 
 # ---------------------------------------------------------------------------
