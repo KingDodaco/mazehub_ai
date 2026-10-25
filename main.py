@@ -152,8 +152,33 @@ def _apply_project_arg(argv):
     _debug_log(f"Session project override: {p.resolve()}")
 
 
+def _restore_snap_env():
+    """Undo the environment VS Code's snap puts in its integrated terminal.
+
+    It points GTK/GIO at the snap's own schemas and modules; system Qt/GTK
+    then aborts on a GSettings schema mismatch, and every app MazeHub
+    launches would inherit the same paths. The snap keeps the original
+    values in <NAME>_VSCODE_SNAP_ORIG.
+    """
+    if not sys.platform.startswith('linux'):
+        return
+    suffix = '_VSCODE_SNAP_ORIG'
+    for key in [k for k in os.environ if k.endswith(suffix)]:
+        name = key[:-len(suffix)]
+        original = os.environ.pop(key)
+        if original:
+            os.environ[name] = original
+        else:
+            os.environ.pop(name, None)
+        _debug_log(f"Restored {name} from VS Code snap environment")
+    if '/snap/' in os.environ.get('GSETTINGS_SCHEMA_DIR', ''):
+        os.environ.pop('GSETTINGS_SCHEMA_DIR')
+        _debug_log("Dropped snap GSETTINGS_SCHEMA_DIR")
+
+
 def main():
     _debug_log("--- MazeHub starting ---")
+    _restore_snap_env()
     app_dir = _find_app_dir()
     if not app_dir:
         _debug_log("ERROR: pipeline app directory not found.")
