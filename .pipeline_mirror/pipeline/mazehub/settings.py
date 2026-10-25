@@ -50,6 +50,7 @@ migrate_home_config()
 # Everything else is global and stored with the install (CONFIG_DIR/user_settings.json)
 # so every device that can see the install sees the same settings.
 SHARED_KEYS = {
+    'project_structure',
     'teams_webhook_url',
     'dailies_webhook_url',
     'production_webhook_url',

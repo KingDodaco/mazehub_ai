@@ -38,6 +38,7 @@ from pipeline_app import (
     discover_image_sequences,
     sync_usd_references, parse_usd_references,
     discover_hip_files, discover_hip_rops, find_hython, build_rop_render_cmd, is_renderer_rop,
+    get_project_structure, set_project_structure,
     read_production, write_production, production_score,
     PRODUCTION_STATUSES, PRODUCTION_VALUES,
     ASSET_CATEGORIES, SHOT_CATEGORIES,
@@ -1114,9 +1115,13 @@ class DashboardPage(QWidget):
         quick_group = QGroupBox('Quick Launch')
         quick_layout = QVBoxLayout(quick_group)
         if self.apps_config:
+            from make_folders import app_enabled
+            structure = get_project_structure(self.project_root)
             grid = QGridLayout()
             row, col = 0, 0
             for name, cfg in self.apps_config.items():
+                if not app_enabled(name, structure):
+                    continue
                 btn = QPushButton(cfg['display_name'])
                 btn.setMinimumHeight(48)
                 btn.setMinimumWidth(140)
@@ -1529,9 +1534,13 @@ class LaunchAppsPage(QWidget):
         self._app_configs = {}
 
         if self.apps_config:
+            from make_folders import app_enabled
+            structure = get_project_structure(self.project_root)
             row = 0
             col = 0
             for name, cfg in self.apps_config.items():
+                if not app_enabled(name, structure):
+                    continue
                 cfg['_key'] = name
                 self._app_configs[name] = cfg
                 btn_row = QHBoxLayout()
@@ -1616,9 +1625,13 @@ class LaunchAppsPage(QWidget):
             layout.setRowStretch(1, 1)
             return
 
+        from make_folders import app_enabled
+        structure = get_project_structure(self.project_root)
         row = 0
         col = 0
         for name, cfg in self.apps_config.items():
+            if not app_enabled(name, structure):
+                continue
             cfg['_key'] = name
             self._app_configs[name] = cfg
             btn_row = QHBoxLayout()
@@ -1866,7 +1879,7 @@ class ShotExplorerPage(QWidget):
             return
 
         try:
-            make_working_directory(str(shot_path))
+            make_working_directory(str(shot_path), get_project_structure(self.project_root))
             write_shot_meta(shot_path, {
                 'frame_range': data['frame_range'],
                 'frame_rate': data['frame_rate'],
@@ -2124,7 +2137,7 @@ class LightRigsPage(QWidget):
             return
 
         try:
-            make_light_rig_directory(str(rig_path))
+            make_light_rig_directory(str(rig_path), get_project_structure(self.project_root))
             hdri_src = data.get('hdri_path', '')
             hdri_rel = ''
             if hdri_src and os.path.isfile(hdri_src):
@@ -2418,7 +2431,7 @@ class AssetExplorerPage(QWidget):
             return
 
         try:
-            make_working_directory(str(asset_path))
+            make_working_directory(str(asset_path), get_project_structure(self.project_root))
             write_asset_meta(asset_path, {
                 'display_name': display_name,
                 'folder_name': folder_name,
@@ -3533,7 +3546,8 @@ class HelpPage(QWidget):
         """, expanded=True)
 
         self._add_section(layout, '2 — Projects & Extra Tools', """
-        <p>One MazeHub install can open many projects. The project name at the top of the <b>sidebar</b> is a drop-down — pick another project and every page switches to it instantly. You can also manage projects in the <b>Projects</b> tab: <b>Open</b> (or double-click) switches, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh project, <b>Remove</b> unregisters one (the folder is never deleted), and <b>Project Settings…</b> edits the selected project's Teams webhook links and repairs its folder structure — selecting or editing a project never switches it. On the very first launch MazeHub simply asks you to pick a project folder.</p>
+        <p>One MazeHub install can open many projects. The project name at the top of the <b>sidebar</b> is a drop-down — pick another project and every page switches to it instantly. You can also manage projects in the <b>Projects</b> tab: <b>Open</b> (or double-click) switches, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh project, <b>Remove</b> unregisters one (the folder is never deleted), and <b>Project Settings…</b> edits the selected project's Teams webhook links and repairs its folder structure — selecting or editing a project never switches it. On the very first launch MazeHub asks you to pick an existing project folder or create a new one.</p>
+        <p><b>Project structure:</b> when creating a project — and later in <b>Project Settings…</b> — choose which <b>features</b> it uses (Shots, Assets, Light Rigs, Production Tracking), which <b>extra folders</b> to create (Onset, Development, R&amp;D, IO, MISC, DB) and which <b>software</b> it uses. Disabled features hide their tab; only enabled software gets folders inside shots, assets and light rigs, a project pipeline folder, and a launch button. <b>Repair File Structure</b> follows this selection. Turning something off never deletes existing folders.</p>
         <p><b>Project-level pipeline (extra plugins/tools):</b> new projects come with an empty <code>pipeline</code> skeleton mirroring the install layout — e.g. <code>MyProject\\pipeline\\Maya\\scripts</code>, <code>MyProject\\pipeline\\Houdini\\Packages</code>, <code>MyProject\\pipeline\\Nuke\\plugins</code>, <code>MyProject\\pipeline\\Blender\\scripts</code> — drop your project-specific scripts or plugins there. When MazeHub launches an app it searches <b>the project's pipeline folder first, then the main install folder</b>, so a file in the project overrides the same file in the main pipeline. A project OCIO config (<code>pipeline\\OCIO\\OCIO_set.bat</code> or <code>BU_nov2024_config.ocio</code>) overrides the studio one. MazeHub creates the empty skeleton on project create or repair, never deletes it, and executables/launchers always come from the install.</p>
         """)
 
@@ -5464,8 +5478,9 @@ class ProjectSettingsDialog(QDialog):
     def __init__(self, root, parent=None):
         super().__init__(parent)
         self.root = Path(root)
+        self.structure_changed = False
         self.setWindowTitle(f'Project Settings — {self.root.name}')
-        self.setMinimumSize(560, 540)
+        self.setMinimumSize(620, 600)
 
         outer = QVBoxLayout(self)
 
@@ -5578,6 +5593,23 @@ class ProjectSettingsDialog(QDialog):
         teams_layout.addStretch()
         layout.addWidget(teams_group)
 
+        structure_group = QGroupBox('Project Structure')
+        structure_layout = QVBoxLayout(structure_group)
+        self.structure_widget = ProjectStructureWidget(get_project_structure(self.root))
+        structure_layout.addWidget(self.structure_widget)
+        structure_btn_row = QHBoxLayout()
+        self.structure_save_btn = QPushButton('Save Structure')
+        self.structure_save_btn.setCursor(Qt.PointingHandCursor)
+        self.structure_save_btn.clicked.connect(self._save_structure)
+        structure_btn_row.addWidget(self.structure_save_btn)
+        structure_btn_row.addStretch()
+        structure_layout.addLayout(structure_btn_row)
+        self.structure_status = QLabel('Turning something off never deletes existing folders.')
+        self.structure_status.setWordWrap(True)
+        self.structure_status.setObjectName('hint')
+        structure_layout.addWidget(self.structure_status)
+        layout.addWidget(structure_group)
+
         file_group = QGroupBox('File Structure')
         group_layout = QVBoxLayout(file_group)
 
@@ -5677,6 +5709,18 @@ class ProjectSettingsDialog(QDialog):
             self.production_status.setText('No webhook URL configured.')
             self.production_status.setStyleSheet('color: #ffa726;')
 
+    def _save_structure(self):
+        set_project_structure(self.root, self.structure_widget.structure())
+        self.structure_changed = True
+        self.structure_status.setText('Saved. Existing folders were left untouched.')
+        self.structure_status.setStyleSheet('color: #00c853;')
+        answer = QMessageBox.question(
+            self, 'Project Structure',
+            'Create folders for newly enabled items now?\n\n'
+            '(Runs Repair File Structure. Nothing is deleted.)')
+        if answer == QMessageBox.Yes:
+            self._repair()
+
     def _repair(self):
         from make_folders import repair_project_structure
         self.repair_btn.setEnabled(False)
@@ -5684,7 +5728,7 @@ class ProjectSettingsDialog(QDialog):
         self.repair_result.setText('')
         QApplication.processEvents()
         try:
-            missing = repair_project_structure(self.root)
+            missing = repair_project_structure(self.root, get_project_structure(self.root))
             if missing:
                 lines = '\n'.join(f'  - {p}' for p in missing[:20])
                 extra = f' (+{len(missing) - 20} more)' if len(missing) > 20 else ''
@@ -5696,6 +5740,72 @@ class ProjectSettingsDialog(QDialog):
         finally:
             self.repair_btn.setEnabled(True)
             self.repair_btn.setText('Repair File Structure')
+
+
+class ProjectStructureWidget(QWidget):
+    """Checkboxes for a project's enabled features, extra folders and software."""
+
+    def __init__(self, structure=None, parent=None):
+        super().__init__(parent)
+        from make_folders import FEATURES, EXTRA_FOLDERS, SOFTWARE
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        def checkbox_grid(title, items, columns, hint=''):
+            group = QGroupBox(title)
+            group_layout = QVBoxLayout(group)
+            if hint:
+                label = QLabel(hint)
+                label.setWordWrap(True)
+                label.setObjectName('hint')
+                group_layout.addWidget(label)
+            grid = QGridLayout()
+            boxes = {}
+            for i, (key, info) in enumerate(items.items()):
+                cb = QCheckBox(info['label'])
+                boxes[key] = cb
+                grid.addWidget(cb, i // columns, i % columns)
+            group_layout.addLayout(grid)
+            layout.addWidget(group)
+            return group_layout, boxes
+
+        _, self.feature_boxes = checkbox_grid(
+            'Features', FEATURES, 4,
+            'Disabled features hide their tab and their folders are not created.')
+        _, self.folder_boxes = checkbox_grid(
+            'Extra Folders', EXTRA_FOLDERS, 6,
+            'Optional top-level folders. mazehub/ and pipeline/ are always created.')
+        sw_layout, self.software_boxes = checkbox_grid(
+            'Software', SOFTWARE, 4,
+            'Only enabled software gets folders in shots, assets and light rigs, a project '
+            'pipeline folder, and a launch button.')
+        sw_buttons = QHBoxLayout()
+        for text, state in (('All', True), ('None', False)):
+            btn = QPushButton(text)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda checked, v=state: [
+                cb.setChecked(v) for cb in self.software_boxes.values()])
+            sw_buttons.addWidget(btn)
+        sw_buttons.addStretch()
+        sw_layout.addLayout(sw_buttons)
+        self.set_structure(structure)
+
+    def set_structure(self, structure):
+        from make_folders import normalize_structure
+        s = normalize_structure(structure)
+        for key, cb in self.feature_boxes.items():
+            cb.setChecked(s['features'][key])
+        for key, cb in self.folder_boxes.items():
+            cb.setChecked(s['folders'][key])
+        for key, cb in self.software_boxes.items():
+            cb.setChecked(key in s['software'])
+
+    def structure(self):
+        return {
+            'features': {k: cb.isChecked() for k, cb in self.feature_boxes.items()},
+            'folders': {k: cb.isChecked() for k, cb in self.folder_boxes.items()},
+            'software': [k for k, cb in self.software_boxes.items() if cb.isChecked()],
+        }
 
 
 def _browse_create_parent(parent, line_edit):
@@ -5714,6 +5824,7 @@ def prompt_create_project(parent, default_parent):
     """
     dialog = QDialog(parent)
     dialog.setWindowTitle('Create New Project')
+    dialog.setMinimumWidth(560)
     dlg_layout = QVBoxLayout(dialog)
     form = QFormLayout()
     name_input = QLineEdit()
@@ -5728,6 +5839,8 @@ def prompt_create_project(parent, default_parent):
     parent_row.addWidget(browse_btn)
     form.addRow('Create in:', parent_row)
     dlg_layout.addLayout(form)
+    structure_widget = ProjectStructureWidget(None, dialog)
+    dlg_layout.addWidget(structure_widget)
     seed_check = QCheckBox(
         'Create sample shot / asset / shoot-day templates')
     seed_check.setChecked(True)
@@ -5745,10 +5858,11 @@ def prompt_create_project(parent, default_parent):
 
     if dialog.exec() != QDialog.Accepted:
         return None, ''
-    return create_project(name_input.text(), parent_input.text(), seed_check.isChecked())
+    return create_project(name_input.text(), parent_input.text(), seed_check.isChecked(),
+                          structure_widget.structure())
 
 
-def create_project(name, parent_dir, seed=True):
+def create_project(name, parent_dir, seed=True, structure=None):
     """Validate and create a project folder, then register it. Returns (target, error)."""
     name = name.strip()
     if not name:
@@ -5763,9 +5877,11 @@ def create_project(name, parent_dir, seed=True):
         return None, f'Folder already exists: {target}'
     try:
         from make_folders import make_project
-        make_project(name, str(parent), seed=seed)
+        make_project(name, str(parent), seed=seed, structure=structure)
     except Exception as e:
         return None, f'Could not create project: {e}'
+    if structure is not None:
+        set_project_structure(target, structure)
     from settings import add_project
     add_project(target)
     return target, ''
@@ -6049,6 +6165,14 @@ class ProjectsPage(QWidget):
             return
         dlg = ProjectSettingsDialog(root, self)
         dlg.exec()
+        if dlg.structure_changed:
+            w = self.window()
+            try:
+                same = Path(root).resolve() == Path(self.project_root).resolve()
+            except OSError:
+                same = False
+            if same and hasattr(w, 'reload_project_pages'):
+                w.reload_project_pages()
 
 
 class SettingsPage(QWidget):
@@ -6714,6 +6838,7 @@ class MainWindow(QMainWindow):
                 sidebar_layout.addWidget(sep)
 
         self._create_pages()
+        self._apply_project_features()
         self._sync_project_combo()
         self.project_combo.activated.connect(self._on_project_combo)
 
@@ -6766,6 +6891,32 @@ class MainWindow(QMainWindow):
                 self._launch_page = page
             if label == 'Settings':
                 self._settings_page = page
+
+    # Sidebar tab -> structure feature it needs.
+    FEATURE_TABS = {
+        'Shot Explorer': 'shots',
+        'Asset Explorer': 'assets',
+        'Light Rigs': 'lightrigs',
+        'Production': 'production',
+        'Render': 'shots',
+    }
+
+    def _apply_project_features(self):
+        structure = get_project_structure(self.project_root)
+        for i, (label, _tooltip) in enumerate(SIDEBAR_ITEMS):
+            feature = self.FEATURE_TABS.get(label)
+            if feature:
+                self.sidebar_buttons[i].setVisible(structure['features'][feature])
+        if self.sidebar_buttons[self.pages.currentIndex()].isHidden():
+            self._switch_page(0)
+
+    def reload_project_pages(self):
+        """Rebuild pages after the active project's structure changed."""
+        idx = self.pages.currentIndex()
+        self._create_pages()
+        self._apply_project_features()
+        self._switch_page(idx if not self.sidebar_buttons[idx].isHidden() else 0)
+        self.show_status('Project structure updated')
 
     def _sync_project_combo(self):
         from settings import list_projects
@@ -6840,7 +6991,8 @@ class MainWindow(QMainWindow):
 
         idx = self.pages.currentIndex()
         self._create_pages()
-        self._switch_page(idx)
+        self._apply_project_features()
+        self._switch_page(idx if not self.sidebar_buttons[idx].isHidden() else 0)
         self.setWindowTitle(f'MazeHub Pipeline - {self.project_root.name}')
         self.status_bar.showMessage(f'Project Root: {self.project_root}')
         self._sync_project_combo()

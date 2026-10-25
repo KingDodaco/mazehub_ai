@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.11.1"
+APP_VERSION = "0.12.0"
 
 
 def _get_display_name():
@@ -1788,6 +1788,19 @@ def handle_launch_app(apps_config, pipeline_dir):
         launch_app(apps_config, name, pipeline_dir)
 
 
+def get_project_structure(project_root):
+    """The project's enabled features/folders/software (all enabled if unset)."""
+    from make_folders import normalize_structure
+    from settings import get_setting
+    return normalize_structure(get_setting('project_structure', None, root=project_root))
+
+
+def set_project_structure(project_root, structure):
+    from make_folders import normalize_structure
+    from settings import set_setting
+    set_setting('project_structure', normalize_structure(structure), root=project_root)
+
+
 def handle_create_shot(project_root):
     name = input('  Shot name (e.g. SH010): ').strip()
     if not name:
@@ -1797,7 +1810,7 @@ def handle_create_shot(project_root):
     if shot_path.exists():
         print(f'  Shot already exists: {name}')
         return
-    make_working_directory(str(shot_path))
+    make_working_directory(str(shot_path), get_project_structure(project_root))
     print(f'  Created shot: {name}')
     print(f'  Location: {shot_path}')
 
@@ -1818,7 +1831,7 @@ def handle_create_asset(project_root):
     if asset_path.exists():
         print(f'  Asset already exists: {category}/{folder_name}')
         return
-    make_working_directory(str(asset_path))
+    make_working_directory(str(asset_path), get_project_structure(project_root))
     write_asset_meta(asset_path, {
         'display_name': name,
         'folder_name': folder_name,
