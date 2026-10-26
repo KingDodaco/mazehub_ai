@@ -5,6 +5,7 @@ import subprocess
 import platform
 import time
 import threading
+import queue
 import webbrowser
 import shutil
 from pathlib import Path
@@ -45,6 +46,14 @@ from pipeline_app import (
     list_backup_items, collect_backup_files, backup_total_size,
     scan_project_size, human_size, run_backup, BACKUP_RULES,
 )
+
+
+def _is_under_path(path, folder):
+    try:
+        Path(path).relative_to(folder)
+        return True
+    except ValueError:
+        return False
 
 
 def production_enabled(structure):
@@ -3742,7 +3751,7 @@ class RenderThread(QThread):
                     env=cmd_env,
                     creationflags=creation_flags,
                 )
-                for line in self._process.stdout:
+                for line in self._iter_output(self._process):
                     if self._cancel:
                         self._process.terminate()
                         break
@@ -3794,6 +3803,46 @@ class RenderThread(QThread):
                 self._process.terminate()
             except Exception:
                 pass
+
+    # Seconds to keep reading after the renderer exits before giving up on EOF.
+    EXIT_DRAIN_SECONDS = 1.0
+    _EOF = object()
+
+    def _iter_output(self, process):
+        """Yield the process's output lines until EOF, or until it has exited and gone quiet.
+
+        A grandchild can inherit the stdout pipe and keep it open after the renderer
+        exits (husk --mplay-monitor starts MPlay), so EOF alone would wait forever.
+        """
+        lines = queue.Queue()
+
+        def reader():
+            try:
+                for line in process.stdout:
+                    lines.put(line)
+            except (OSError, ValueError):
+                pass
+            lines.put(self._EOF)
+
+        threading.Thread(target=reader, daemon=True).start()
+        quiet_since = None
+        while True:
+            try:
+                item = lines.get(timeout=0.2)
+            except queue.Empty:
+                if self._cancel:
+                    return
+                if process.poll() is not None:
+                    quiet_since = quiet_since or time.monotonic()
+                    if time.monotonic() - quiet_since >= self.EXIT_DRAIN_SECONDS:
+                        self.output.emit('[info] Renderer exited but a child process (e.g. MPlay) '
+                                         'still holds its output — continuing')
+                        return
+                continue
+            if item is self._EOF:
+                return
+            quiet_since = None
+            yield item
 
     def skip_current(self):
         """Stop only the running command; the job continues with the next one."""
@@ -4675,7 +4724,8 @@ class RenderPage(QWidget):
         self._log('')
 
         self._log(f'[info] Syncing USD references for {usd_name}...')
-        sync_dlg = SyncProgressDialog(usd_file, self.window(), husk_path=husk_path)
+        sync_dlg = SyncProgressDialog(usd_file, self.window(), husk_path=husk_path,
+                                      project_root=self.project_root)
         sync_dlg.start()
         sync_accepted = sync_dlg.exec() == QDialog.Accepted
         sync_seconds = sync_dlg.elapsed()
@@ -4861,6 +4911,12 @@ class RenderPage(QWidget):
         self._render_dialog.open()
         self._render_dialog.start_render()
 
+    def _rel(self, path):
+        try:
+            return str(Path(path).relative_to(self.project_root))
+        except ValueError:
+            return str(path)
+
     def _log_sync_report(self, report, sync_time_str, multi_frame):
         def log_list(items, limit=10):
             for item in items[:limit]:
@@ -4889,7 +4945,32 @@ class RenderPage(QWidget):
         missing = report.get('missing', [])
         if missing:
             self._log(f'[warning] {len(missing)} referenced file(s) not found:')
-            log_list(missing)
+            found = report.get('found_elsewhere', {})
+            for group in report.get('missing_groups', []):
+                where = ' — OUTSIDE the project' if group['outside_project'] else ''
+                self._log(f'[warning]   {group["count"]} under {group["folder"]}{where}')
+                if group['referenced_by']:
+                    self._log(f'      referenced by: {", ".join(self._rel(p) for p in group["referenced_by"][:3])}'
+                              + (f' (+{len(group["referenced_by"]) - 3} more)'
+                                 if len(group['referenced_by']) > 3 else ''))
+                for example in group['examples']:
+                    self._log(f'      e.g. {example}')
+                in_group = [f for f in found if _is_under_path(f, group['folder'])]
+                if in_group:
+                    sample = found[in_group[0]]
+                    self._log(f'[info]   {len(in_group)} of these have a same-named file in the project '
+                              f'(e.g. {self._rel(sample)}). The layers point at the exporter\'s '
+                              'original location instead — re-export with project-relative paths '
+                              'or re-path the references.')
+            # The full list only goes to the saved log file.
+            if getattr(self, '_log_fh', None):
+                try:
+                    self._log_fh.write('Full list of missing files:\n')
+                    for m in missing:
+                        self._log_fh.write(f'    {m}\n')
+                    self._log_fh.flush()
+                except OSError:
+                    pass
         static = report.get('static_volumes', [])
         if static and multi_frame:
             self._log(
@@ -5102,9 +5183,10 @@ class VersionDialog(QDialog):
 
 
 class SyncProgressDialog(QDialog):
-    def __init__(self, usd_file, parent=None, husk_path=None):
+    def __init__(self, usd_file, parent=None, husk_path=None, project_root=None):
         super().__init__(parent)
         self.husk_path = husk_path
+        self.project_root = project_root
         self.report = {}
         self.setWindowTitle('Syncing USD References')
         self.setMinimumWidth(400)
@@ -5152,10 +5234,11 @@ class SyncProgressDialog(QDialog):
             progress = Signal(int, int, str)
             finished = Signal(object)
 
-            def __init__(self, usd_file, husk_path):
+            def __init__(self, usd_file, husk_path, project_root):
                 super().__init__()
                 self.usd_file = usd_file
                 self.husk_path = husk_path
+                self.project_root = project_root
                 self._cancelled = False
 
             def cancel(self):
@@ -5171,6 +5254,7 @@ class SyncProgressDialog(QDialog):
                             else self.progress.emit(done, total, name)),
                         cancel_check=lambda: self._cancelled,
                         husk_path=self.husk_path,
+                        project_root=self.project_root,
                     )
                 except Exception as e:
                     report = {'ok': False, 'error': str(e)}
@@ -5178,7 +5262,7 @@ class SyncProgressDialog(QDialog):
                     report['cancelled'] = True
                 self.finished.emit(report)
 
-        self._thread = Worker(self.usd_file, self.husk_path)
+        self._thread = Worker(self.usd_file, self.husk_path, self.project_root)
         self._thread.progress.connect(self._on_progress)
         self._thread.finished.connect(self._on_finished)
         self._thread.start()
@@ -5237,7 +5321,15 @@ class SyncProgressDialog(QDialog):
             if r.get('failed'):
                 problems.append(f'{len(r["failed"])} file(s) failed to download')
             if r.get('missing'):
-                problems.append(f'{len(r["missing"])} referenced file(s) not found')
+                line = f'{len(r["missing"])} referenced file(s) not found'
+                groups = r.get('missing_groups') or []
+                if groups:
+                    top = groups[0]
+                    where = ' — OUTSIDE the project' if top['outside_project'] else ''
+                    line += f'\nmost under {top["folder"]}{where}'
+                if r.get('found_elsewhere'):
+                    line += f'\n({len(r["found_elsewhere"])} have a same-named copy in the project)'
+                problems.append(line)
             if not r.get('refs') and not r.get('unreadable_layers'):
                 problems.append('No referenced files found — fine only if everything is inside this USD')
         self.status_label.setText(summary)

@@ -7,7 +7,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.12.3"
+APP_VERSION = "0.12.4"
 
 
 def _get_display_name():
@@ -1117,15 +1117,21 @@ def parse_usd_references(usd_file, _visited=None, _depth=0, husk_path=None, repo
     refs = _extract_refs_from_text(text)
     all_refs = set()
     anchor = usd_file.parent
+    origins = report.setdefault('origins', {}) if report is not None else None
     for ref in refs:
         all_refs.add(ref)
+        if origins is not None:
+            expanded = _expand_ref_path(ref)
+            target = expanded if os.path.isabs(expanded) else os.path.join(str(anchor), expanded)
+            origins.setdefault(os.path.normpath(target), str(usd_file))
         if not _is_usd_layer_name(ref):
             continue
         child_str = _expand_ref_path(ref)
         if USD_PATTERN_RE.search(child_str):
             children = _expand_usd_tokens(anchor, child_str)
         else:
-            children = [Path(child_str) if os.path.isabs(child_str) else anchor / child_str]
+            children = [Path(os.path.normpath(
+                child_str if os.path.isabs(child_str) else os.path.join(str(anchor), child_str)))]
         for child in children:
             try:
                 if not child.exists() or not child.is_file():
@@ -1192,6 +1198,7 @@ def _resolve_references(usd_file, refs):
         p = Path(expanded)
         if not p.is_absolute():
             p = usd_file.parent / p
+        p = Path(os.path.normpath(str(p)))
         try:
             if p.exists():
                 if str(p) not in seen:
@@ -1242,7 +1249,86 @@ def sync_file(file_path, timeout=60):
     return file_path.exists() and not needs_sync(file_path)
 
 
-def sync_usd_references(usd_file, progress_callback=None, cancel_check=None, husk_path=None):
+def _missing_root(path):
+    """The first folder on the path that doesn't exist (or the parent, if only the file is missing)."""
+    parent = Path(path).parent
+    cur, first_missing = parent, None
+    while cur.parent != cur:
+        try:
+            if cur.exists():
+                break
+        except OSError:
+            pass
+        first_missing, cur = cur, cur.parent
+    return first_missing or parent
+
+
+def _is_under(path, root):
+    try:
+        Path(os.path.normcase(os.path.normpath(str(path)))).relative_to(
+            os.path.normcase(os.path.normpath(str(root))))
+        return True
+    except ValueError:
+        return False
+
+
+def _index_names(root, limit=50000):
+    """Map lowercase file name -> first path found under root (listing only, nothing is opened)."""
+    index = {}
+    seen = 0
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            index.setdefault(name.lower(), os.path.join(dirpath, name))
+            seen += 1
+            if seen >= limit:
+                return index
+    return index
+
+
+def group_missing_references(missing, origins, project_root=None):
+    """Group missing files by where their path stops existing; look for same-named copies.
+
+    Returns (groups, found_elsewhere). Each group: folder, count, outside_project,
+    examples, referenced_by. found_elsewhere maps missing path -> in-project file
+    with the same name, searched under the referencing layers' folders.
+    """
+    buckets = {}
+    for m in missing:
+        buckets.setdefault(str(_missing_root(m)), []).append(m)
+    groups = []
+    found_elsewhere = {}
+    for files in buckets.values():
+        try:
+            folder = os.path.commonpath([os.path.dirname(f) for f in files])
+        except ValueError:
+            folder = os.path.dirname(files[0])
+        layers = sorted({origins.get(os.path.normpath(f), '') for f in files} - {''})
+        outside = bool(project_root) and not _is_under(folder, project_root)
+        groups.append({
+            'folder': folder,
+            'count': len(files),
+            'outside_project': outside,
+            'examples': sorted(files)[:3],
+            'referenced_by': layers,
+        })
+        # Search near the referencing layers, but only inside the project.
+        if project_root and layers:
+            try:
+                search_root = os.path.commonpath([os.path.dirname(l) for l in layers])
+            except ValueError:
+                search_root = ''
+            if search_root and _is_under(search_root, project_root) and os.path.isdir(search_root):
+                index = _index_names(search_root)
+                for f in files:
+                    hit = index.get(os.path.basename(f).lower())
+                    if hit:
+                        found_elsewhere[f] = hit
+    groups.sort(key=lambda g: -g['count'])
+    return groups, found_elsewhere
+
+
+def sync_usd_references(usd_file, progress_callback=None, cancel_check=None, husk_path=None,
+                        project_root=None):
     """Parse a USD file (recursively) and hydrate its dependencies.
 
     progress_callback(done, total, path) is called per file.
@@ -1272,6 +1358,9 @@ def sync_usd_references(usd_file, progress_callback=None, cancel_check=None, hus
         progress_callback(synced, total, '')
     # Per-frame clip layers each hold one static filePath — that's expected.
     static_volumes = [] if report.get('has_clips') else sorted(set(report.get('static_volumes', [])))
+    missing = sorted(set(missing))
+    missing_groups, found_elsewhere = group_missing_references(
+        missing, report.get('origins', {}), project_root)
     return {
         'ok': not cancelled and synced == total,
         'cancelled': cancelled,
@@ -1280,7 +1369,9 @@ def sync_usd_references(usd_file, progress_callback=None, cancel_check=None, hus
         'total': total,
         'synced': synced,
         'failed': failed,
-        'missing': sorted(set(missing)),
+        'missing': missing,
+        'missing_groups': missing_groups,
+        'found_elsewhere': found_elsewhere,
         'unreadable_layers': report.get('unreadable_layers', []),
         'static_volumes': static_volumes,
     }
