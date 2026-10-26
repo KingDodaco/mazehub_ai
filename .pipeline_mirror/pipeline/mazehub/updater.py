@@ -18,7 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 GITHUB_REPO = 'KingDodaco/mazehub_ai'
-GITHUB_LATEST_URL = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
+# Plain release download URLs, not api.github.com: the API allows only 60
+# unauthenticated requests/hour per IP, which a shared campus network exhausts.
+GITHUB_RELEASES_URL = f'https://github.com/{GITHUB_REPO}/releases'
 ZIP_NAME = 'MazeHub-pipeline.zip'
 MANIFEST_NAME = 'manifest.json'
 EXE_NAME = 'MazeHub.exe'
@@ -32,7 +34,6 @@ SIDECAR_SUFFIX = '.new'
 TMP_SUFFIX = '.mztmp'
 HTTP_HEADERS = {
     'User-Agent': 'MazeHub-Updater',
-    'Accept': 'application/vnd.github+json',
 }
 DOWNLOAD_CHUNK = 256 * 1024
 STALL_TIMEOUT_SECONDS = 45
@@ -467,44 +468,30 @@ class UpdateLock:
 
 
 def _check_github(timeout):
-    context = _ssl_context()
-    req = urllib.request.Request(GITHUB_LATEST_URL, headers=HTTP_HEADERS)
-    body = ''
+    """Read the latest release's manifest.json via its download URL (no API call)."""
+    url = f'{GITHUB_RELEASES_URL}/latest/download/{MANIFEST_NAME}'
     try:
-        with urllib.request.urlopen(
-                req, timeout=timeout, context=context) as resp:
-            body = resp.read().decode('utf-8', 'replace')
+        manifest = _fetch_json_url(url, timeout)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
-        raise UpdateError(
-            f'GitHub API error {exc.code} ({exc.reason})') from exc
+        if exc.code in (403, 429):
+            raise UpdateError(
+                f'GitHub refused the request (HTTP {exc.code}) — try again later') from exc
+        raise UpdateError(f'GitHub error {exc.code} ({exc.reason})') from exc
     except urllib.error.URLError as exc:
         raise UpdateError(_net_error('Cannot reach GitHub', exc)) from exc
-    try:
-        data = json.loads(body)
-    except ValueError as exc:
-        raise UpdateError(
-            f'Bad GitHub response: {exc}; body starts {body[:160]!r}'
-        ) from exc
-    tag = str(data.get('tag_name') or '')
-    version = tag.lstrip('vV')
-    zip_url = ''
-    manifest_url = ''
-    for asset in data.get('assets') or []:
-        name = asset.get('name')
-        url = asset.get('browser_download_url') or ''
-        if name == ZIP_NAME:
-            zip_url = url
-        elif name == MANIFEST_NAME:
-            manifest_url = url
-    if not version or not zip_url or not manifest_url:
+    version = str(manifest.get('version') or '').lstrip('vV')
+    if not version:
         return None
+    zip_name = (manifest.get('zip') or {}).get('name') or ZIP_NAME
+    # Pin to the tag so the zip always matches the manifest just read.
+    base = f'{GITHUB_RELEASES_URL}/download/v{version}'
     return UpdateInfo(
         version=version,
-        zip_url=zip_url,
-        manifest_url=manifest_url,
-        notes=str(data.get('body') or ''),
+        zip_url=f'{base}/{zip_name}',
+        manifest_url=f'{base}/{MANIFEST_NAME}',
+        notes='',
         channel='github',
     )
 
