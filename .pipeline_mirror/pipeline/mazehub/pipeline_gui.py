@@ -3683,12 +3683,25 @@ class RenderThread(QThread):
         self.last_line = ''
         self.current_label = ''
 
+    @staticmethod
+    def _cmd_pass(cmd):
+        try:
+            return cmd[cmd.index('--pass') + 1]
+        except (ValueError, IndexError):
+            return ''
+
     def run(self):
         exit_code = 0
         total = len(self.commands)
-        current_pass = ''
         pass_frame_count = 0
         pass_frames_done = 0
+        # Per-pass totals/progress, so frame-major order (passes interleaved) counts correctly.
+        frames_per_pass = {}
+        if not self.job_meta:
+            for c in self.commands:
+                name = self._cmd_pass(c)
+                frames_per_pass[name] = frames_per_pass.get(name, 0) + 1
+        done_per_pass = {}
         for i, cmd in enumerate(self.commands):
             if self._cancel:
                 self.output.emit('[cancelled]')
@@ -3715,19 +3728,16 @@ class RenderThread(QThread):
                     frame_num = int(cmd[idx + 1])
                 except (ValueError, IndexError):
                     pass
-            if not meta and pass_name != current_pass:
-                current_pass = pass_name
-                pass_frame_count = sum(
-                    1 for c in self.commands
-                    if c[cmd.index('--pass') + 1] == pass_name
-                ) if '--pass' in cmd else 0
-                pass_frames_done = 0
+            if not meta:
+                pass_frame_count = frames_per_pass.get(pass_name, 0) if pass_name else 0
+                pass_frames_done = done_per_pass.get(pass_name, 0)
             self.pass_changed.emit(pass_name)
             frame_open = False
             if meta:
                 self.output.emit(f'[rendering job {i + 1}/{total}: {pass_name}]')
             else:
                 pass_frames_done += 1
+                done_per_pass[pass_name] = pass_frames_done
                 self.frame_started.emit(frame_num, pass_frame_count, pass_frames_done)
                 frame_open = True
                 self.output.emit(f'[rendering pass {i + 1}/{total}: {pass_name} frame {frame_num}]')
@@ -4226,6 +4236,24 @@ class RenderPage(QWidget):
         render_engine_row.addStretch()
         layout.addWidget(self.engine_row_widget)
 
+        from settings import get_setting
+        order_row = QHBoxLayout()
+        order_row.addWidget(QLabel('Render Order:'))
+        self.render_order_combo = QComboBox()
+        self.render_order_combo.setMinimumWidth(260)
+        self.render_order_combo.addItem('Frame by frame, per pass', 'pass_major')
+        self.render_order_combo.addItem('Pass by pass, per frame', 'frame_major')
+        self.render_order_combo.setToolTip(
+            'Frame by frame, per pass: every frame of the first pass, then the next pass.\n'
+            'Pass by pass, per frame: every pass of frame 1, then frame 2, …\n'
+            'husk mode only.')
+        idx = self.render_order_combo.findData(get_setting('render_order', 'pass_major'))
+        self.render_order_combo.setCurrentIndex(max(idx, 0))
+        self.render_order_combo.currentIndexChanged.connect(self._on_render_order_changed)
+        order_row.addWidget(self.render_order_combo, 1)
+        order_row.addStretch()
+        layout.addLayout(order_row)
+
         self.mplay_cb = QCheckBox('Show frames in MPlay while rendering')
         self.mplay_cb.setToolTip(
             'husk mode only: opens one MPlay window that updates as each frame renders. '
@@ -4419,6 +4447,7 @@ class RenderPage(QWidget):
         self.hip_row_widget.setVisible(hrender)
         self.engine_row_widget.setVisible(not hrender)
         self.mplay_cb.setEnabled(not hrender)
+        self.render_order_combo.setEnabled(not hrender)
         self._no_passes_text = (
             'No passes found. Select a HIP file to discover ROPs and passes.' if hrender
             else 'No passes found. Select a USD file to discover passes.')
@@ -4583,6 +4612,10 @@ class RenderPage(QWidget):
             if item and item.widget() and isinstance(item.widget(), QCheckBox):
                 item.widget().setChecked(False)
 
+    def _on_render_order_changed(self, _index):
+        from settings import set_setting
+        set_setting('render_order', self.render_order_combo.currentData())
+
     def _on_save_log_toggled(self, checked):
         from settings import set_setting
         set_setting('render_save_log', bool(checked))
@@ -4693,26 +4726,31 @@ class RenderPage(QWidget):
         render_base = shot_path / 'houdini' / 'render'
         version_dir_name = f'{shot_name}_v{version:03d}'
         frames = list(range(start, end + 1, max(interval, 1)))
+        render_order = self.render_order_combo.currentData()
         for p in passes:
+            (render_base / version_dir_name / p.split('/')[-1]).mkdir(parents=True, exist_ok=True)
+        if render_order == 'frame_major':
+            jobs = [(p, frame) for frame in frames for p in passes]
+        else:
+            jobs = [(p, frame) for p in passes for frame in frames]
+        for p, frame in jobs:
             pass_safe = p.split('/')[-1]
-            out_dir = render_base / version_dir_name / pass_safe
-            out_dir.mkdir(parents=True, exist_ok=True)
-            for frame in frames:
-                out_file = out_dir / f'{shot_name}_{pass_safe}_v{version:03d}_{frame:04d}.exr'
-                cmd = [
-                    husk_path,
-                    '--engine', render_engine,
-                    '--pass', p,
-                    '-f', str(frame),
-                    '-n', '1',
-                    '-o', str(out_file),
-                    '--make-output-path',
-                    '-V', '2a',
-                ]
-                if self.mplay_cb.isChecked():
-                    cmd += ['--mplay-monitor', '-', '--mplay-session', f'mazehub_{shot_name}']
-                cmd.append(str(usd_file))
-                commands.append(cmd)
+            out_file = (render_base / version_dir_name / pass_safe
+                        / f'{shot_name}_{pass_safe}_v{version:03d}_{frame:04d}.exr')
+            cmd = [
+                husk_path,
+                '--engine', render_engine,
+                '--pass', p,
+                '-f', str(frame),
+                '-n', '1',
+                '-o', str(out_file),
+                '--make-output-path',
+                '-V', '2a',
+            ]
+            if self.mplay_cb.isChecked():
+                cmd += ['--mplay-monitor', '-', '--mplay-session', f'mazehub_{shot_name}']
+            cmd.append(str(usd_file))
+            commands.append(cmd)
 
         self.log_output.clear()
         self._open_render_log(render_base / version_dir_name)
@@ -4720,6 +4758,7 @@ class RenderPage(QWidget):
         self._log(f'Passes: {", ".join(passes)}')
         self._log(f'Frames: {start}-{end} (interval {interval})')
         self._log(f'Engine: Karma {render_engine.upper()}')
+        self._log(f'Order: {self.render_order_combo.currentText()}')
         self._log(f'Commands: {len(commands)}')
         self._log('')
 
@@ -4747,6 +4786,7 @@ class RenderPage(QWidget):
             'interval': interval,
             'version': version,
             'render_engine': render_engine,
+            'render_order': render_order,
             'start_time': time.strftime('%Y-%m-%d %H:%M:%S'),
             'end_time': '',
             'sync_seconds': round(sync_seconds, 1),
@@ -4931,6 +4971,11 @@ class RenderPage(QWidget):
             f'[info] USD references: {report.get("refs", 0)} found, '
             f'{report.get("synced", 0)}/{report.get("total", 0)} downloaded in {sync_time_str} '
             f'(sync time is tracked separately)')
+        if report.get('scanner') == 'hython':
+            self._log(f'[info] Dependency scan: hython (USD) in {report.get("scan_seconds", 0)}s')
+        elif report.get('scanner') == 'text':
+            self._log(f'[warning] Dependency scan: text fallback in {report.get("scan_seconds", 0)}s — '
+                      'hython not found or its scan failed; this is slower and less accurate')
         unreadable = report.get('unreadable_layers', [])
         if unreadable:
             self._log(
@@ -5268,6 +5313,12 @@ class SyncProgressDialog(QDialog):
         self._thread.start()
 
     def _on_progress(self, synced, total, current):
+        if total == 0 and current:
+            # Scanning: no count yet, so show a busy bar.
+            self.progress.setRange(0, 0)
+            self.detail_label.setText(current)
+            return
+        self.progress.setRange(0, 100)
         pct = int(synced / total * 100) if total > 0 else 0
         self.progress.setValue(pct)
         self.detail_label.setText(f'{synced}/{total} synced — {current}')
@@ -5302,6 +5353,7 @@ class SyncProgressDialog(QDialog):
     def _on_finished(self, report):
         self._stop_sync_clock()
         self.report = report or {}
+        self.progress.setRange(0, 100)
         if self.report.get('cancelled'):
             self.reject()
             return
@@ -5312,8 +5364,10 @@ class SyncProgressDialog(QDialog):
             summary = f'Sync failed: {r["error"]}'
             problems = [summary]
         else:
+            method = 'USD (hython)' if r.get('scanner') == 'hython' else 'text fallback'
             summary = (f'{r.get("refs", 0)} references found — '
-                       f'{r.get("synced", 0)}/{r.get("total", 0)} downloaded from the cloud')
+                       f'{r.get("synced", 0)}/{r.get("total", 0)} downloaded from the cloud\n'
+                       f'Scanned with {method} in {r.get("scan_seconds", 0)}s')
             problems = []
             if r.get('unreadable_layers'):
                 problems.append(f'{len(r["unreadable_layers"])} USD layer(s) could not be read — '

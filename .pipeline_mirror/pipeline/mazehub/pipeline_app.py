@@ -3,11 +3,12 @@ import sys
 import re
 import json
 import subprocess
+import time
 import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.12.4"
+APP_VERSION = "0.12.5"
 
 
 def _get_display_name():
@@ -929,6 +930,10 @@ USD_LAYER_ENDINGS = ('.usd', '.usda', '.usdc', '.usdz')
 USD_TOKEN_RE = re.compile(r'<(UDIM|F\d*|face|frame)>', re.IGNORECASE)
 # Also matches '#' frame runs used by value-clip templateAssetPath ("clip.#.usd").
 USD_PATTERN_RE = re.compile(r'<(UDIM|F\d*|face|frame)>|(#+)', re.IGNORECASE)
+# Not inputs: render outputs and assetInfo identifiers (an exported asset's original path).
+USD_PRODUCT_NAME_RE = re.compile(
+    r'productName(?:\.timeSamples\s*=\s*\{[^}]*\}|\s*=\s*(?:"[^"\n]*"|@[^@\n]*@))')
+USD_ASSET_IDENTIFIER_RE = re.compile(r'\bidentifier\s*=\s*@[^@\n]*@')
 USD_STATIC_VDB_RE = re.compile(r'asset\s+filePath\s*=\s*@([^@\n]+\.vdb)@', re.IGNORECASE)
 
 
@@ -1114,6 +1119,7 @@ def parse_usd_references(usd_file, _visited=None, _depth=0, husk_path=None, repo
                 if not os.path.isabs(vdb_path):
                     vdb_path = str(usd_file.parent / vdb_path)
                 report.setdefault('static_volumes', []).append(vdb_path)
+    text = USD_ASSET_IDENTIFIER_RE.sub('', USD_PRODUCT_NAME_RE.sub('', text))
     refs = _extract_refs_from_text(text)
     all_refs = set()
     anchor = usd_file.parent
@@ -1327,6 +1333,42 @@ def group_missing_references(missing, origins, project_root=None):
     return groups, found_elsewhere
 
 
+USD_DEPS_SCRIPT = Path(__file__).resolve().parent / 'maze_usd_deps.py'
+
+
+def scan_usd_dependencies_hython(usd_file, husk_path=None, timeout=900):
+    """Ask USD (in one hython process) for every layer/asset the scene depends on.
+
+    Returns a dict with normalized paths, or None if hython is unavailable or the scan
+    failed (the caller then falls back to the text scanner).
+    """
+    hython = find_hython(husk_path)
+    if not hython or not USD_DEPS_SCRIPT.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            [hython, str(USD_DEPS_SCRIPT), str(usd_file)],
+            capture_output=True, text=True, timeout=timeout,
+            **_subprocess_flags(),
+        )
+        out = result.stdout or ''
+        body = out.split('MAZE_DEPS_BEGIN', 1)[1].split('MAZE_DEPS_END', 1)[0]
+        data = json.loads(body)
+    except (subprocess.TimeoutExpired, OSError, IndexError, ValueError):
+        return None
+    if data.get('error'):
+        return None
+    norm = os.path.normpath
+    return {
+        'layers': [norm(p) for p in data.get('layers', [])],
+        'assets': [norm(p) for p in data.get('assets', [])],
+        'unresolved': [norm(p) for p in data.get('unresolved', [])],
+        'origins': {norm(k): norm(v) for k, v in data.get('origins', {}).items()},
+        'has_clips': bool(data.get('has_clips')),
+        'static_volumes': [norm(p) for p in data.get('static_volumes', [])],
+    }
+
+
 def sync_usd_references(usd_file, progress_callback=None, cancel_check=None, husk_path=None,
                         project_root=None):
     """Parse a USD file (recursively) and hydrate its dependencies.
@@ -1336,9 +1378,31 @@ def sync_usd_references(usd_file, progress_callback=None, cancel_check=None, hus
     missing, unreadable_layers, static_volumes.
     """
     usd_file = Path(usd_file)
-    report = {}
-    refs = parse_usd_references(usd_file, husk_path=husk_path, report=report)
-    resolved, missing = _resolve_references(usd_file, refs)
+    if progress_callback:
+        progress_callback(0, 0, 'Scanning dependencies…')
+    scan_start = time.monotonic()
+    if needs_sync(usd_file):
+        sync_file(usd_file)
+    scan = scan_usd_dependencies_hython(usd_file, husk_path)
+    if scan is not None:
+        report = {
+            'scanner': 'hython',
+            'origins': scan['origins'],
+            'has_clips': scan['has_clips'],
+            'static_volumes': scan['static_volumes'],
+        }
+        resolved = []
+        seen = set()
+        for p in scan['layers'] + scan['assets']:
+            if p not in seen and os.path.exists(p):
+                seen.add(p)
+                resolved.append(Path(p))
+        missing = scan['unresolved']
+    else:
+        report = {'scanner': 'text'}
+        refs = parse_usd_references(usd_file, husk_path=husk_path, report=report)
+        resolved, missing = _resolve_references(usd_file, refs)
+    report['scan_seconds'] = round(time.monotonic() - scan_start, 1)
     unsynced = [p for p in resolved if needs_sync(p)]
     total = len(unsynced)
     synced = 0
@@ -1370,6 +1434,8 @@ def sync_usd_references(usd_file, progress_callback=None, cancel_check=None, hus
         'synced': synced,
         'failed': failed,
         'missing': missing,
+        'scanner': report['scanner'],
+        'scan_seconds': report['scan_seconds'],
         'missing_groups': missing_groups,
         'found_elsewhere': found_elsewhere,
         'unreadable_layers': report.get('unreadable_layers', []),
