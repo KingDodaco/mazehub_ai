@@ -61,6 +61,26 @@ def production_enabled(structure):
     return structure.get('production_tracking', True)
 
 
+def production_schedule_url(root):
+    """The project's schedule link, or '' when the button is turned off."""
+    from settings import get_setting
+    if not get_setting('production_schedule_enabled', False, root=root):
+        return ''
+    return (get_setting('production_schedule_url', '', root=root) or '').strip()
+
+
+def schedule_button(root):
+    url = production_schedule_url(root)
+    if not url:
+        return None
+    btn = QPushButton('Production Schedule')
+    btn.setMinimumHeight(32)
+    btn.setCursor(Qt.PointingHandCursor)
+    btn.setToolTip(url)
+    btn.clicked.connect(lambda: webbrowser.open(url))
+    return btn
+
+
 def _score_color(score_str):
     if not score_str:
         return None
@@ -1084,6 +1104,9 @@ class DashboardPage(QWidget):
         title.setFont(title_font)
         header.addWidget(title)
         header.addStretch()
+        schedule_btn = schedule_button(self.project_root)
+        if schedule_btn:
+            header.addWidget(schedule_btn)
         self.refresh_btn = QPushButton('Refresh')
         self.refresh_btn.setMinimumHeight(32)
         self.refresh_btn.setCursor(Qt.PointingHandCursor)
@@ -3012,6 +3035,9 @@ class ProductionPage(QWidget):
         title.setObjectName('sectionTitle')
         header.addWidget(title)
         header.addStretch()
+        schedule_btn = schedule_button(self.project_root)
+        if schedule_btn:
+            header.addWidget(schedule_btn)
         refresh_btn = QPushButton('Refresh')
         refresh_btn.setMinimumHeight(32)
         refresh_btn.setCursor(Qt.PointingHandCursor)
@@ -3569,7 +3595,7 @@ class HelpPage(QWidget):
         """, expanded=True)
 
         self._add_section(layout, '2 — Projects & Extra Tools', """
-        <p>One MazeHub install can open many projects. The project name at the top of the <b>sidebar</b> is a drop-down — pick another project and every page switches to it instantly. You can also manage projects in the <b>Projects</b> tab: <b>Open</b> (or double-click) switches, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh project, <b>Remove</b> unregisters one (the folder is never deleted), and <b>Project Settings…</b> edits the selected project's Teams webhook links and repairs its folder structure — selecting or editing a project never switches it. On the very first launch MazeHub asks you to pick an existing project folder or create a new one.</p>
+        <p>One MazeHub install can open many projects. The project name at the top of the <b>sidebar</b> is a drop-down — pick another project and every page switches to it instantly. You can also manage projects in the <b>Projects</b> tab: <b>Open</b> (or double-click) switches, <b>Add Existing…</b> registers a folder, <b>Create New…</b> builds a fresh project, <b>Remove</b> unregisters one (the folder is never deleted), and <b>Project Settings…</b> edits the selected project's Teams webhook links, its optional <b>Production Schedule</b> link (when turned on, a Production Schedule button on Home and Production opens it in your browser) and repairs its folder structure — selecting or editing a project never switches it. On the very first launch MazeHub asks you to pick an existing project folder or create a new one.</p>
         <p><b>Project structure:</b> when creating a project — and later in <b>Project Settings…</b> — choose which <b>features</b> it uses (Shots, Assets, Light Rigs), whether <b>production tracking</b> is on (off hides the Production tab, the explorers' Progress columns and status menus, and the Home progress card), which <b>extra folders</b> to create (Onset, Development, R&amp;D, IO, MISC, DB) and which <b>software</b> it uses. Disabled features hide their tab; only enabled software gets folders inside shots, assets and light rigs, a project pipeline folder, and a launch button. <b>Repair File Structure</b> follows this selection. Turning something off never deletes existing folders.</p>
         <p><b>Project-level pipeline (extra plugins/tools):</b> new projects come with an empty <code>pipeline</code> skeleton mirroring the install layout — e.g. <code>MyProject\\pipeline\\Maya\\scripts</code>, <code>MyProject\\pipeline\\Houdini\\Packages</code>, <code>MyProject\\pipeline\\Nuke\\plugins</code>, <code>MyProject\\pipeline\\Blender\\scripts</code> — drop your project-specific scripts or plugins there. When MazeHub launches an app it searches <b>the project's pipeline folder first, then the main install folder</b>, so a file in the project overrides the same file in the main pipeline. A project OCIO config (<code>pipeline\\OCIO\\OCIO_set.bat</code> or <code>BU_nov2024_config.ocio</code>) overrides the studio one. MazeHub creates the empty skeleton on project create or repair, never deletes it, and executables/launchers always come from the install.</p>
         """)
@@ -5850,6 +5876,26 @@ class ProjectSettingsDialog(QDialog):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        schedule_group = QGroupBox('Production Schedule')
+        schedule_layout = QVBoxLayout(schedule_group)
+        schedule_layout.setSpacing(12)
+        self.schedule_cb = QCheckBox('Show a Production Schedule button on the Home and Production tabs')
+        schedule_layout.addWidget(self.schedule_cb)
+        schedule_url_row = QHBoxLayout()
+        self.schedule_url_input = QLineEdit()
+        self.schedule_url_input.setPlaceholderText('https://...')
+        schedule_url_row.addWidget(self.schedule_url_input, 1)
+        self.schedule_save_btn = QPushButton('Save')
+        self.schedule_save_btn.setCursor(Qt.PointingHandCursor)
+        self.schedule_save_btn.clicked.connect(self._save_schedule)
+        schedule_url_row.addWidget(self.schedule_save_btn)
+        schedule_layout.addLayout(schedule_url_row)
+        self.schedule_status = QLabel('')
+        self.schedule_status.setWordWrap(True)
+        self.schedule_status.setObjectName('hint')
+        schedule_layout.addWidget(self.schedule_status)
+        layout.addWidget(schedule_group)
+
         teams_group = QGroupBox('Teams Notifications')
         teams_layout = QVBoxLayout(teams_group)
         teams_layout.setSpacing(16)
@@ -5996,6 +6042,7 @@ class ProjectSettingsDialog(QDialog):
         self._load_teams_url()
         self._load_dailies_url()
         self._load_production_url()
+        self._load_schedule()
 
     def _save_teams_url(self):
         from settings import set_setting
@@ -6062,6 +6109,33 @@ class ProjectSettingsDialog(QDialog):
         else:
             self.production_status.setText('No webhook URL configured.')
             self.production_status.setStyleSheet('color: #ffa726;')
+
+    def _save_schedule(self):
+        from settings import set_setting
+        enabled = self.schedule_cb.isChecked()
+        url = self.schedule_url_input.text().strip()
+        if enabled and not url.lower().startswith(('http://', 'https://')):
+            enabled = False
+            self.schedule_cb.setChecked(False)
+            self.schedule_status.setText(
+                'Enter a link starting with http:// or https:// to show the button. '
+                'The button was left off.')
+            self.schedule_status.setStyleSheet('color: #ffa726;')
+        elif enabled:
+            self.schedule_status.setText(f'Saved. The button opens: {url}')
+            self.schedule_status.setStyleSheet('color: #00c853;')
+        else:
+            self.schedule_status.setText('Saved. The button is off.')
+            self.schedule_status.setStyleSheet('')
+        set_setting('production_schedule_url', url, root=self.root)
+        set_setting('production_schedule_enabled', enabled, root=self.root)
+        # Rebuilds Home and Production when the dialog closes.
+        self.structure_changed = True
+
+    def _load_schedule(self):
+        from settings import get_setting
+        self.schedule_cb.setChecked(bool(get_setting('production_schedule_enabled', False, root=self.root)))
+        self.schedule_url_input.setText(get_setting('production_schedule_url', '', root=self.root) or '')
 
     def _save_structure(self):
         structure = self.structure_widget.structure()

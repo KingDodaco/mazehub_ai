@@ -62,6 +62,22 @@ try:
 except Exception:
     _log_exc("Failed to load envPathResolver")
 
+
+def set_project():
+    project = os.environ.get("MAYA_PROJECT", "")
+    if not project:
+        return
+    project = project.replace("\\", "/")
+    try:
+        import maya.mel as mel
+        mel.eval(f'setProject "{project}"')
+        _log(f"project set: {project}")
+    except Exception:
+        _log_exc(f"Failed to set project: {project}")
+
+
+set_project()
+
 START_FRAME = os.environ.get("START_FRAME")
 END_FRAME = os.environ.get("END_FRAME")
 FRAME_RATE = os.environ.get("FRAME_RATE")

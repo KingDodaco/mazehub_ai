@@ -490,6 +490,9 @@ def draw_maze_menu(self, context):
 
 
 def register():
+    # Safe to call twice (e.g. an old project startup.py that also registers).
+    if hasattr(bpy.types, MAZE_MT_menu.bl_idname):
+        unregister()
     bpy.utils.register_class(MAZE_OT_export_usd)
     bpy.utils.register_class(MAZE_OT_export_usd_dialog)
     bpy.utils.register_class(MAZE_OT_playblast)

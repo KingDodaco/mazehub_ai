@@ -70,8 +70,7 @@ if not "%~1"=="" set "MAZE_OPEN_FILE=%~1"
 
 set "SAFE_SCRIPT_PATH=%MAZE_123:\=/%"
 
-set "SET_PROJECT_CMD="
-if defined JOB set "SET_PROJECT_CMD=catchQuiet(setProject \"%JOB%\"); "
+rem The Maya project (MAYA_PROJECT) is set by 123.py so a failure there cannot break the startup command.
 
 if not exist "%MAZE_123%" (
     >> "%LOG_FILE%" echo ERROR: MazeHub bootstrap script not found: "%MAZE_123%"
@@ -92,6 +91,6 @@ if not exist "%MAZE_EXE%" (
 
 >> "%LOG_FILE%" echo MAZE_EXE="%MAZE_EXE%"
 
-start "" "%MAZE_EXE%" -command "%SET_PROJECT_CMD%python(\"import runpy; runpy.run_path('%SAFE_SCRIPT_PATH%', run_name='__maze_bootstrap__')\");"
+start "" "%MAZE_EXE%" -command "python(\"import runpy; runpy.run_path('%SAFE_SCRIPT_PATH%', run_name='__maze_bootstrap__')\");"
 
 endlocal

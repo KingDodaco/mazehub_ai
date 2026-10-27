@@ -54,6 +54,8 @@ SHARED_KEYS = {
     'teams_webhook_url',
     'dailies_webhook_url',
     'production_webhook_url',
+    'production_schedule_enabled',
+    'production_schedule_url',
 }
 
 # Formerly project-scoped; now global.
