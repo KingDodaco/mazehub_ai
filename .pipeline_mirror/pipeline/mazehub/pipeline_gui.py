@@ -1083,6 +1083,126 @@ class ProjectSizeWorker(QThread):
             self.result_ready.emit(result)
 
 
+def _subdirs(path, sort=True, private=False):
+    """Child folder names of path ('_' folders skipped unless private).
+
+    os.scandir gets the entry type from the directory listing itself, so on a
+    network drive this is one round trip instead of one stat per entry.
+    """
+    names = []
+    with os.scandir(path) as it:
+        for entry in it:
+            try:
+                if entry.is_dir() and (private or not entry.name.startswith('_')):
+                    names.append(entry.name)
+            except OSError:
+                pass
+    return sorted(names) if sort else names
+
+
+# QIcon(path) decodes lazily on first paint and keeps the pixmap, so reusing
+# the same QIcon across table rebuilds means each thumbnail decodes only once.
+# UI thread only; keyed by path, replaced when the file's mtime/size changes.
+_THUMB_ICONS = {}
+
+
+def _thumb_key(folder):
+    """Stat folder/_thumbnail.png (any thread); None if absent."""
+    path = Path(folder) / '_thumbnail.png'
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
+def _thumb_item(key):
+    item = QTableWidgetItem()
+    if key is not None:
+        path, stamp = key[0], key[1:]
+        cached = _THUMB_ICONS.get(path)
+        if cached is None or cached[0] != stamp:
+            cached = _THUMB_ICONS[path] = (stamp, QIcon(path))
+        item.setIcon(cached[1])
+    return item
+
+
+class _PageScanWorker(QThread):
+    """Runs a page's disk scan (no widget access) off the UI thread."""
+    ready = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(self, job, generation):
+        super().__init__()
+        self.job = job
+        self.generation = generation
+
+    def run(self):
+        try:
+            self.ready.emit(self.generation, self.job())
+        except Exception as e:
+            self.failed.emit(self.generation, f'{type(e).__name__}: {e}')
+
+
+# Unparented so a page can be deleted (project switch) while its scan finishes.
+_LIVE_SCANS = set()
+
+
+def _wait_for_scans():
+    for worker in list(_LIVE_SCANS):
+        worker.wait(5000)
+
+
+class _BackgroundRefreshMixin:
+    """Pages whose refresh reads many files on a project drive.
+
+    Subclasses provide _scan_job() -> zero-arg callable that reads the disk and
+    returns plain data (safe to run on any thread), and _populate(data) that
+    fills the widgets. _refresh() stays synchronous for internal callers;
+    refresh_async() (tab switches, startup) scans in the background and only
+    rebuilds the table if the data changed.
+    """
+    _scan_gen = 0
+    _scan_worker = None
+    _shown = None
+
+    def _refresh(self):
+        self._scan_gen += 1
+        data = self._scan_job()()
+        self._shown = data
+        self._populate(data)
+
+    def refresh_async(self):
+        self._scan_gen += 1
+        worker = _PageScanWorker(self._scan_job(), self._scan_gen)
+        worker.ready.connect(self._on_scan_ready)
+        worker.failed.connect(self._on_scan_failed)
+        if not _LIVE_SCANS:
+            app = QApplication.instance()
+            if app is not None and not getattr(app, '_mazehub_scan_hook', False):
+                app.aboutToQuit.connect(_wait_for_scans)
+                app._mazehub_scan_hook = True
+        _LIVE_SCANS.add(worker)
+        worker.finished.connect(lambda w=worker: (_LIVE_SCANS.discard(w), w.deleteLater()))
+        self._scan_worker = worker
+        worker.start()
+
+    def _on_scan_ready(self, generation, data):
+        if generation != self._scan_gen:
+            return
+        self._scan_worker = None
+        if data == self._shown:
+            return
+        self._shown = data
+        self._populate(data)
+
+    def _on_scan_failed(self, generation, message):
+        if generation != self._scan_gen:
+            return
+        self._scan_worker = None
+        print(f'[{type(self).__name__}] refresh failed: {message}')
+
+
 class DashboardPage(QWidget):
     def __init__(self, project_root, env_vars, apps_config, pipeline_dir, parent=None):
         super().__init__(parent)
@@ -1716,10 +1836,7 @@ class LaunchAppsPage(QWidget):
 
     def _populate_contexts(self):
         seq_dir = self.project_root / 'sequence'
-        if seq_dir.exists():
-            shots = sorted(d.name for d in seq_dir.iterdir() if d.is_dir() and not d.name.startswith('_'))
-        else:
-            shots = []
+        shots = _subdirs(seq_dir) if seq_dir.exists() else []
         self.ctx_shot_combo.clear()
         self.ctx_shot_combo.addItems(shots)
 
@@ -1742,16 +1859,14 @@ class LaunchAppsPage(QWidget):
         self.ctx_asset_combo.clear()
         asset_dir = self.project_root / 'asset' / category
         if asset_dir.exists():
-            assets = sorted(d.name for d in asset_dir.iterdir() if d.is_dir() and not d.name.startswith('_'))
-            self.ctx_asset_combo.addItems(assets)
+            self.ctx_asset_combo.addItems(_subdirs(asset_dir))
         self._update_context()
 
     def _populate_light_rigs(self):
         self.ctx_lightrig_combo.clear()
         lightrigs_dir = self.project_root / 'lightrigs'
         if lightrigs_dir.exists():
-            rigs = sorted(d.name for d in lightrigs_dir.iterdir() if d.is_dir() and not d.name.startswith('_'))
-            self.ctx_lightrig_combo.addItems(rigs)
+            self.ctx_lightrig_combo.addItems(_subdirs(lightrigs_dir))
 
     def _update_context(self):
         ctx_type = self.ctx_combo.currentText()
@@ -1829,7 +1944,7 @@ class LaunchAppsPage(QWidget):
                 window.show_status('No YouTube Screensaver URL configured. Set it in Settings.', False)
 
 
-class ShotExplorerPage(QWidget):
+class ShotExplorerPage(_BackgroundRefreshMixin, QWidget):
     def __init__(self, project_root, apps_config, pipeline_dir, parent=None):
         super().__init__(parent)
         self.project_root = project_root
@@ -1902,7 +2017,7 @@ class ShotExplorerPage(QWidget):
         layout.addWidget(self.file_browser, 1)
         self.file_browser.setVisible(False)
 
-        self._refresh()
+        self.refresh_async()
 
     def _new_shot(self):
         dialog = ShotDialog(self, project_root=self.project_root)
@@ -1977,47 +2092,52 @@ class ShotExplorerPage(QWidget):
             self._file_panel.clear()
             self.file_browser.setVisible(False)
 
-    def _refresh(self):
+    def _scan_job(self):
+        project_root, tracking = self.project_root, self._tracking
+
+        def scan():
+            seq_dir = project_root / 'sequence'
+            if not seq_dir.exists():
+                return None
+            rows = []
+            for name in _subdirs(seq_dir):
+                shot_path = seq_dir / name
+                meta = read_shot_meta(shot_path)
+                score = ''
+                if tracking:
+                    prod = read_production(shot_path)
+                    if not prod:
+                        prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
+                        write_production(shot_path, prod)
+                    score = production_score(prod)
+                working_count = len(_subdirs(shot_path, sort=False))
+                rows.append((
+                    name, _thumb_key(shot_path), score,
+                    str(shot_path.relative_to(project_root)),
+                    meta['frame_range'], meta['frame_rate'], meta.get('date', ''),
+                    meta['focal_length'], meta['iso'], meta['nd_filter'],
+                    meta.get('light_rig', ''), meta['description'], f'{working_count} dirs',
+                ))
+            return rows
+        return scan
+
+    def _populate(self, rows):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
-        seq_dir = self.project_root / 'sequence'
-        if not seq_dir.exists():
+        if rows is None:
             return
-        shots = sorted([d.name for d in seq_dir.iterdir() if d.is_dir() and not d.name.startswith('_')])
-        self.table.setRowCount(len(shots))
-        for i, name in enumerate(shots):
-            shot_path = seq_dir / name
-            meta = read_shot_meta(shot_path)
-            score = ''
-            if self._tracking:
-                prod = read_production(shot_path)
-                if not prod:
-                    prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
-                    write_production(shot_path, prod)
-                score = production_score(prod)
-            working_count = sum(1 for d in shot_path.iterdir() if d.is_dir() and not d.name.startswith('_'))
+        self.table.setRowCount(len(rows))
+        for i, (name, thumb, score, *cells) in enumerate(rows):
             self.table.setRowHeight(i, 64)
-            thumb_item = QTableWidgetItem()
-            thumb_path = shot_path / '_thumbnail.png'
-            if thumb_path.exists():
-                thumb_item.setIcon(QIcon(str(thumb_path)))
-            self.table.setItem(i, 0, thumb_item)
+            self.table.setItem(i, 0, _thumb_item(thumb))
             self.table.setItem(i, 1, QTableWidgetItem(name))
             score_item = _SortItem(score, int(score.replace('%', '')) if score else None)
             color = _score_color(score)
             if color:
                 score_item.setForeground(color)
             self.table.setItem(i, 2, score_item)
-            self.table.setItem(i, 3, QTableWidgetItem(str(shot_path.relative_to(self.project_root))))
-            self.table.setItem(i, 4, QTableWidgetItem(meta['frame_range']))
-            self.table.setItem(i, 5, QTableWidgetItem(meta['frame_rate']))
-            self.table.setItem(i, 6, QTableWidgetItem(meta.get('date', '')))
-            self.table.setItem(i, 7, QTableWidgetItem(meta['focal_length']))
-            self.table.setItem(i, 8, QTableWidgetItem(meta['iso']))
-            self.table.setItem(i, 9, QTableWidgetItem(meta['nd_filter']))
-            self.table.setItem(i, 10, QTableWidgetItem(meta.get('light_rig', '')))
-            self.table.setItem(i, 11, QTableWidgetItem(meta['description']))
-            self.table.setItem(i, 12, QTableWidgetItem(f'{working_count} dirs'))
+            for j, text in enumerate(cells, start=3):
+                self.table.setItem(i, j, QTableWidgetItem(text))
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(0, 72)
         self.table.setColumnWidth(3, max(self.table.columnWidth(3), 200))
@@ -2092,7 +2212,7 @@ class ShotExplorerPage(QWidget):
             window.show_status(msg, ok)
 
 
-class LightRigsPage(QWidget):
+class LightRigsPage(_BackgroundRefreshMixin, QWidget):
     def __init__(self, project_root, apps_config, pipeline_dir, parent=None):
         super().__init__(parent)
         self.project_root = project_root
@@ -2162,7 +2282,7 @@ class LightRigsPage(QWidget):
         layout.addWidget(self.file_browser, 1)
         self.file_browser.setVisible(False)
 
-        self._refresh()
+        self.refresh_async()
 
     def _new_rig(self):
         dialog = LightRigDialog(self, project_root=self.project_root)
@@ -2337,33 +2457,39 @@ class LightRigsPage(QWidget):
             shutil.copy2(file_path, rig_path / '_thumbnail.png')
         self._refresh()
 
-    def _refresh(self):
+    def _scan_job(self):
+        project_root = self.project_root
+
+        def scan():
+            lightrigs_dir = project_root / 'lightrigs'
+            if not lightrigs_dir.exists():
+                return None
+            rigs = _subdirs(lightrigs_dir)
+            rows = []
+            for name in rigs:
+                rig_path = lightrigs_dir / name
+                meta = read_light_rig_meta(rig_path)
+                rows.append((
+                    name, _thumb_key(rig_path),
+                    meta.get('date', ''), meta.get('time_of_day', ''),
+                    meta.get('lighting_description', ''), meta.get('hdri_path', ''),
+                    meta.get('photogrammetry_path', ''), meta.get('usd_scene_path', ''),
+                ))
+            return rows
+        return scan
+
+    def _populate(self, rows):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
-        lightrigs_dir = self.project_root / 'lightrigs'
-        if not lightrigs_dir.exists():
+        if rows is None:
             return
-        rigs = sorted([
-            d.name for d in lightrigs_dir.iterdir()
-            if d.is_dir() and not d.name.startswith('_')
-        ])
-        self.table.setRowCount(len(rigs))
-        for i, name in enumerate(rigs):
-            rig_path = lightrigs_dir / name
-            meta = read_light_rig_meta(rig_path)
+        self.table.setRowCount(len(rows))
+        for i, (name, thumb, *cells) in enumerate(rows):
             self.table.setRowHeight(i, 64)
-            thumb_item = QTableWidgetItem()
-            thumb_path = rig_path / '_thumbnail.png'
-            if thumb_path.exists():
-                thumb_item.setIcon(QIcon(str(thumb_path)))
-            self.table.setItem(i, 0, thumb_item)
+            self.table.setItem(i, 0, _thumb_item(thumb))
             self.table.setItem(i, 1, QTableWidgetItem(name))
-            self.table.setItem(i, 2, QTableWidgetItem(meta.get('date', '')))
-            self.table.setItem(i, 3, QTableWidgetItem(meta.get('time_of_day', '')))
-            self.table.setItem(i, 4, QTableWidgetItem(meta.get('lighting_description', '')))
-            self.table.setItem(i, 5, QTableWidgetItem(meta.get('hdri_path', '')))
-            self.table.setItem(i, 6, QTableWidgetItem(meta.get('photogrammetry_path', '')))
-            self.table.setItem(i, 7, QTableWidgetItem(meta.get('usd_scene_path', '')))
+            for j, text in enumerate(cells, start=2):
+                self.table.setItem(i, j, QTableWidgetItem(text))
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(0, 72)
         self.table.setColumnWidth(4, max(self.table.columnWidth(4), 250))
@@ -2376,7 +2502,7 @@ class LightRigsPage(QWidget):
             window.show_status(msg, ok)
 
 
-class AssetExplorerPage(QWidget):
+class AssetExplorerPage(_BackgroundRefreshMixin, QWidget):
     def __init__(self, project_root, apps_config, pipeline_dir, parent=None):
         super().__init__(parent)
         self.project_root = project_root
@@ -2456,7 +2582,7 @@ class AssetExplorerPage(QWidget):
         layout.addWidget(self.file_browser, 1)
         self.file_browser.setVisible(False)
 
-        self._refresh()
+        self.refresh_async()
 
     def _new_asset(self):
         dialog = AssetDialog(self)
@@ -2524,41 +2650,46 @@ class AssetExplorerPage(QWidget):
             self._file_panel.clear()
             self.file_browser.setVisible(False)
 
-    def _refresh(self):
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(0)
-        asset_dir = self.project_root / 'asset'
-        if not asset_dir.exists():
-            return
+    def _scan_job(self):
+        project_root, tracking = self.project_root, self._tracking
         selected = self.filter_combo.currentText()
-        rows = []
-        for cat_dir in asset_dir.iterdir():
-            if not cat_dir.is_dir() or cat_dir.name.startswith('_'):
-                continue
-            if selected != 'All' and cat_dir.name != selected:
-                continue
-            for asset in sorted(cat_dir.iterdir()):
-                if asset.is_dir() and not asset.name.startswith('_'):
+
+        def scan():
+            asset_dir = project_root / 'asset'
+            if not asset_dir.exists():
+                return None
+            rows = []
+            for cat_folder in _subdirs(asset_dir, sort=False):
+                cat_dir = asset_dir / cat_folder
+                if selected != 'All' and cat_dir.name != selected:
+                    continue
+                for asset_name in _subdirs(cat_dir):
+                    asset = cat_dir / asset_name
                     meta = read_asset_meta(asset)
                     score = ''
-                    if self._tracking:
+                    if tracking:
                         prod = read_production(asset)
                         if not prod:
                             prod = {cat_name: 'Not applicable' if info == 'optional' else 'Not started'
                                     for cat_name, info in ASSET_CATEGORIES.items()}
                             write_production(asset, prod)
                         score = production_score(prod)
-                    working_count = sum(1 for d in asset.iterdir() if d.is_dir())
-                    rows.append((asset.name, meta.get('display_name', asset.name), cat_dir.name, str(asset.relative_to(self.project_root)), score, f'{working_count} dirs'))
+                    working_count = len(_subdirs(asset, sort=False, private=True))
+                    rows.append((asset.name, meta.get('display_name', asset.name), cat_dir.name,
+                                 str(asset.relative_to(project_root)), score, f'{working_count} dirs',
+                                 _thumb_key(asset)))
+            return rows
+        return scan
+
+    def _populate(self, rows):
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        if rows is None:
+            return
         self.table.setRowCount(len(rows))
-        for i, (folder_name, display_name, cat, path, score, count) in enumerate(rows):
+        for i, (folder_name, display_name, cat, path, score, count, thumb) in enumerate(rows):
             self.table.setRowHeight(i, 64)
-            thumb_item = QTableWidgetItem()
-            asset_path = self.project_root / 'asset' / cat / folder_name
-            thumb_path = asset_path / '_thumbnail.png'
-            if thumb_path.exists():
-                thumb_item.setIcon(QIcon(str(thumb_path)))
-            self.table.setItem(i, 0, thumb_item)
+            self.table.setItem(i, 0, _thumb_item(thumb))
             self.table.setItem(i, 1, QTableWidgetItem(display_name))
             score_item = _SortItem(score, int(score.replace('%', '')) if score else None)
             color = _score_color(score)
@@ -3018,11 +3149,13 @@ class PreviewPage(QWidget):
         menu.exec(self.seq_list.viewport().mapToGlobal(pos))
 
 
-class ProductionPage(QWidget):
+class ProductionPage(_BackgroundRefreshMixin, QWidget):
     def __init__(self, project_root, pipeline_dir, parent=None):
         super().__init__(parent)
         self.project_root = project_root
         self.pipeline_dir = pipeline_dir
+        self._shot_prod = {}
+        self._asset_prod = {}
         self._build()
 
     def _build(self):
@@ -3136,87 +3269,111 @@ class ProductionPage(QWidget):
 
         layout.addWidget(tabs)
 
-        self._refresh()
+        self.refresh_async()
 
-    def _refresh(self):
-        self._refresh_shots()
-        self._refresh_assets()
+    def _scan_job(self):
+        project_root = self.project_root
+
+        def scan():
+            shots = None
+            seq_dir = project_root / 'sequence'
+            if seq_dir.exists():
+                shots = []
+                for name in _subdirs(seq_dir):
+                    shot_path = seq_dir / name
+                    prod = read_production(shot_path)
+                    if not prod:
+                        prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
+                        write_production(shot_path, prod)
+                    shots.append((name, prod))
+            assets = None
+            asset_dir = project_root / 'asset'
+            if asset_dir.exists():
+                assets = []
+                for cat_folder in _subdirs(asset_dir):
+                    cat_dir = asset_dir / cat_folder
+                    for asset_name in _subdirs(cat_dir):
+                        asset = cat_dir / asset_name
+                        meta = read_asset_meta(asset)
+                        prod = read_production(asset)
+                        if not prod:
+                            prod = {cat_name: 'Not applicable' if info == 'optional' else 'Not started'
+                                    for cat_name, info in ASSET_CATEGORIES.items()}
+                            write_production(asset, prod)
+                        assets.append((asset.name, meta.get('display_name', asset.name), cat_dir.name, prod))
+            return {'shots': shots, 'assets': assets}
+        return scan
+
+    def _populate(self, data):
+        # The prod dicts are shared with self._shown, so in-place edits keep the
+        # "what the table shows" snapshot accurate for the next background scan.
+        self._shot_prod = dict(data['shots'] or [])
+        self._asset_prod = {(cat, folder): prod for folder, _display, cat, prod in data['assets'] or []}
+        self._fill_shots(data['shots'])
+        self._fill_assets(data['assets'])
         self._refresh_summary()
 
-    def _refresh_shots(self):
+    def _fill_shots(self, shots):
         self.shot_table.setSortingEnabled(False)
         self.shot_table.clear()
-        seq_dir = self.project_root / 'sequence'
-        if not seq_dir.exists():
+        if shots is None:
             return
-        shots = sorted(d.name for d in seq_dir.iterdir() if d.is_dir() and not d.name.startswith('_'))
         cols = ['Shot'] + SHOT_CATEGORIES + ['Progress']
         self.shot_table.setColumnCount(len(cols))
         self.shot_table.setHorizontalHeaderLabels(cols)
         self.shot_table.setRowCount(len(shots))
-        for i, name in enumerate(shots):
-            shot_path = seq_dir / name
-            prod = read_production(shot_path)
-            if not prod:
-                prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
-                write_production(shot_path, prod)
+        for i, (name, prod) in enumerate(shots):
             self.shot_table.setItem(i, 0, QTableWidgetItem(name))
-            for j, cat in enumerate(SHOT_CATEGORIES):
-                status = prod.get(cat, 'Not started')
-                item = _SortItem(status, PRODUCTION_VALUES.get(status, 0))
-                item.setData(Qt.UserRole, (name, cat))
-                item.setForeground(_status_color(status))
-                self.shot_table.setItem(i, j + 1, item)
-            score = production_score(prod)
-            score_item = _SortItem(score, int(score.replace('%', '')) if score else None)
-            color = _score_color(score)
-            if color:
-                score_item.setForeground(color)
-            self.shot_table.setItem(i, len(cols) - 1, score_item)
+            self._set_shot_cells(i, name, prod)
         self.shot_table.resizeColumnsToContents()
         self.shot_table.setSortingEnabled(True)
 
-    def _refresh_assets(self):
+    def _set_shot_cells(self, row, name, prod):
+        for j, cat in enumerate(SHOT_CATEGORIES):
+            status = prod.get(cat, 'Not started')
+            item = _SortItem(status, PRODUCTION_VALUES.get(status, 0))
+            item.setData(Qt.UserRole, (name, cat))
+            item.setForeground(_status_color(status))
+            self.shot_table.setItem(row, j + 1, item)
+        self.shot_table.setItem(row, len(SHOT_CATEGORIES) + 1, self._score_item(prod))
+
+    def _fill_assets(self, assets):
         self.asset_table.setSortingEnabled(False)
         self.asset_table.clear()
-        asset_dir = self.project_root / 'asset'
-        if not asset_dir.exists():
+        if assets is None:
             return
         all_cats = list(ASSET_CATEGORIES.keys())
         cols = ['Asset', 'Category'] + all_cats + ['Progress']
         self.asset_table.setColumnCount(len(cols))
         self.asset_table.setHorizontalHeaderLabels(cols)
-        rows = []
-        for cat_dir in sorted(asset_dir.iterdir()):
-            if not cat_dir.is_dir() or cat_dir.name.startswith('_'):
-                continue
-            for asset in sorted(cat_dir.iterdir()):
-                if asset.is_dir() and not asset.name.startswith('_'):
-                    meta = read_asset_meta(asset)
-                    prod = read_production(asset)
-                    if not prod:
-                        prod = {cat_name: 'Not applicable' if info == 'optional' else 'Not started'
-                                for cat_name, info in ASSET_CATEGORIES.items()}
-                        write_production(asset, prod)
-                    rows.append((meta.get('display_name', asset.name), cat_dir.name, prod))
-        self.asset_table.setRowCount(len(rows))
-        for i, (name, cat, prod) in enumerate(rows):
-            self.asset_table.setItem(i, 0, QTableWidgetItem(name))
+        self.asset_table.setRowCount(len(assets))
+        for i, (folder, name, cat, prod) in enumerate(assets):
+            name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.UserRole, folder)
+            self.asset_table.setItem(i, 0, name_item)
             self.asset_table.setItem(i, 1, QTableWidgetItem(cat))
-            for j, cat_name in enumerate(all_cats):
-                status = prod.get(cat_name, 'Not started')
-                item = _SortItem(status, PRODUCTION_VALUES.get(status, 0))
-                item.setData(Qt.UserRole, (name, cat, cat_name))
-                item.setForeground(_status_color(status))
-                self.asset_table.setItem(i, j + 2, item)
-            score = production_score(prod)
-            score_item = _SortItem(score, int(score.replace('%', '')) if score else None)
-            color = _score_color(score)
-            if color:
-                score_item.setForeground(color)
-            self.asset_table.setItem(i, len(cols) - 1, score_item)
+            self._set_asset_cells(i, name, cat, prod)
         self.asset_table.resizeColumnsToContents()
         self.asset_table.setSortingEnabled(True)
+
+    def _set_asset_cells(self, row, name, cat, prod):
+        all_cats = list(ASSET_CATEGORIES.keys())
+        for j, cat_name in enumerate(all_cats):
+            status = prod.get(cat_name, 'Not started')
+            item = _SortItem(status, PRODUCTION_VALUES.get(status, 0))
+            item.setData(Qt.UserRole, (name, cat, cat_name))
+            item.setForeground(_status_color(status))
+            self.asset_table.setItem(row, j + 2, item)
+        self.asset_table.setItem(row, len(all_cats) + 2, self._score_item(prod))
+
+    @staticmethod
+    def _score_item(prod):
+        score = production_score(prod)
+        score_item = _SortItem(score, int(score.replace('%', '')) if score else None)
+        color = _score_color(score)
+        if color:
+            score_item.setForeground(color)
+        return score_item
 
     def _toggle_cat_bars(self, checked):
         layout = self.cat_group.layout()
@@ -3230,43 +3387,37 @@ class ProductionPage(QWidget):
                     if child and child.widget():
                         child.widget().setVisible(checked)
 
+    def _set_label_color(self, label, color):
+        # setStyleSheet re-polishes the widget; skip it when the colour is unchanged.
+        if label.property('mazehubColor') != color.name():
+            label.setStyleSheet(f'color: {color.name()};')
+            label.setProperty('mazehubColor', color.name())
+
     def _refresh_summary(self):
+        """Recompute the progress bars from the in-memory model (no disk access)."""
         all_scores = []
         cat_values = {cat: [] for cat in SHOT_CATEGORIES}
         asset_cat_values = {cat: [] for cat in ASSET_CATEGORIES}
 
-        seq_dir = self.project_root / 'sequence'
-        if seq_dir.exists():
-            for d in sorted(seq_dir.iterdir()):
-                if d.is_dir() and not d.name.startswith('_'):
-                    prod = read_production(d)
-                    if not prod:
-                        prod = {cat: 'Not started' for cat in SHOT_CATEGORIES}
-                    vals = [PRODUCTION_VALUES.get(v, 0) for v in prod.values() if v != 'Not applicable']
-                    if vals:
-                        all_scores.append(sum(vals) / len(vals))
-                    for cat in SHOT_CATEGORIES:
-                        status = prod.get(cat, 'Not started')
-                        if status != 'Not applicable':
-                            cat_values[cat].append(PRODUCTION_VALUES.get(status, 0))
+        for prod in self._shot_prod.values():
+            vals = [PRODUCTION_VALUES.get(v, 0) for v in prod.values() if v != 'Not applicable']
+            if vals:
+                all_scores.append(sum(vals) / len(vals))
+            for cat in SHOT_CATEGORIES:
+                status = prod.get(cat, 'Not started')
+                if status != 'Not applicable':
+                    cat_values[cat].append(PRODUCTION_VALUES.get(status, 0))
 
-        asset_dir = self.project_root / 'asset'
-        if asset_dir.exists():
-            for cat_dir in sorted(asset_dir.iterdir()):
-                if not cat_dir.is_dir() or cat_dir.name.startswith('_'):
-                    continue
-                for asset in sorted(cat_dir.iterdir()):
-                    if asset.is_dir() and not asset.name.startswith('_'):
-                        prod = read_production(asset)
-                        if not prod:
-                            continue
-                        vals = [PRODUCTION_VALUES.get(v, 0) for v in prod.values() if v != 'Not applicable']
-                        if vals:
-                            all_scores.append(sum(vals) / len(vals))
-                        for cat_name in ASSET_CATEGORIES:
-                            status = prod.get(cat_name, 'Not started')
-                            if status != 'Not applicable':
-                                asset_cat_values[cat_name].append(PRODUCTION_VALUES.get(status, 0))
+        for prod in self._asset_prod.values():
+            if not prod:
+                continue
+            vals = [PRODUCTION_VALUES.get(v, 0) for v in prod.values() if v != 'Not applicable']
+            if vals:
+                all_scores.append(sum(vals) / len(vals))
+            for cat_name in ASSET_CATEGORIES:
+                status = prod.get(cat_name, 'Not started')
+                if status != 'Not applicable':
+                    asset_cat_values[cat_name].append(PRODUCTION_VALUES.get(status, 0))
 
         if all_scores:
             avg = round(sum(all_scores) / len(all_scores))
@@ -3274,38 +3425,56 @@ class ProductionPage(QWidget):
             self.overall_label.setText(f'{avg}%')
             color = _score_color(f'{avg}%')
             if color:
-                self.overall_label.setStyleSheet(f'color: {color.name()};')
+                self._set_label_color(self.overall_label, color)
         else:
             self.overall_progress.setValue(0)
             self.overall_label.setText('')
 
-        for cat in SHOT_CATEGORIES:
-            bar, pct_label = self.cat_bars[cat]
-            vals = cat_values[cat]
-            if vals:
-                avg = round(sum(vals) / len(vals))
-                bar.setValue(avg)
-                pct_label.setText(f'{avg}%')
-                color = _score_color(f'{avg}%')
-                if color:
-                    pct_label.setStyleSheet(f'color: {color.name()};')
-            else:
-                bar.setValue(0)
-                pct_label.setText('')
+        for values in (cat_values, asset_cat_values):
+            for cat, vals in values.items():
+                bar, pct_label = self.cat_bars[cat]
+                if vals:
+                    avg = round(sum(vals) / len(vals))
+                    bar.setValue(avg)
+                    pct_label.setText(f'{avg}%')
+                    color = _score_color(f'{avg}%')
+                    if color:
+                        self._set_label_color(pct_label, color)
+                else:
+                    bar.setValue(0)
+                    pct_label.setText('')
 
-        for cat_name in ASSET_CATEGORIES:
-            bar, pct_label = self.cat_bars[cat_name]
-            vals = asset_cat_values[cat_name]
-            if vals:
-                avg = round(sum(vals) / len(vals))
-                bar.setValue(avg)
-                pct_label.setText(f'{avg}%')
-                color = _score_color(f'{avg}%')
-                if color:
-                    pct_label.setStyleSheet(f'color: {color.name()};')
-            else:
-                bar.setValue(0)
-                pct_label.setText('')
+    @staticmethod
+    def _find_row(table, match):
+        for row in range(table.rowCount()):
+            if match(row):
+                return row
+        return -1
+
+    def _status_menu(self, table, pos, item_path, current):
+        menu = QMenu(self)
+        _add_explorer_action(menu, item_path)
+        menu.addSeparator()
+        for s in PRODUCTION_STATUSES + ['Not applicable']:
+            action = menu.addAction(s)
+            action.setData(s)
+            if s == current:
+                font = action.font()
+                font.setBold(True)
+                action.setFont(font)
+        action = menu.exec(table.viewport().mapToGlobal(pos))
+        return action.data() if action and action.data() else None
+
+    def _write_status(self, item_path, task, new_status, model_prod):
+        """Re-read just this item's file (others may have edited it), set the
+        task and write it back. Updates the model dict in place."""
+        prod = read_production(item_path)
+        previous = prod.get(task, 'Not started')
+        prod[task] = new_status
+        write_production(item_path, prod)
+        model_prod.clear()
+        model_prod.update(prod)
+        return previous
 
     def _shot_context_menu(self, pos):
         item = self.shot_table.itemAt(pos)
@@ -3323,45 +3492,41 @@ class ProductionPage(QWidget):
         if col - 1 >= len(SHOT_CATEGORIES):
             return
         cat = SHOT_CATEGORIES[col - 1]
-        prod = read_production(shot_path)
-        current = prod.get(cat, 'Not started')
+        model_prod = self._shot_prod.setdefault(shot_name, {})
+        current = model_prod.get(cat, 'Not started')
 
-        menu = QMenu(self)
-        _add_explorer_action(menu, shot_path)
-        menu.addSeparator()
-        for s in PRODUCTION_STATUSES + ['Not applicable']:
-            action = menu.addAction(s)
-            action.setData(s)
-            if s == current:
-                font = action.font()
-                font.setBold(True)
-                action.setFont(font)
-
-        action = menu.exec(self.shot_table.viewport().mapToGlobal(pos))
-        if action and action.data():
-            new_status = action.data()
-            if new_status != current:
-                prod[cat] = new_status
-                write_production(shot_path, prod)
-                self._refresh_shots()
-                self._refresh_summary()
-                self._send_production_webhook('shot', shot_name, '', cat, current, new_status)
+        new_status = self._status_menu(self.shot_table, pos, shot_path, current)
+        if new_status and new_status != current:
+            previous = self._write_status(shot_path, cat, new_status, model_prod)
+            # The menu runs an event loop, so a background refresh may have rebuilt the table.
+            row = self._find_row(self.shot_table, lambda r: self.shot_table.item(r, 0).text() == shot_name)
+            if row >= 0:
+                self.shot_table.setSortingEnabled(False)
+                self._set_shot_cells(row, shot_name, self._shot_prod[shot_name])
+                # Only these two cells changed; a full resizeColumnsToContents is O(table).
+                self.shot_table.resizeColumnToContents(col)
+                self.shot_table.resizeColumnToContents(len(SHOT_CATEGORIES) + 1)
+                self.shot_table.setSortingEnabled(True)
+            self._refresh_summary()
+            self._send_production_webhook('shot', shot_name, '', cat, previous, new_status)
 
     def _send_production_webhook(self, item_type, item_name, category, task, from_status, to_status):
         if to_status == 'Not applicable':
             return
-        try:
-            from settings import get_setting
-            url = get_setting('production_webhook_url', '')
-            if not url:
+
+        def send():
+            # Settings live on the project drive; read them off the UI thread.
+            try:
+                from settings import get_setting
+                url = get_setting('production_webhook_url', '')
+                from pipeline_app import send_production_notification
+            except Exception:
                 return
-            from pipeline_app import send_production_notification
-            import threading
-            threading.Thread(
-                target=send_production_notification,
-                args=(url, item_type, item_name, category, task, from_status, to_status),
-                daemon=True,
-            ).start()
+            if url:
+                send_production_notification(url, item_type, item_name, category, task, from_status, to_status)
+
+        try:
+            threading.Thread(target=send, daemon=True).start()
         except Exception:
             pass
 
@@ -3371,8 +3536,9 @@ class ProductionPage(QWidget):
             return
         row = item.row()
         asset_name = self.asset_table.item(row, 0).text()
+        folder = self.asset_table.item(row, 0).data(Qt.UserRole) or asset_name
         cat = self.asset_table.item(row, 1).text()
-        asset_path = self.project_root / 'asset' / cat / asset_name
+        asset_path = self.project_root / 'asset' / cat / folder
         col = item.column()
         if col < 2:
             menu = QMenu(self)
@@ -3383,30 +3549,23 @@ class ProductionPage(QWidget):
         if col - 2 >= len(all_cats):
             return
         cat_name = all_cats[col - 2]
-        prod = read_production(asset_path)
-        current = prod.get(cat_name, 'Not started')
+        model_prod = self._asset_prod.setdefault((cat, folder), {})
+        current = model_prod.get(cat_name, 'Not started')
 
-        menu = QMenu(self)
-        _add_explorer_action(menu, asset_path)
-        menu.addSeparator()
-        for s in PRODUCTION_STATUSES + ['Not applicable']:
-            action = menu.addAction(s)
-            action.setData(s)
-            if s == current:
-                font = action.font()
-                font.setBold(True)
-                action.setFont(font)
-
-        action = menu.exec(self.asset_table.viewport().mapToGlobal(pos))
-        if action and action.data():
-            new_status = action.data()
-            if new_status != current:
-                prod[cat_name] = new_status
-                write_production(asset_path, prod)
-                self._refresh_assets()
-                self._refresh_summary()
-                self._send_production_webhook('asset', asset_name, cat, cat_name, current, new_status)
-
+        new_status = self._status_menu(self.asset_table, pos, asset_path, current)
+        if new_status and new_status != current:
+            previous = self._write_status(asset_path, cat_name, new_status, model_prod)
+            row = self._find_row(self.asset_table, lambda r: (
+                self.asset_table.item(r, 0).data(Qt.UserRole) == folder
+                and self.asset_table.item(r, 1).text() == cat))
+            if row >= 0:
+                self.asset_table.setSortingEnabled(False)
+                self._set_asset_cells(row, asset_name, cat, model_prod)
+                self.asset_table.resizeColumnToContents(col)
+                self.asset_table.resizeColumnToContents(len(all_cats) + 2)
+                self.asset_table.setSortingEnabled(True)
+            self._refresh_summary()
+            self._send_production_webhook('asset', asset_name, cat, cat_name, previous, new_status)
 
 class EnvVarsPage(QWidget):
     def __init__(self, env_vars, parent=None):
@@ -4400,11 +4559,7 @@ class RenderPage(QWidget):
         self.shot_combo.clear()
         seq_dir = self.project_root / 'sequence'
         if seq_dir.exists():
-            shots = sorted(
-                d.name for d in seq_dir.iterdir()
-                if d.is_dir() and not d.name.startswith('_')
-            )
-            self.shot_combo.addItems(shots)
+            self.shot_combo.addItems(_subdirs(seq_dir))
         self.shot_combo.setCurrentIndex(-1)
         self.shot_combo.blockSignals(False)
         self._on_shot_changed('')
@@ -7396,6 +7551,8 @@ class MainWindow(QMainWindow):
             if page is None:
                 continue
             for value in vars(page).values():
+                if isinstance(value, _PageScanWorker):
+                    continue
                 if isinstance(value, QThread) and value.isRunning():
                     running.append(value)
         return running
@@ -7443,7 +7600,9 @@ class MainWindow(QMainWindow):
         for i, btn in enumerate(self.sidebar_buttons):
             btn.setChecked(i == idx)
         page = self.pages.currentWidget()
-        if hasattr(page, '_refresh'):
+        if hasattr(page, 'refresh_async'):
+            page.refresh_async()
+        elif hasattr(page, '_refresh'):
             page._refresh()
 
     def show_status(self, message, ok=True):
