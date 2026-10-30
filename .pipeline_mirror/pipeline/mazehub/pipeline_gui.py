@@ -7903,29 +7903,133 @@ def _first_run_add_project():
         box.exec()
         clicked = box.clickedButton()
         if clicked == create_btn:
-            target, error = prompt_create_project(None, Path.home())
-            if error:
-                QMessageBox.warning(None, 'MazeHub', error)
-            if not target:
-                continue
-            from settings import set_active_project
-            set_active_project(str(target.resolve()))
-            return target.resolve()
-        if clicked != add_btn:
+            target = _startup_create_project()
+        elif clicked == add_btn:
+            target = _startup_add_existing_project()
+        else:
             return None
-        from PySide6.QtWidgets import QFileDialog
-        path = QFileDialog.getExistingDirectory(
-            None, 'Select MazeHub project folder', str(Path.home()))
-        if not path:
-            continue
-        candidate = Path(path).expanduser()
-        if not candidate.is_dir():
-            QMessageBox.warning(None, 'MazeHub', f'Not a directory: {candidate}')
-            continue
-        from settings import add_project, set_active_project
-        add_project(candidate)
-        set_active_project(str(candidate.resolve()))
-        return candidate.resolve()
+        if target:
+            return target
+
+
+def _startup_create_project():
+    target, error = prompt_create_project(None, Path.home())
+    if error:
+        QMessageBox.warning(None, 'MazeHub', error)
+    if not target:
+        return None
+    from settings import set_active_project
+    set_active_project(str(target.resolve()))
+    return target.resolve()
+
+
+def _startup_add_existing_project():
+    from PySide6.QtWidgets import QFileDialog
+    path = QFileDialog.getExistingDirectory(
+        None, 'Select MazeHub project folder', str(Path.home()))
+    if not path:
+        return None
+    candidate = Path(path).expanduser()
+    if not candidate.is_dir():
+        QMessageBox.warning(None, 'MazeHub', f'Not a directory: {candidate}')
+        return None
+    from settings import add_project, set_active_project
+    add_project(candidate)
+    set_active_project(str(candidate.resolve()))
+    return candidate.resolve()
+
+
+def _unreachable_projects_dialog(projects):
+    """Projects are registered but none could be reached (drive not connected,
+    or paths from another computer). Returns a project Path, 'retry' or None."""
+    from PySide6.QtWidgets import QListWidget, QListWidgetItem
+    dlg = QDialog()
+    dlg.setWindowTitle('MazeHub')
+    dlg.setMinimumWidth(560)
+    layout = QVBoxLayout(dlg)
+    label = QLabel(
+        "MazeHub couldn't reach any of your projects. If they are on a network "
+        'or OneDrive folder, check it is connected and press Retry.')
+    label.setWordWrap(True)
+    layout.addWidget(label)
+    project_list = QListWidget()
+    for p in projects:
+        item = QListWidgetItem(f"{p['name']}  —  {p['root']}")
+        item.setData(Qt.UserRole, p['root'])
+        project_list.addItem(item)
+    project_list.setCurrentRow(0)
+    layout.addWidget(project_list)
+    buttons = QHBoxLayout()
+    choice = {}
+
+    def pick(value):
+        choice['value'] = value
+        dlg.accept()
+
+    for text, value in (('Retry', 'retry'), ('Open Selected', 'open'),
+                        ('Add Existing Folder…', 'add'), ('Create New Project…', 'create')):
+        btn = QPushButton(text)
+        btn.clicked.connect(lambda _checked=False, v=value: pick(v))
+        buttons.addWidget(btn)
+    buttons.addStretch()
+    quit_btn = QPushButton('Quit')
+    quit_btn.clicked.connect(dlg.reject)
+    buttons.addWidget(quit_btn)
+    layout.addLayout(buttons)
+    project_list.itemDoubleClicked.connect(lambda _item: pick('open'))
+
+    if dlg.exec() != QDialog.Accepted:
+        return None
+    value = choice.get('value')
+    if value == 'open':
+        item = project_list.currentItem()
+        root = Path(item.data(Qt.UserRole)) if item else None
+        if root is None or not root.is_dir():
+            QMessageBox.warning(None, 'MazeHub', f"Still can't reach:\n{root}")
+            return 'retry'
+        from settings import set_active_project
+        set_active_project(str(root))
+        return root
+    if value == 'add':
+        return _startup_add_existing_project() or 'retry'
+    if value == 'create':
+        return _startup_create_project() or 'retry'
+    return 'retry'
+
+
+def _choose_startup_project():
+    """Shown when no project could be opened automatically."""
+    from settings import list_projects, resolve_project_root, RegistryUnreadable, PROJECTS_PATH
+    while True:
+        try:
+            projects = list_projects(strict=True)
+        except RegistryUnreadable as e:
+            # Offering "add a project" here would overwrite the whole list.
+            box = QMessageBox()
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle('MazeHub')
+            box.setText(
+                f"MazeHub couldn't read its project list:\n{PROJECTS_PATH}\n\n"
+                'It may be locked by OneDrive or another computer, or still syncing. '
+                'Your projects have not been removed.')
+            box.setDetailedText(str(e))
+            retry_btn = box.addButton('Retry', QMessageBox.AcceptRole)
+            box.addButton('Quit', QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() != retry_btn:
+                return None
+        else:
+            if not projects:
+                return _first_run_add_project()
+            result = _unreachable_projects_dialog(projects)
+            if result != 'retry':
+                return result
+        try:
+            root = resolve_project_root()
+        except RegistryUnreadable:
+            root = None
+        if root:
+            return root
 
 
 def main():
@@ -7942,9 +8046,14 @@ def main():
     sys.stdout = log_stream
     sys.stderr = log_stream
 
-    project_root = find_project_root()
+    from settings import RegistryUnreadable
+    try:
+        project_root = find_project_root()
+    except RegistryUnreadable as e:
+        print(f'[startup] {e}')
+        project_root = None
     if project_root is None:
-        project_root = _first_run_add_project()
+        project_root = _choose_startup_project()
         if project_root is None:
             return
 

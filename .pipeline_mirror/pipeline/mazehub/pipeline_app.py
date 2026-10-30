@@ -8,7 +8,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.13.0"
+APP_VERSION = "0.13.1"
 
 
 def _get_display_name():
@@ -2046,7 +2046,13 @@ def show_env_vars(env_vars):
 
 
 def main():
-    project_root = find_project_root()
+    from settings import RegistryUnreadable
+    try:
+        project_root = find_project_root()
+    except RegistryUnreadable as e:
+        # Adding a project now would overwrite the unreadable list.
+        print(f"\n  Can't read the project list ({e}). Try again once it has synced.")
+        return
     if project_root is None:
         from settings import list_projects, add_project, set_active_project
         print('\n  No active project.')
