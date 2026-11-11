@@ -3795,7 +3795,8 @@ class HelpPage(QWidget):
 
         self._add_section(layout, '8 — Rendering', """
         <p>Render your USD scenes without opening Houdini.</p>
-        <p><b>How to:</b> pick a Shot, pick the USD file, choose a version (it suggests the next one), select the Houdini version (22.0 or 21.0), choose Karma XPU or CPU, tick the passes you need, set the frame range and press <b>Render Selected Passes</b>.</p>
+        <p><b>How to:</b> pick a Shot or Asset on the <b>Shots</b> / <b>Assets</b> tabs, pick the USD file, choose a version (it suggests the next one), select the Houdini version (22.0 or 21.0), choose Karma XPU or CPU, tick the passes you need, set the frame range and press <b>Render Selected Passes</b>.</p>
+        <p>Before husk renders, MazeHub downloads the files the USD references. If something fails to download or can't be found, choose <b>Render Anyway</b> or <b>Cancel Render</b>. <b>Skip Sync</b> stops a slow sync and renders with what's already on disk.</p>
         <p>You'll see progress for each frame and pass, with time estimates. You can pause or cancel at any time.</p>
         """)
 
@@ -4176,8 +4177,8 @@ class RenderProgressDialog(QDialog):
         self._clock_timer.start()
         self._tick_clock()
 
-    def set_shot(self, name):
-        self.shot_label.setText(f'Shot: {name}')
+    def set_shot(self, name, label='Shot'):
+        self.shot_label.setText(f'{label}: {name}')
 
     def set_pass(self, name):
         self._current_pass = name.split('/')[-1]
@@ -4351,13 +4352,38 @@ class RenderPage(QWidget):
         layout.addLayout(header)
         layout.addSpacing(8)
 
-        shot_row = QHBoxLayout()
+        # Only the picker lives in the sub-tabs; everything below is shared and
+        # always follows the active tab's selection.
+        self.ctx_tabs = QTabWidget()
+        shots_tab = QWidget()
+        shot_row = QHBoxLayout(shots_tab)
         shot_row.addWidget(QLabel('Shot:'))
         self.shot_combo = QComboBox()
         self.shot_combo.setMinimumWidth(260)
-        self.shot_combo.currentTextChanged.connect(self._on_shot_changed)
+        self.shot_combo.currentTextChanged.connect(self._on_context_changed)
         shot_row.addWidget(self.shot_combo, 1)
-        layout.addLayout(shot_row)
+        self.ctx_tabs.addTab(shots_tab, 'Shots')
+
+        from make_folders import NEW_ASSET_CATEGORY_LIST
+        assets_tab = QWidget()
+        asset_row = QHBoxLayout(assets_tab)
+        asset_row.addWidget(QLabel('Category:'))
+        self.asset_cat_combo = QComboBox()
+        self.asset_cat_combo.addItems(NEW_ASSET_CATEGORY_LIST)
+        self.asset_cat_combo.currentTextChanged.connect(self._on_asset_category_changed)
+        asset_row.addWidget(self.asset_cat_combo)
+        asset_row.addWidget(QLabel('Asset:'))
+        self.asset_combo = QComboBox()
+        self.asset_combo.setMinimumWidth(260)
+        self.asset_combo.currentTextChanged.connect(self._on_context_changed)
+        asset_row.addWidget(self.asset_combo, 1)
+        self.ctx_tabs.addTab(assets_tab, 'Assets')
+
+        from settings import get_setting
+        if get_setting('render_context_type', 'shot') == 'asset':
+            self.ctx_tabs.setCurrentIndex(1)
+        self.ctx_tabs.currentChanged.connect(self._on_context_tab_changed)
+        layout.addWidget(self.ctx_tabs)
 
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel('Render Mode:'))
@@ -4548,27 +4574,65 @@ class RenderPage(QWidget):
         layout.addStretch()
 
         scroll.setWidget(container)
-        self._refresh_shots()
+        self._refresh_contexts()
 
     def _refresh_all(self):
-        self._refresh_shots()
-        self._refresh_usd_files()
+        self._refresh_contexts()
 
-    def _refresh_shots(self):
+    def _refresh_contexts(self):
+        current = self.shot_combo.currentText()
         self.shot_combo.blockSignals(True)
         self.shot_combo.clear()
         seq_dir = self.project_root / 'sequence'
         if seq_dir.exists():
             self.shot_combo.addItems(_subdirs(seq_dir))
-        self.shot_combo.setCurrentIndex(-1)
+        self.shot_combo.setCurrentIndex(self.shot_combo.findText(current) if current else -1)
         self.shot_combo.blockSignals(False)
-        self._on_shot_changed('')
+        self._fill_assets(self.asset_combo.currentText())
+        self._on_context_changed()
 
-    def _on_shot_changed(self, shot_name):
+    def _fill_assets(self, keep=''):
+        self.asset_combo.blockSignals(True)
+        self.asset_combo.clear()
+        asset_dir = self.project_root / 'asset' / self.asset_cat_combo.currentText()
+        if asset_dir.exists():
+            self.asset_combo.addItems(_subdirs(asset_dir))
+        self.asset_combo.setCurrentIndex(self.asset_combo.findText(keep) if keep else -1)
+        self.asset_combo.blockSignals(False)
+
+    def _on_asset_category_changed(self, _category):
+        self._fill_assets()
+        self._on_context_changed()
+
+    def _on_context_tab_changed(self, _index):
+        from settings import set_setting
+        set_setting('render_context_type', self._context_type())
+        self._on_context_changed()
+
+    def _context_type(self):
+        return 'asset' if self.ctx_tabs.currentIndex() == 1 else 'shot'
+
+    def _context_article(self):
+        return 'an asset' if self._context_type() == 'asset' else 'a shot'
+
+    def _context(self):
+        """(type, name, path) of the active sub-tab's selection, or None."""
+        if self._context_type() == 'asset':
+            name = self.asset_combo.currentText()
+            if not name:
+                return None
+            return 'asset', name, self.project_root / 'asset' / self.asset_cat_combo.currentText() / name
+        name = self.shot_combo.currentText()
+        if not name:
+            return None
+        return 'shot', name, self.project_root / 'sequence' / name
+
+    def _on_context_changed(self, _text=''):
+        ctx = self._context()
+        shot_path = ctx[2] if ctx else None
         self.usd_combo.blockSignals(True)
         self.usd_combo.clear()
-        if shot_name:
-            shot_path = self.project_root / 'sequence' / shot_name
+        if ctx:
             meta = read_shot_meta(shot_path)
             fr = meta.get('frame_range', '')
             if fr and '-' in fr:
@@ -4584,7 +4648,7 @@ class RenderPage(QWidget):
         self.usd_combo.blockSignals(False)
         self.hip_combo.blockSignals(True)
         self.hip_combo.clear()
-        if shot_name:
+        if ctx:
             self.hip_combo.addItems([f.name for f in discover_hip_files(shot_path)])
         self.hip_combo.setCurrentIndex(-1)
         self.hip_combo.blockSignals(False)
@@ -4593,16 +4657,17 @@ class RenderPage(QWidget):
 
     def _refresh_versions(self):
         self.version_combo.clear()
-        shot_name = self.shot_combo.currentText()
-        if not shot_name:
+        ctx = self._context()
+        if not ctx:
             return
-        render_base = self.project_root / 'sequence' / shot_name / 'houdini' / 'render'
+        _ctx_type, shot_name, shot_path = ctx
+        render_base = shot_path / 'houdini' / 'render'
         versions = []
         if render_base.exists():
             for d in render_base.iterdir():
                 if d.is_dir() and d.name.startswith(f'{shot_name}_v'):
                     try:
-                        v = int(d.name.split('_v')[1])
+                        v = int(d.name[len(shot_name) + 2:])
                         versions.append(v)
                     except (ValueError, IndexError):
                         pass
@@ -4612,9 +4677,6 @@ class RenderPage(QWidget):
             self.version_combo.addItem(f'v{v:03d}', v)
         self.version_combo.addItem(f'v{next_version:03d} (new)', next_version)
         self.version_combo.setCurrentIndex(-1)
-
-    def _refresh_usd_files(self):
-        self._on_shot_changed(self.shot_combo.currentText())
 
     def _on_usd_changed(self, usd_name):
         self._refresh_passes()
@@ -4643,10 +4705,10 @@ class RenderPage(QWidget):
 
     def _refresh_rops(self):
         hip_name = self.hip_combo.currentText()
-        shot_name = self.shot_combo.currentText()
-        if not shot_name or not hip_name:
+        ctx = self._context()
+        if not ctx or not hip_name:
             return
-        hip_file = self.project_root / 'sequence' / shot_name / 'houdini' / 'hip' / hip_name
+        hip_file = ctx[2] / 'houdini' / 'hip' / hip_name
         hython = find_hython(self._resolve_husk())
         if not hython:
             self._log('[info] hython not found next to husk — configure husk in Settings')
@@ -4727,11 +4789,10 @@ class RenderPage(QWidget):
             self._refresh_rops()
             return
         usd_name = self.usd_combo.currentText()
-        shot_name = self.shot_combo.currentText()
-        if not shot_name or not usd_name:
+        ctx = self._context()
+        if not ctx or not usd_name:
             return
-        shot_path = self.project_root / 'sequence' / shot_name
-        usd_file = shot_path / 'houdini' / 'USD' / usd_name
+        usd_file = ctx[2] / 'houdini' / 'USD' / usd_name
 
         houdini_version = self.houdini_version_combo.currentText()
         husk_path = self._resolve_husk_from_houdini(houdini_version)
@@ -4853,12 +4914,13 @@ class RenderPage(QWidget):
         if self._render_mode() == 'hrender':
             self._do_hrender()
             return
-        shot_name = self.shot_combo.currentText()
+        ctx = self._context()
         usd_name = self.usd_combo.currentText()
-        if not shot_name or not usd_name:
-            self._log('[error] Select a shot and USD file first')
-            self._status('Select a shot and USD file first', False)
+        if not ctx or not usd_name:
+            self._log(f'[error] Select {self._context_article()} and USD file first')
+            self._status(f'Select {self._context_article()} and USD file first', False)
             return
+        ctx_type, shot_name, shot_path = ctx
 
         passes = self._get_selected_passes()
         if not passes:
@@ -4876,7 +4938,6 @@ class RenderPage(QWidget):
             self._status('husk binary not found — configure in Settings', False)
             return
 
-        shot_path = self.project_root / 'sequence' / shot_name
         usd_file = shot_path / 'houdini' / 'USD' / usd_name
         if not usd_file.exists():
             self._log(f'[error] USD file not found: {usd_file}')
@@ -4908,8 +4969,6 @@ class RenderPage(QWidget):
         version_dir_name = f'{shot_name}_v{version:03d}'
         frames = list(range(start, end + 1, max(interval, 1)))
         render_order = self.render_order_combo.currentData()
-        for p in passes:
-            (render_base / version_dir_name / p.split('/')[-1]).mkdir(parents=True, exist_ok=True)
         if render_order == 'frame_major':
             jobs = [(p, frame) for frame in frames for p in passes]
         else:
@@ -4951,15 +5010,26 @@ class RenderPage(QWidget):
         sync_seconds = sync_dlg.elapsed()
         self._sync_resolved = list(sync_dlg.report.get('resolved', []))
         sync_time_str = sync_dlg._format_duration(sync_seconds)
+        if sync_dlg.cancel_render:
+            if sync_dlg.report:
+                self._log_sync_report(sync_dlg.report, sync_time_str, len(frames) > 1)
+            self._log(f'[info] Render cancelled after USD sync (sync time {sync_time_str})')
+            self._status('Render cancelled', False)
+            self._close_render_log()
+            return
+        for p in passes:
+            (render_base / version_dir_name / p.split('/')[-1]).mkdir(parents=True, exist_ok=True)
         if not sync_accepted:
             self._log(
-                f'[warning] USD sync cancelled — rendering may fail (sync time {sync_time_str})')
+                f'[warning] USD sync skipped — rendering may fail (sync time {sync_time_str})')
         else:
             self._log_sync_report(sync_dlg.report, sync_time_str, len(frames) > 1)
 
         self._render_meta = {
             'render_mode': 'husk',
             'shot': shot_name,
+            'context_type': ctx_type,
+            'context_path': str(shot_path),
             'usd_file': usd_name,
             'passes': passes,
             'start_frame': start,
@@ -4972,7 +5042,7 @@ class RenderPage(QWidget):
             'end_time': '',
             'sync_seconds': round(sync_seconds, 1),
         }
-        self._launch_render(commands, shot_name, shot_path, passes, sync_seconds)
+        self._launch_render(commands, ctx_type, shot_name, shot_path, passes, sync_seconds)
 
     # Stall watchdog: warn (never kill) when the renderer prints nothing for this long.
     STALL_SECONDS = 300
@@ -5016,12 +5086,13 @@ class RenderPage(QWidget):
                 self._log(f'    ... and {len(pending) - 10} more')
 
     def _do_hrender(self):
-        shot_name = self.shot_combo.currentText()
+        ctx = self._context()
         hip_name = self.hip_combo.currentText()
-        if not shot_name or not hip_name:
-            self._log('[error] Select a shot and HIP file first')
-            self._status('Select a shot and HIP file first', False)
+        if not ctx or not hip_name:
+            self._log(f'[error] Select {self._context_article()} and HIP file first')
+            self._status(f'Select {self._context_article()} and HIP file first', False)
             return
+        ctx_type, shot_name, shot_path = ctx
         jobs = self._get_selected_rop_jobs()
         if not jobs:
             self._log('[error] Select at least one ROP / pass')
@@ -5032,7 +5103,6 @@ class RenderPage(QWidget):
             self._log('[error] hython not found — configure husk in Settings')
             self._status('hython not found — configure husk in Settings', False)
             return
-        shot_path = self.project_root / 'sequence' / shot_name
         hip_file = shot_path / 'houdini' / 'hip' / hip_name
         if not hip_file.exists():
             self._log(f'[error] HIP file not found: {hip_file}')
@@ -5077,6 +5147,8 @@ class RenderPage(QWidget):
         self._render_meta = {
             'render_mode': 'hrender',
             'shot': shot_name,
+            'context_type': ctx_type,
+            'context_path': str(shot_path),
             'usd_file': hip_name,
             'passes': names,
             'start_frame': start,
@@ -5091,15 +5163,15 @@ class RenderPage(QWidget):
             'sync_seconds': 0,
         }
         self._sync_resolved = []
-        self._launch_render(commands, shot_name, shot_path, names, 0, job_meta=job_meta)
+        self._launch_render(commands, ctx_type, shot_name, shot_path, names, 0, job_meta=job_meta)
 
-    def _launch_render(self, commands, shot_name, shot_path, passes, sync_seconds, job_meta=None):
+    def _launch_render(self, commands, ctx_type, shot_name, shot_path, passes, sync_seconds, job_meta=None):
         self.render_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
 
         render_env = {
             'MAZE_CONTEXT_NAME': shot_name,
-            'MAZE_CONTEXT_TYPE': 'shot',
+            'MAZE_CONTEXT_TYPE': ctx_type,
             'JOB': str(shot_path),
         }
 
@@ -5116,7 +5188,7 @@ class RenderPage(QWidget):
             self._stall_timer.timeout.connect(self._check_stall)
         self._stall_timer.start(self.STALL_CHECK_MS)
         self._render_dialog.set_total(0, len(commands))
-        self._render_dialog.set_shot(shot_name)
+        self._render_dialog.set_shot(shot_name, 'Asset' if ctx_type == 'asset' else 'Shot')
         self._render_dialog.init_passes(passes)
         self._render_dialog.set_sync_time(sync_seconds)
 
@@ -5267,7 +5339,7 @@ class RenderPage(QWidget):
             meta['end_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
             first_frame_path = ''
             if meta['passes']:
-                shot_path = self.project_root / 'sequence' / meta['shot']
+                shot_path = Path(meta['context_path'])
                 pass_name = meta['passes'][0].split('/')[-1]
                 version_dir = f'{meta["shot"]}_v{meta["version"]:03d}'
                 first_frame = f'{meta["shot"]}_{pass_name}_v{meta["version"]:03d}_{meta["start_frame"]:04d}.exr'
@@ -5279,6 +5351,7 @@ class RenderPage(QWidget):
                 send_teams_notification(
                     webhook_url=webhook_url,
                     shot=meta['shot'],
+                    context_type=meta['context_type'],
                     usd_file=meta['usd_file'],
                     passes=meta['passes'],
                     start_frame=meta['start_frame'],
@@ -5302,7 +5375,7 @@ class RenderPage(QWidget):
             window.show_status(msg, ok)
 
     def _refresh(self):
-        self._refresh_shots()
+        self._refresh_contexts()
 
 
 class VersionDialog(QDialog):
@@ -5432,15 +5505,23 @@ class SyncProgressDialog(QDialog):
         layout.addWidget(self.sync_timer_label)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        self.continue_btn = QPushButton('Continue')
+        self.continue_btn = QPushButton('Render Anyway')
         self.continue_btn.setCursor(Qt.PointingHandCursor)
         self.continue_btn.clicked.connect(self.accept)
         self.continue_btn.setVisible(False)
         btn_row.addWidget(self.continue_btn)
-        self.cancel_btn = QPushButton('Cancel')
+        self.cancel_btn = QPushButton('Skip Sync')
+        self.cancel_btn.setToolTip('Stop syncing and render with whatever is already on disk.')
         self.cancel_btn.clicked.connect(self._cancel)
         btn_row.addWidget(self.cancel_btn)
+        self.cancel_render_btn = QPushButton('Cancel Render')
+        self.cancel_render_btn.setCursor(Qt.PointingHandCursor)
+        self.cancel_render_btn.setToolTip('Stop syncing and do not render.')
+        self.cancel_render_btn.clicked.connect(self._cancel_render)
+        btn_row.addWidget(self.cancel_render_btn)
         layout.addLayout(btn_row)
+        # Set when the user chose not to render at all (rejected either way).
+        self.cancel_render = False
         self._cancelled = False
         self._thread = None
         self._sync_start = 0
@@ -5576,13 +5657,28 @@ class SyncProgressDialog(QDialog):
             self.cancel_btn.setVisible(False)
         else:
             self.cancel_btn.setEnabled(False)
-            QTimer.singleShot(self.SUMMARY_SECONDS * 1000, self.accept)
+            self.cancel_render_btn.setEnabled(False)
+            QTimer.singleShot(self.SUMMARY_SECONDS * 1000, self._auto_accept)
+
+    def _auto_accept(self):
+        if not self.cancel_render and self.isVisible():
+            self.accept()
 
     def _cancel(self):
         if self._thread:
             self._thread.cancel()
         self._stop_sync_clock()
         self.reject()
+
+    def _cancel_render(self):
+        self.cancel_render = True
+        self._cancel()
+
+    def reject(self):
+        # Esc / closing the window while sync problems are shown means "don't render".
+        if self.continue_btn.isVisible():
+            self.cancel_render = True
+        super().reject()
 
 
 class _BackupPreviewWorker(QThread):
