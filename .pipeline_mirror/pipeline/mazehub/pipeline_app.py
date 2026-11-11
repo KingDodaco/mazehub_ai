@@ -8,7 +8,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.13.1"
+APP_VERSION = "0.13.2"
 
 
 def _get_display_name():
@@ -2102,7 +2102,7 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
                             end_frame, interval, version, render_engine,
                             exit_code, render_time, project_root='',
                             cancelled=False, start_time='', end_time='',
-                            first_frame_path=''):
+                            first_frame_path='', context_type='shot'):
     if not webhook_url:
         return False
 
@@ -2120,7 +2120,7 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
     total_frames = len(frames) * len(passes)
 
     summary_facts = [
-        {'name': 'Shot', 'value': shot},
+        {'name': 'Asset' if context_type == 'asset' else 'Shot', 'value': shot},
         {'name': 'Status', 'value': status},
         {'name': 'Passes', 'value': ', '.join(passes)},
         {'name': 'Frame Range', 'value': f'{start_frame} - {end_frame}'},
