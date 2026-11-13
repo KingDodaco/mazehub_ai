@@ -469,9 +469,67 @@ def _registered_for(path, reg):
     return path
 
 
+_REGISTRY_SYNC_ROOTS = None
+
+
+def _registry_sync_roots():
+    """Folders this login's OneDrive client syncs (OneDrive itself and
+    SharePoint libraries), from HKCU. Best effort; [] off Windows."""
+    global _REGISTRY_SYNC_ROOTS
+    if _REGISTRY_SYNC_ROOTS is not None:
+        return _REGISTRY_SYNC_ROOTS
+    roots = []
+    if os.name == 'nt':
+        try:
+            import winreg
+            base = r'Software\SyncEngines\Providers\OneDrive'
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, base) as key:
+                i = 0
+                while True:
+                    try:
+                        name = winreg.EnumKey(key, i)
+                    except OSError:
+                        break
+                    i += 1
+                    try:
+                        with winreg.OpenKey(key, name) as sub:
+                            value, _kind = winreg.QueryValueEx(sub, 'MountPoint')
+                        if value:
+                            roots.append(str(value))
+                    except OSError:
+                        pass
+        except Exception as e:
+            print(f'[settings] could not read OneDrive sync folders: {e}')
+    _REGISTRY_SYNC_ROOTS = roots
+    return roots
+
+
+def _sync_roots(env=None):
+    env = os.environ if env is None else env
+    roots = [env.get(k) for k in _ONEDRIVE_VARS] + _registry_sync_roots()
+    return _dedupe(r for r in roots if r and _is_win_path(r))
+
+
+def stale_copy(root, env=None, sync_roots=None):
+    """If root is an old OneDrive/SharePoint copy that this login no longer
+    syncs (left in a previous profile, or OneDrive moved), the location it
+    should be at now; else None. Such a copy is never opened: work saved
+    there would never sync."""
+    if not _is_win_path(root):
+        return None
+    roots = _sync_roots(env) if sync_roots is None else list(sync_roots)
+    if not roots or any(_is_under(root, r) for r in roots):
+        return None
+    for candidate in remap_candidates(root, env):
+        if any(_is_under(candidate, r) for r in roots):
+            return candidate
+    return None
+
+
 def _root_options(root, remaps):
-    return _dedupe([root] + ([remaps[root]] if remaps.get(root) else [])
-                   + remap_candidates(root))
+    options = _dedupe([root] + ([remaps[root]] if remaps.get(root) else [])
+                      + remap_candidates(root))
+    return [o for o in options if not stale_copy(o)]
 
 
 def locate_project(root, timeout=3.0):
@@ -484,7 +542,8 @@ def locate_project(root, timeout=3.0):
     except RegistryUnreadable:
         reg = {'projects': [], 'active': ''}
     registered = _registered_for(root, reg)
-    options = _dedupe([root] + _root_options(registered, _get_remaps()))
+    options = [o for o in _dedupe([root] + _root_options(registered, _get_remaps()))
+               if not stale_copy(o)]
     found = _probe(options, timeout)
     for option in options:
         if found.get(option):
@@ -544,14 +603,22 @@ def resolve_project_root(wait=3.0):
         if time.monotonic() >= deadline:
             break
         time.sleep(0.5)
+    def not_reachable(root):
+        expected = stale_copy(root)
+        if expected:
+            print(f'[settings] {root} is an old OneDrive copy that no longer '
+                  f'syncs; waiting for {expected}')
+        else:
+            print(f'[settings] project not reachable: {root}')
+
     for root in preferred:
-        print(f'[settings] project not reachable: {root}')
+        not_reachable(root)
     for root in candidates[len(preferred):]:
         path = pick(root)
         if path:
             print(f'[settings] opening registered project {path} instead')
             return path
-        print(f'[settings] project not reachable: {root}')
+        not_reachable(root)
     return None
 
 

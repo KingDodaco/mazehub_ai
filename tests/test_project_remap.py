@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.pipeline_mirror' 
 
 import settings  # noqa: E402
 
+settings._REGISTRY_SYNC_ROOTS = []  # no real OneDrive registry in tests
+
 OLD = 'C:\\Users\\dominic\\OneDrive - Maze\\Projects\\Film'
 NEW_PROFILE = 'C:\\Users\\dominic.000'
 NEW = NEW_PROFILE + '\\OneDrive - Maze\\Projects\\Film'
@@ -88,6 +90,33 @@ class RemapCandidates(unittest.TestCase):
         self.assertIsNone(settings.remap_under('D:\\elsewhere\\a.hip', NEW, ENV))
 
 
+class StaleCopy(unittest.TestCase):
+    def test_old_profile_onedrive_is_stale(self):
+        self.assertEqual(settings.stale_copy(OLD, ENV), NEW)
+
+    def test_onedrive_moved_to_other_drive(self):
+        env = dict(ENV, OneDriveCommercial='D:\\OneDrive - Maze', OneDrive='D:\\OneDrive - Maze')
+        cur = NEW_PROFILE + '\\OneDrive - Maze\\Projects\\Film'
+        self.assertEqual(settings.stale_copy(cur, env), 'D:\\OneDrive - Maze\\Projects\\Film')
+
+    def test_sharepoint_library_needs_mount_point(self):
+        old = 'C:\\Users\\dominic\\Maze Ltd\\Studio - Projects\\Film'
+        new = NEW_PROFILE + '\\Maze Ltd\\Studio - Projects\\Film'
+        mounts = settings._sync_roots(ENV) + [NEW_PROFILE + '\\Maze Ltd\\Studio - Projects']
+        self.assertEqual(settings.stale_copy(old, ENV, mounts), new)
+        self.assertIsNone(settings.stale_copy(old, ENV))
+
+    def test_local_documents_in_old_profile_not_stale(self):
+        self.assertIsNone(settings.stale_copy('C:\\Users\\dominic\\Documents\\Film', ENV))
+
+    def test_current_profile_not_stale(self):
+        self.assertIsNone(settings.stale_copy(NEW, ENV))
+
+    def test_no_env_not_stale(self):
+        self.assertIsNone(settings.stale_copy(OLD, {}))
+        self.assertIsNone(settings.stale_copy('/home/dominic/Film', ENV))
+
+
 class RegistryRemap(unittest.TestCase):
     def setUp(self):
         self._env = {k: os.environ.get(k) for k in ENV}
@@ -138,10 +167,40 @@ class RegistryRemap(unittest.TestCase):
         self.assertEqual(len(reg['projects']), 1)
         self.assertEqual(self.local_state()['remapped'], {OLD: NEW})
 
-    def test_original_back_drops_alias(self):
-        settings.resolve_project_root(wait=0.5)
+    def use_registered(self, root):
+        settings._save_json(settings.PROJECTS_PATH, {
+            'projects': [{'name': 'Film', 'root': root}], 'active': root})
+        self.registry_bytes = settings.PROJECTS_PATH.read_bytes()
+
+    def test_stale_old_copy_never_opened_even_if_present(self):
         self.reachable = {OLD, NEW}
-        self.assertEqual(str(settings.resolve_project_root(wait=0.5)), OLD)
+        self.assertEqual(str(settings.resolve_project_root(wait=0.5)), NEW)
+        self.assertEqual(settings.PROJECTS_PATH.read_bytes(), self.registry_bytes)
+
+    def test_only_stale_copy_present_is_unreachable(self):
+        self.reachable = {OLD}
+        self.assertIsNone(settings.resolve_project_root(wait=0.5))
+        self.assertIsNone(settings.locate_project(OLD, timeout=0.5))
+        state = self.local_state() if settings.LOCAL_STATE_PATH.exists() else {}
+        self.assertFalse(state.get('remapped'))
+
+    def test_local_old_profile_project_still_opens(self):
+        old_local = 'C:\\Users\\dominic\\Documents\\Film'
+        self.use_registered(old_local)
+        self.reachable = {old_local}
+        self.assertEqual(str(settings.resolve_project_root(wait=0.5)), old_local)
+
+    def test_original_back_drops_alias(self):
+        # Without OneDrive on this login the old path isn't a stale copy.
+        for k in ('OneDriveCommercial', 'OneDrive', 'OneDriveConsumer'):
+            os.environ.pop(k, None)
+        old_local = 'C:\\Users\\dominic\\Documents\\Film'
+        new_local = NEW_PROFILE + '\\Documents\\Film'
+        self.use_registered(old_local)
+        self.reachable = {new_local}
+        self.assertEqual(str(settings.resolve_project_root(wait=0.5)), new_local)
+        self.reachable = {old_local, new_local}
+        self.assertEqual(str(settings.resolve_project_root(wait=0.5)), old_local)
         self.assertEqual(self.local_state()['remapped'], {})
 
     def test_unreachable_stays_unreachable(self):

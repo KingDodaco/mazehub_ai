@@ -7723,6 +7723,17 @@ class MainWindow(QMainWindow):
             pass
         if root == self.project_root.resolve():
             return True
+        from settings import stale_copy, locate_project
+        expected = stale_copy(str(root))
+        if expected:
+            found = locate_project(str(root))
+            if found is None:
+                QMessageBox.warning(self, 'Project Not Synced Here',
+                                    _stale_copy_message(root, expected))
+                return False
+            root = found
+            if root == self.project_root.resolve():
+                return True
         if self._update.busy:
             QMessageBox.warning(
                 self, 'Update in Progress',
@@ -8081,6 +8092,15 @@ def _startup_create_project():
     return target.resolve()
 
 
+def _stale_copy_message(root, expected):
+    name = re.split(r'[\\/]', str(root).rstrip('\\/'))[-1]
+    return (f"{name} isn't in your OneDrive on this login yet:\n"
+            f'{expected}\n\n'
+            f'The copy at\n{root}\nis left over from an old Windows profile or '
+            "OneDrive folder and no longer syncs, so MazeHub won't open it. "
+            'Wait for OneDrive to finish syncing, or sync the library again, then retry.')
+
+
 def _startup_add_existing_project():
     from PySide6.QtWidgets import QFileDialog
     path = QFileDialog.getExistingDirectory(
@@ -8091,7 +8111,11 @@ def _startup_add_existing_project():
     if not candidate.is_dir():
         QMessageBox.warning(None, 'MazeHub', f'Not a directory: {candidate}')
         return None
-    from settings import add_project, set_active_project
+    from settings import add_project, set_active_project, stale_copy
+    expected = stale_copy(str(candidate))
+    if expected:
+        QMessageBox.warning(None, 'MazeHub', _stale_copy_message(candidate, expected))
+        return None
     add_project(candidate)
     set_active_project(str(candidate.resolve()))
     return candidate.resolve()
@@ -8101,6 +8125,7 @@ def _unreachable_projects_dialog(projects):
     """Projects are registered but none could be reached (drive not connected,
     or paths from another computer). Returns a project Path, 'retry' or None."""
     from PySide6.QtWidgets import QListWidget, QListWidgetItem
+    from settings import stale_copy
     dlg = QDialog()
     dlg.setWindowTitle('MazeHub')
     dlg.setMinimumWidth(560)
@@ -8112,7 +8137,12 @@ def _unreachable_projects_dialog(projects):
     layout.addWidget(label)
     project_list = QListWidget()
     for p in projects:
-        item = QListWidgetItem(f"{p['name']}  —  {p['root']}")
+        expected = stale_copy(p['root'])
+        if expected:
+            item = QListWidgetItem(
+                f"{p['name']}  —  {expected}  (not synced to this profile yet)")
+        else:
+            item = QListWidgetItem(f"{p['name']}  —  {p['root']}")
         item.setData(Qt.UserRole, p['root'])
         project_list.addItem(item)
     project_list.setCurrentRow(0)
@@ -8145,7 +8175,9 @@ def _unreachable_projects_dialog(projects):
         from settings import locate_project, set_active_project
         root = locate_project(wanted) if wanted else None
         if root is None:
-            QMessageBox.warning(None, 'MazeHub', f"Still can't reach:\n{wanted}")
+            expected = stale_copy(wanted) if wanted else None
+            QMessageBox.warning(None, 'MazeHub', _stale_copy_message(wanted, expected)
+                                if expected else f"Still can't reach:\n{wanted}")
             return 'retry'
         set_active_project(str(root))
         return root
