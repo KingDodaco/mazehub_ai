@@ -2917,17 +2917,41 @@ class PreviewPage(QWidget):
         self.refresh_btn = QPushButton('Refresh')
         self.refresh_btn.setMinimumHeight(32)
         self.refresh_btn.setCursor(Qt.PointingHandCursor)
-        self.refresh_btn.clicked.connect(self._refresh_shots)
+        self.refresh_btn.clicked.connect(self._refresh_contexts)
         header.addWidget(self.refresh_btn)
         layout.addLayout(header)
 
-        shot_row = QHBoxLayout()
+        # Same Shots / Assets picker as the Render tab.
+        self.ctx_tabs = QTabWidget()
+        shots_tab = QWidget()
+        shot_row = QHBoxLayout(shots_tab)
         shot_row.addWidget(QLabel('Shot:'))
         self.shot_combo = QComboBox()
         self.shot_combo.setMinimumWidth(260)
-        self.shot_combo.currentTextChanged.connect(self._on_shot_changed)
+        self.shot_combo.currentTextChanged.connect(self._on_context_changed)
         shot_row.addWidget(self.shot_combo, 1)
-        layout.addLayout(shot_row)
+        self.ctx_tabs.addTab(shots_tab, 'Shots')
+
+        from make_folders import NEW_ASSET_CATEGORY_LIST
+        assets_tab = QWidget()
+        asset_row = QHBoxLayout(assets_tab)
+        asset_row.addWidget(QLabel('Category:'))
+        self.asset_cat_combo = QComboBox()
+        self.asset_cat_combo.addItems(NEW_ASSET_CATEGORY_LIST)
+        self.asset_cat_combo.currentTextChanged.connect(self._on_asset_category_changed)
+        asset_row.addWidget(self.asset_cat_combo)
+        asset_row.addWidget(QLabel('Asset:'))
+        self.asset_combo = QComboBox()
+        self.asset_combo.setMinimumWidth(260)
+        self.asset_combo.currentTextChanged.connect(self._on_context_changed)
+        asset_row.addWidget(self.asset_combo, 1)
+        self.ctx_tabs.addTab(assets_tab, 'Assets')
+
+        from settings import get_setting
+        if get_setting('preview_context_type', 'shot') == 'asset':
+            self.ctx_tabs.setCurrentIndex(1)
+        self.ctx_tabs.currentChanged.connect(self._on_context_tab_changed)
+        layout.addWidget(self.ctx_tabs)
 
         self.seq_list = QTreeWidget()
         self.seq_list.setHeaderLabels(['Name', 'Format', 'Frames', 'Folder', 'Warning'])
@@ -2960,9 +2984,9 @@ class PreviewPage(QWidget):
             lambda: self.open_btn.setEnabled(bool(self.seq_list.selectedItems()))
         )
 
-        self._refresh_shots()
+        self._refresh_contexts()
 
-    def _refresh_shots(self):
+    def _refresh_contexts(self):
         current = self.shot_combo.currentText()
         self.shot_combo.blockSignals(True)
         self.shot_combo.clear()
@@ -2977,15 +3001,51 @@ class PreviewPage(QWidget):
         if idx >= 0:
             self.shot_combo.setCurrentIndex(idx)
         self.shot_combo.blockSignals(False)
-        self._on_shot_changed(self.shot_combo.currentText())
+        self._fill_assets(self.asset_combo.currentText())
+        self._on_context_changed()
 
-    def _on_shot_changed(self, shot_name):
+    def _fill_assets(self, keep=''):
+        self.asset_combo.blockSignals(True)
+        self.asset_combo.clear()
+        asset_dir = self.project_root / 'asset' / self.asset_cat_combo.currentText()
+        if asset_dir.exists():
+            self.asset_combo.addItems(_subdirs(asset_dir))
+        idx = self.asset_combo.findText(keep) if keep else -1
+        self.asset_combo.setCurrentIndex(idx if idx >= 0 else (0 if self.asset_combo.count() else -1))
+        self.asset_combo.blockSignals(False)
+
+    def _on_asset_category_changed(self, _category):
+        self._fill_assets()
+        self._on_context_changed()
+
+    def _on_context_tab_changed(self, _index):
+        from settings import set_setting
+        set_setting('preview_context_type', self._context_type())
+        self._on_context_changed()
+
+    def _context_type(self):
+        return 'asset' if self.ctx_tabs.currentIndex() == 1 else 'shot'
+
+    def _context(self):
+        """(type, name, path) of the active sub-tab's selection, or None."""
+        if self._context_type() == 'asset':
+            name = self.asset_combo.currentText()
+            if not name:
+                return None
+            return 'asset', name, self.project_root / 'asset' / self.asset_cat_combo.currentText() / name
+        name = self.shot_combo.currentText()
+        if not name:
+            return None
+        return 'shot', name, self.project_root / 'sequence' / name
+
+    def _on_context_changed(self, _text=''):
         self.seq_list.clear()
         self._sequences = []
-        if not shot_name:
-            self.status_label.setText('No shot selected')
+        ctx = self._context()
+        if not ctx:
+            self.status_label.setText(f'No {self._context_type()} selected')
             return
-        shot_path = self.project_root / 'sequence' / shot_name
+        shot_path = ctx[2]
         try:
             sequences = discover_image_sequences(shot_path)
         except Exception as e:
@@ -3084,10 +3144,12 @@ class PreviewPage(QWidget):
             return
 
         launch_env = os.environ.copy()
+        ctx = self._context()
+        if not ctx:
+            return
+        ctx_type, ctx_name, ctx_path = ctx
         ctx_env = build_context_env(
-            {'type': 'shot', 'name': self.shot_combo.currentText(),
-             'path': str(self.project_root / 'sequence' / self.shot_combo.currentText()),
-             'app_name': 'Houdini'},
+            {'type': ctx_type, 'name': ctx_name, 'path': str(ctx_path), 'app_name': 'Houdini'},
             self.project_root,
         )
         launch_env.update(ctx_env)
@@ -3801,7 +3863,7 @@ class HelpPage(QWidget):
         """)
 
         self._add_section(layout, '9 — Preview', """
-        <p>Want to check a render? Pick a shot and MazeHub finds all the image sequences and videos for you.</p>
+        <p>Want to check a render? Pick a shot or asset on the <b>Shots</b> / <b>Assets</b> tabs and MazeHub finds all the image sequences and videos for you.</p>
         <p>They're grouped by app, name and version. Double-click or press <b>Open in MPlay</b> to view them. Right-click to show the files in Windows Explorer.</p>
         """)
 
@@ -7661,6 +7723,17 @@ class MainWindow(QMainWindow):
             pass
         if root == self.project_root.resolve():
             return True
+        from settings import stale_copy, locate_project
+        expected = stale_copy(str(root))
+        if expected:
+            found = locate_project(str(root))
+            if found is None:
+                QMessageBox.warning(self, 'Project Not Synced Here',
+                                    _stale_copy_message(root, expected))
+                return False
+            root = found
+            if root == self.project_root.resolve():
+                return True
         if self._update.busy:
             QMessageBox.warning(
                 self, 'Update in Progress',
@@ -8019,6 +8092,15 @@ def _startup_create_project():
     return target.resolve()
 
 
+def _stale_copy_message(root, expected):
+    name = re.split(r'[\\/]', str(root).rstrip('\\/'))[-1]
+    return (f"{name} isn't in your OneDrive on this login yet:\n"
+            f'{expected}\n\n'
+            f'The copy at\n{root}\nis left over from an old Windows profile or '
+            "OneDrive folder and no longer syncs, so MazeHub won't open it. "
+            'Wait for OneDrive to finish syncing, or sync the library again, then retry.')
+
+
 def _startup_add_existing_project():
     from PySide6.QtWidgets import QFileDialog
     path = QFileDialog.getExistingDirectory(
@@ -8029,7 +8111,11 @@ def _startup_add_existing_project():
     if not candidate.is_dir():
         QMessageBox.warning(None, 'MazeHub', f'Not a directory: {candidate}')
         return None
-    from settings import add_project, set_active_project
+    from settings import add_project, set_active_project, stale_copy
+    expected = stale_copy(str(candidate))
+    if expected:
+        QMessageBox.warning(None, 'MazeHub', _stale_copy_message(candidate, expected))
+        return None
     add_project(candidate)
     set_active_project(str(candidate.resolve()))
     return candidate.resolve()
@@ -8039,6 +8125,7 @@ def _unreachable_projects_dialog(projects):
     """Projects are registered but none could be reached (drive not connected,
     or paths from another computer). Returns a project Path, 'retry' or None."""
     from PySide6.QtWidgets import QListWidget, QListWidgetItem
+    from settings import stale_copy
     dlg = QDialog()
     dlg.setWindowTitle('MazeHub')
     dlg.setMinimumWidth(560)
@@ -8050,7 +8137,12 @@ def _unreachable_projects_dialog(projects):
     layout.addWidget(label)
     project_list = QListWidget()
     for p in projects:
-        item = QListWidgetItem(f"{p['name']}  —  {p['root']}")
+        expected = stale_copy(p['root'])
+        if expected:
+            item = QListWidgetItem(
+                f"{p['name']}  —  {expected}  (not synced to this profile yet)")
+        else:
+            item = QListWidgetItem(f"{p['name']}  —  {p['root']}")
         item.setData(Qt.UserRole, p['root'])
         project_list.addItem(item)
     project_list.setCurrentRow(0)
@@ -8079,11 +8171,14 @@ def _unreachable_projects_dialog(projects):
     value = choice.get('value')
     if value == 'open':
         item = project_list.currentItem()
-        root = Path(item.data(Qt.UserRole)) if item else None
-        if root is None or not root.is_dir():
-            QMessageBox.warning(None, 'MazeHub', f"Still can't reach:\n{root}")
+        wanted = item.data(Qt.UserRole) if item else None
+        from settings import locate_project, set_active_project
+        root = locate_project(wanted) if wanted else None
+        if root is None:
+            expected = stale_copy(wanted) if wanted else None
+            QMessageBox.warning(None, 'MazeHub', _stale_copy_message(wanted, expected)
+                                if expected else f"Still can't reach:\n{wanted}")
             return 'retry'
-        from settings import set_active_project
         set_active_project(str(root))
         return root
     if value == 'add':
