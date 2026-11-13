@@ -45,13 +45,31 @@ def _ensure_dir(path):
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _remap_to_project(files):
+    """Point entries saved under an old Windows profile / OneDrive folder at
+    the project's location on this device (in memory only)."""
+    try:
+        from settings import _get_project_root, remap_under
+        root = _get_project_root()
+    except Exception:
+        return files
+    if not root or not isinstance(files, list):
+        return files
+    for entry in files:
+        if isinstance(entry, dict) and entry.get('path'):
+            moved = remap_under(entry['path'], root)
+            if moved:
+                entry['path'] = moved
+    return files
+
+
 def load_recent_files():
     path = _get_recent_files_path()
     _ensure_dir(path)
     if path.exists():
         try:
             with open(path, 'r') as f:
-                return json.load(f)
+                return _remap_to_project(json.load(f))
         except Exception:
             return []
     return []

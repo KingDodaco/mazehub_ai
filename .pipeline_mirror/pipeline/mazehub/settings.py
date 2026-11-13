@@ -1,6 +1,8 @@
 import json
+import ntpath
 import os
 import platform
+import re
 import shutil
 import sys
 import threading
@@ -207,15 +209,22 @@ def list_projects(strict=False):
     """Registered projects. With strict=False an unreadable registry gives []
     (for display); strict=True raises RegistryUnreadable."""
     try:
-        return _load_registry()['projects']
+        projects = _load_registry()['projects']
     except RegistryUnreadable as e:
         if strict:
             raise
         print(f'[settings] could not read the project list: {e}')
         return []
+    # 'root' is where the project is on this device; 'registered_root' is the
+    # path in the shared projects.json (they differ after a profile move).
+    remaps = _get_remaps()
+    return [dict(p, root=remaps.get(p['root']) or p['root'], registered_root=p['root'])
+            for p in projects]
 
 
 def _normalize_root(root):
+    if os.name != 'nt' and _is_win_path(root):
+        return str(root)  # a Windows path seen from another OS
     p = Path(root).expanduser()
     try:
         return str(p.resolve())
@@ -226,6 +235,7 @@ def _normalize_root(root):
 def add_project(root):
     root = _normalize_root(root)
     reg = _load_registry()
+    root = _registered_for(root, reg)
     for entry in reg['projects']:
         if entry['root'] == root:
             if not reg['active']:
@@ -242,6 +252,8 @@ def add_project(root):
 
 def remove_project(root):
     reg = _load_registry()
+    root = _registered_for(str(root), reg)
+    _set_remap(root, None)
     before = len(reg['projects'])
     active_before = reg['active']
     reg['projects'] = [p for p in reg['projects'] if p['root'] != root]
@@ -254,6 +266,7 @@ def remove_project(root):
 def set_active_project(root):
     root = _normalize_root(root)
     reg = _load_registry()
+    root = _registered_for(root, reg)
     if not any(p['root'] == root for p in reg['projects']):
         add_project(root)
         reg = _load_registry()
@@ -278,6 +291,7 @@ def _set_last_project(root):
 
 def get_active_project():
     active = _load_registry().get('active') or ''
+    active = local_root(active) if active else ''
     if active and Path(active).is_dir():
         return Path(active)
     return None
@@ -308,6 +322,178 @@ def _probe(roots, timeout):
     return dict(results)
 
 
+# --- Projects that moved with the Windows profile -------------------------
+# On shared machines Windows sometimes creates a new profile folder
+# (C:\Users\name -> C:\Users\name.000 or name.MACHINE) and OneDrive re-syncs
+# into it, so every registered path under the old profile stops existing.
+# Paths are remapped onto this device's profile / OneDrive folders and the
+# result is remembered per user/device in local_state.json ('remapped'); the
+# shared projects.json keeps the original path for every other device.
+
+_WIN_ABS = re.compile(r'^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])')
+_ONEDRIVE_VARS = ('OneDriveCommercial', 'OneDrive', 'OneDriveConsumer')
+
+
+def _is_win_path(path):
+    return bool(_WIN_ABS.match(str(path or '')))
+
+
+def _norm(path):
+    path = str(path)
+    if _is_win_path(path):
+        return ntpath.normcase(ntpath.normpath(path))
+    return os.path.normpath(path)
+
+
+def _same_path(a, b):
+    return bool(a) and bool(b) and _norm(a) == _norm(b)
+
+
+def _is_under(path, root):
+    path, root = _norm(path), _norm(root)
+    sep = '\\' if _is_win_path(root) else os.sep
+    return path == root or path.startswith(root.rstrip(sep) + sep)
+
+
+def _dedupe(paths, exclude=()):
+    seen = {_norm(p) for p in exclude}
+    out = []
+    for p in paths:
+        n = _norm(p)
+        if n not in seen:
+            seen.add(n)
+            out.append(p)
+    return out
+
+
+def _profile_user(folder_name):
+    # 'dominic.000' / 'dominic.MACHINE' -> 'dominic'
+    return folder_name.split('.', 1)[0].lower()
+
+
+def remap_candidates(root, env=None):
+    """Where a Windows project path under a user profile or OneDrive folder
+    might be now, best guess first. String rewriting only (no disk access);
+    the original path is never included."""
+    env = os.environ if env is None else env
+    root = str(root or '')
+    if not _is_win_path(root):
+        return []
+    drive, rest = ntpath.splitdrive(ntpath.normpath(root))
+    parts = [p for p in re.split(r'[\\/]', rest) if p]
+    out = []
+    # C:\Users\<same user>[.suffix]\rest -> %USERPROFILE%\rest. Only the same
+    # user: another user's unsynced folder is not this user's same-named one.
+    profile = env.get('USERPROFILE') or ''
+    if (len(drive) == 2 and len(parts) >= 2 and parts[0].lower() == 'users'
+            and _is_win_path(profile)):
+        users = {_profile_user(ntpath.basename(ntpath.normpath(profile)))}
+        if env.get('USERNAME'):
+            users.add(env['USERNAME'].lower())
+        if _profile_user(parts[1]) in users:
+            out.append(ntpath.join(profile, *parts[2:]))
+    # ...\OneDrive[ - Org]\rest -> %OneDrive*%\rest (OneDrive may live
+    # outside the profile, e.g. D:\OneDrive - Org).
+    for i, seg in enumerate(parts):
+        low = seg.lower()
+        if low == 'onedrive' or low.startswith('onedrive - '):
+            roots = [env.get(k) for k in _ONEDRIVE_VARS]
+            roots = [r for r in roots if r and _is_win_path(r)]
+            # Same account (folder name) only, unless none matches (the
+            # organisation was renamed, say).
+            same = [r for r in roots
+                    if ntpath.basename(ntpath.normpath(r)).lower() == low]
+            out.extend(ntpath.join(r, *parts[i + 1:]) for r in (same or roots))
+            break
+    return _dedupe(out, exclude=(root,))
+
+
+def remap_under(path, project_root, env=None):
+    """path rewritten to lie under project_root (where the project is on
+    this device), or None. For stored absolute paths such as recent files."""
+    if not path or not project_root or _is_under(path, project_root):
+        return None
+    for candidate in remap_candidates(path, env):
+        if _is_under(candidate, project_root):
+            return candidate
+    return None
+
+
+def _get_remaps():
+    data = _load_json(LOCAL_STATE_PATH).get('remapped')
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if k and v}
+
+
+def _set_remap(registered, local):
+    """Remember (or with local=None / the same path, forget) where a
+    registered project is on this device."""
+    state = _load_json(LOCAL_STATE_PATH)
+    remaps = state.get('remapped')
+    remaps = dict(remaps) if isinstance(remaps, dict) else {}
+    if local is None or _same_path(local, registered):
+        if registered not in remaps:
+            return
+        del remaps[registered]
+    else:
+        local = str(local)
+        if remaps.get(registered) == local:
+            return
+        remaps[registered] = local
+        print(f'[settings] project moved: {registered} -> {local}')
+    state['remapped'] = remaps
+    _save_json(LOCAL_STATE_PATH, state)
+
+
+def local_root(registered):
+    """Where a registered project is on this device."""
+    return _get_remaps().get(str(registered)) or str(registered)
+
+
+def _registered_for(path, reg):
+    """The registry root that path (possibly a remapped local path) stands
+    for, so the shared list never gains a per-device duplicate."""
+    path = str(path)
+    roots = [p['root'] for p in reg['projects']]
+    for root in roots:
+        if _same_path(root, path):
+            return root
+    for root, local in _get_remaps().items():
+        if root in roots and _same_path(local, path):
+            return root
+    for root in roots:
+        if any(_same_path(c, path) for c in remap_candidates(root)):
+            _set_remap(root, path)
+            return root
+    return path
+
+
+def _root_options(root, remaps):
+    return _dedupe([root] + ([remaps[root]] if remaps.get(root) else [])
+                   + remap_candidates(root))
+
+
+def locate_project(root, timeout=3.0):
+    """Path where the project (registered or local path) can be reached on
+    this device, trying remapped locations; remembers a remap. None if not
+    reachable within timeout."""
+    root = str(root)
+    try:
+        reg = _load_registry()
+    except RegistryUnreadable:
+        reg = {'projects': [], 'active': ''}
+    registered = _registered_for(root, reg)
+    options = _dedupe([root] + _root_options(registered, _get_remaps()))
+    found = _probe(options, timeout)
+    for option in options:
+        if found.get(option):
+            if any(p['root'] == registered for p in reg['projects']):
+                _set_remap(registered, option)
+            return Path(option)
+    return None
+
+
 def resolve_project_root(wait=3.0):
     """The project to open at startup, or None.
 
@@ -329,27 +515,42 @@ def resolve_project_root(wait=3.0):
     candidates = preferred + [p['root'] for p in reg['projects'] if p['root'] not in preferred]
     if not candidates:
         return None
+    # Each registered root is tried where it was registered first, then where
+    # this device last found it, then remapped onto this profile / OneDrive.
+    remaps = _get_remaps()
+    options = {root: _root_options(root, remaps) for root in candidates}
+    every = _dedupe(p for root in candidates for p in options[root])
     reachable = set()
+
+    def pick(root):
+        for option in options[root]:
+            if option in reachable:
+                _set_remap(root, option)  # forgets it if the original is back
+                return Path(option)
+        return None
+
     deadline = time.monotonic() + wait
     while True:
-        pending = [c for c in candidates if c not in reachable]
+        pending = [p for p in every if p not in reachable]
         remaining = deadline - time.monotonic()
         found = _probe(pending, max(0.5, min(1.5, remaining)))
         reachable.update(r for r, ok in found.items() if ok)
         for root in preferred:
-            if root in reachable:
+            path = pick(root)
+            if path:
                 if not last:
                     _set_last_project(root)
-                return Path(root)
+                return path
         if time.monotonic() >= deadline:
             break
         time.sleep(0.5)
     for root in preferred:
         print(f'[settings] project not reachable: {root}')
     for root in candidates[len(preferred):]:
-        if root in reachable:
-            print(f'[settings] opening registered project {root} instead')
-            return Path(root)
+        path = pick(root)
+        if path:
+            print(f'[settings] opening registered project {path} instead')
+            return path
         print(f'[settings] project not reachable: {root}')
     return None
 

@@ -8141,11 +8141,12 @@ def _unreachable_projects_dialog(projects):
     value = choice.get('value')
     if value == 'open':
         item = project_list.currentItem()
-        root = Path(item.data(Qt.UserRole)) if item else None
-        if root is None or not root.is_dir():
-            QMessageBox.warning(None, 'MazeHub', f"Still can't reach:\n{root}")
+        wanted = item.data(Qt.UserRole) if item else None
+        from settings import locate_project, set_active_project
+        root = locate_project(wanted) if wanted else None
+        if root is None:
+            QMessageBox.warning(None, 'MazeHub', f"Still can't reach:\n{wanted}")
             return 'retry'
-        from settings import set_active_project
         set_active_project(str(root))
         return root
     if value == 'add':
