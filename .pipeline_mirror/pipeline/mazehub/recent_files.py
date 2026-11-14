@@ -59,6 +59,8 @@ def _remap_to_project(files):
         if isinstance(entry, dict) and entry.get('path'):
             moved = remap_under(entry['path'], root)
             if moved:
+                # Saved back as stored: the other machine has its own path.
+                entry.setdefault('_stored_path', entry['path'])
                 entry['path'] = moved
     return files
 
@@ -75,13 +77,23 @@ def load_recent_files():
     return []
 
 
+def _as_stored(files):
+    out = []
+    for entry in files:
+        if isinstance(entry, dict) and '_stored_path' in entry:
+            entry = dict(entry)
+            entry['path'] = entry.pop('_stored_path')
+        out.append(entry)
+    return out
+
+
 def save_recent_files(files):
     path = _get_recent_files_path()
     _ensure_dir(path)
     tmp = path.with_name(path.name + '.tmp')
     try:
         with open(tmp, 'w') as f:
-            json.dump(files, f, indent=2)
+            json.dump(_as_stored(files), f, indent=2)
         os.replace(tmp, path)
     except Exception:
         try:

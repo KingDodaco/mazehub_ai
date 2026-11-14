@@ -7716,24 +7716,27 @@ class MainWindow(QMainWindow):
         return running
 
     def switch_project(self, root):
-        root = Path(root).expanduser()
+        from settings import session_path, stale_copy, locate_project
+        wanted = str(root)
+        root = Path(session_path(wanted)).expanduser()
+        if not root.is_dir():
+            found = locate_project(wanted)
+            if found is None:
+                expected = stale_copy(wanted)
+                if expected:
+                    QMessageBox.warning(self, 'Project Not Synced Here',
+                                        _stale_copy_message(wanted, expected))
+                else:
+                    QMessageBox.warning(self, 'Project Not Found',
+                                        f"Can't reach the project folder:\n{root}")
+                return False
+            root = found
         try:
             root = root.resolve()
         except OSError:
             pass
         if root == self.project_root.resolve():
             return True
-        from settings import stale_copy, locate_project
-        expected = stale_copy(str(root))
-        if expected:
-            found = locate_project(str(root))
-            if found is None:
-                QMessageBox.warning(self, 'Project Not Synced Here',
-                                    _stale_copy_message(root, expected))
-                return False
-            root = found
-            if root == self.project_root.resolve():
-                return True
         if self._update.busy:
             QMessageBox.warning(
                 self, 'Update in Progress',

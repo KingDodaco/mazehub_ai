@@ -215,11 +215,29 @@ def list_projects(strict=False):
             raise
         print(f'[settings] could not read the project list: {e}')
         return []
-    # 'root' is where the project is on this device; 'registered_root' is the
+    # 'root' is where the project is in this session; 'registered_root' is the
     # path in the shared projects.json (they differ after a profile move).
-    remaps = _get_remaps()
-    return [dict(p, root=remaps.get(p['root']) or p['root'], registered_root=p['root'])
-            for p in projects]
+    # Entries for the same project under different profile folders (added on
+    # different machines) show as one; 'aliases' holds the others.
+    groups = []
+    for p in projects:
+        for group in groups:
+            if _same_project(group[0]['root'], p['root']):
+                group.append(p)
+                break
+        else:
+            groups.append([p])
+    profile = os.environ.get('USERPROFILE') or ''
+    out = []
+    for group in groups:
+        best = next((p for p in group if p['root'] in _SESSION_PATHS), None)
+        if best is None and profile:
+            best = next((p for p in group if _is_under(p['root'], profile)), None)
+        best = best or group[0]
+        out.append(dict(best, root=session_path(best['root']),
+                        registered_root=best['root'],
+                        aliases=[p['root'] for p in group if p is not best]))
+    return out
 
 
 def _normalize_root(root):
@@ -253,11 +271,15 @@ def add_project(root):
 def remove_project(root):
     reg = _load_registry()
     root = _registered_for(str(root), reg)
-    _set_remap(root, None)
+    # Also the same project registered under another profile folder.
+    gone = {p['root'] for p in reg['projects']
+            if p['root'] == root or _same_project(p['root'], root)}
+    for r in gone:
+        _set_remap(r, None)
     before = len(reg['projects'])
     active_before = reg['active']
-    reg['projects'] = [p for p in reg['projects'] if p['root'] != root]
-    if reg['active'] == root:
+    reg['projects'] = [p for p in reg['projects'] if p['root'] not in gone]
+    if reg['active'] in gone:
         reg['active'] = reg['projects'][0]['root'] if reg['projects'] else ''
     if len(reg['projects']) != before or reg['active'] != active_before:
         _save_registry(reg)
@@ -291,7 +313,7 @@ def _set_last_project(root):
 
 def get_active_project():
     active = _load_registry().get('active') or ''
-    active = local_root(active) if active else ''
+    active = session_path(active) if active else ''
     if active and Path(active).is_dir():
         return Path(active)
     return None
@@ -419,51 +441,70 @@ def remap_under(path, project_root, env=None):
     return None
 
 
+# Where each registered project was found in this session. Worked out again
+# every run from this login's profile / OneDrive folders and never saved:
+# the same registry path can be under a different profile folder on every
+# machine (user, user.DOMAIN, user.DOMAIN.000), in either direction.
+_SESSION_PATHS = {}
+
+
 def _get_remaps():
-    data = _load_json(LOCAL_STATE_PATH).get('remapped')
-    if not isinstance(data, dict):
-        return {}
-    return {str(k): str(v) for k, v in data.items() if k and v}
+    return dict(_SESSION_PATHS)
 
 
 def _set_remap(registered, local):
-    """Remember (or with local=None / the same path, forget) where a
-    registered project is on this device."""
-    state = _load_json(LOCAL_STATE_PATH)
-    remaps = state.get('remapped')
-    remaps = dict(remaps) if isinstance(remaps, dict) else {}
+    """Note (or with local=None / the same path, forget) where a registered
+    project is in this session."""
+    registered = str(registered)
     if local is None or _same_path(local, registered):
-        if registered not in remaps:
-            return
-        del remaps[registered]
-    else:
-        local = str(local)
-        if remaps.get(registered) == local:
-            return
-        remaps[registered] = local
+        _SESSION_PATHS.pop(registered, None)
+        return
+    local = str(local)
+    if _SESSION_PATHS.get(registered) != local:
+        _SESSION_PATHS[registered] = local
         print(f'[settings] project moved: {registered} -> {local}')
-    state['remapped'] = remaps
-    _save_json(LOCAL_STATE_PATH, state)
 
 
-def local_root(registered):
-    """Where a registered project is on this device."""
-    return _get_remaps().get(str(registered)) or str(registered)
+def _drop_saved_remaps():
+    """v0.13.4-0.13.5 saved remaps in local_state.json; they are per session now."""
+    state = _load_json(LOCAL_STATE_PATH)
+    if 'remapped' in state:
+        del state['remapped']
+        _save_json(LOCAL_STATE_PATH, state)
+
+
+def session_path(registered):
+    """Where a registered project is in this session (no disk access): where
+    it was found this run, else this login's copy of a synced location, else
+    the registered path."""
+    registered = str(registered)
+    return (_SESSION_PATHS.get(registered) or stale_copy(registered)
+            or registered)
+
+
+
+def _same_project(a, b):
+    """a and b are the same location under different profile / OneDrive
+    folders (string check, either direction)."""
+    if _same_path(a, b):
+        return True
+    left = {_norm(p) for p in [a] + remap_candidates(a)}
+    return any(_norm(p) in left for p in [b] + remap_candidates(b))
 
 
 def _registered_for(path, reg):
-    """The registry root that path (possibly a remapped local path) stands
-    for, so the shared list never gains a per-device duplicate."""
+    """The registry root that path (possibly this session's location of it)
+    stands for, so the shared list never gains a per-device duplicate."""
     path = str(path)
     roots = [p['root'] for p in reg['projects']]
     for root in roots:
         if _same_path(root, path):
             return root
-    for root, local in _get_remaps().items():
-        if root in roots and _same_path(local, path):
+    for root in roots:
+        if _same_path(_SESSION_PATHS.get(root), path):
             return root
     for root in roots:
-        if any(_same_path(c, path) for c in remap_candidates(root)):
+        if _same_project(root, path):
             _set_remap(root, path)
             return root
     return path
@@ -562,6 +603,7 @@ def resolve_project_root(wait=3.0):
     first reachable registered project opens instead of the "add a project"
     prompt. Raises RegistryUnreadable if projects.json can't be read.
     """
+    _drop_saved_remaps()
     env = os.environ.get('MAZE_PROJECT_ROOT')
     if env and Path(env).expanduser().is_dir():
         return Path(env).expanduser().resolve()
@@ -588,6 +630,12 @@ def resolve_project_root(wait=3.0):
                 return Path(option)
         return None
 
+    def note_all():
+        # Every probed project, so the project list shows where each one is
+        # in this session, not just the one that opens.
+        for root in candidates:
+            pick(root)
+
     deadline = time.monotonic() + wait
     while True:
         pending = [p for p in every if p not in reachable]
@@ -597,6 +645,7 @@ def resolve_project_root(wait=3.0):
         for root in preferred:
             path = pick(root)
             if path:
+                note_all()
                 if not last:
                     _set_last_project(root)
                 return path
@@ -611,6 +660,7 @@ def resolve_project_root(wait=3.0):
         else:
             print(f'[settings] project not reachable: {root}')
 
+    note_all()
     for root in preferred:
         not_reachable(root)
     for root in candidates[len(preferred):]:
