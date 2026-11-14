@@ -35,7 +35,9 @@ from pipeline_app import (
     read_asset_meta, write_asset_meta, DEFAULT_ASSET_META,
     APP_FILE_EXTENSIONS,
     build_context_env, _app_dir, APP_VERSION,
-    discover_usd_files, discover_husk_passes,
+    discover_usd_files, discover_husk_passes, scan_main_layer_passes,
+    clean_render_name, existing_render_names, render_versions,
+    render_version_dir, render_output_path,
     discover_image_sequences,
     sync_usd_references, parse_usd_references,
     discover_hip_files, discover_hip_rops, find_hython, build_rop_render_cmd, is_renderer_rop,
@@ -3858,6 +3860,8 @@ class HelpPage(QWidget):
         self._add_section(layout, '8 — Rendering', """
         <p>Render your USD scenes without opening Houdini.</p>
         <p><b>How to:</b> pick a Shot or Asset on the <b>Shots</b> / <b>Assets</b> tabs, pick the USD file, choose a version (it suggests the next one), select the Houdini version (22.0 or 21.0), choose Karma XPU or CPU, tick the passes you need, set the frame range and press <b>Render Selected Passes</b>.</p>
+        <p><b>Name:</b> optional, like the descriptor in the Maya/Blender USD export. With a name, renders go to <code>render/&lt;shot&gt;_&lt;name&gt;_v001</code> and the files are called <code>&lt;shot&gt;_&lt;name&gt;_&lt;pass&gt;_v001_1001.exr</code>. Each name counts its own versions, so renders of different USD files don't overwrite each other. Leave it empty for <code>&lt;shot&gt;_v001</code>.</p>
+        <p><b>Passes:</b> MazeHub looks for passes in the selected USD file only. If that file references other USD files, it asks before scanning them too, because on OneDrive that downloads them. Say no to use the passes from the main file; <b>Scan Referenced Files</b> does it later.</p>
         <p>Before husk renders, MazeHub downloads the files the USD references. If something fails to download or can't be found, choose <b>Render Anyway</b> or <b>Cancel Render</b>. <b>Skip Sync</b> stops a slow sync and renders with what's already on disk.</p>
         <p>You'll see progress for each frame and pass, with time estimates. You can pause or cancel at any time.</p>
         """)
@@ -4344,16 +4348,23 @@ class _PassDiscoveryWorker(QThread):
     ready = Signal(int, object, str)
     failed = Signal(int, str)
 
-    def __init__(self, husk_path, usd_file, generation, parent=None):
+    """mode 'main': read only the main USD layer (scan_main_layer_passes) and emit its dict.
+    mode 'full': husk --list-passes on the composed stage, which opens every referenced file."""
+
+    def __init__(self, husk_path, usd_file, generation, parent=None, mode='main'):
         super().__init__(parent)
         self.husk_path = husk_path
         self.usd_file = usd_file
         self.generation = generation
+        self.mode = mode
 
     def run(self):
         try:
-            passes, raw_output = discover_husk_passes(self.husk_path, self.usd_file)
-            self.ready.emit(self.generation, passes, raw_output or '')
+            if self.mode == 'main':
+                self.ready.emit(self.generation, scan_main_layer_passes(self.usd_file, self.husk_path), '')
+            else:
+                passes, raw_output = discover_husk_passes(self.husk_path, self.usd_file)
+                self.ready.emit(self.generation, passes, raw_output or '')
         except Exception as e:
             self.failed.emit(self.generation, str(e))
 
@@ -4480,6 +4491,27 @@ class RenderPage(QWidget):
         layout.addWidget(self.hip_row_widget)
         self.hip_row_widget.setVisible(False)
 
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel('Name:'))
+        self.render_name_combo = QComboBox()
+        self.render_name_combo.setEditable(True)
+        self.render_name_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.render_name_combo.setMinimumWidth(260)
+        self.render_name_combo.lineEdit().setPlaceholderText('optional, e.g. lighting')
+        self.render_name_combo.setToolTip(
+            'Optional name added to the render folder and file names, like the descriptor\n'
+            'in the Maya/Blender USD export: <shot>_<name>_v001. Each name has its own versions,\n'
+            'so renders from different USD files don\'t overwrite each other. Leave empty for <shot>_v001.')
+        self.render_name_combo.currentTextChanged.connect(self._on_render_name_changed)
+        name_row.addWidget(self.render_name_combo, 1)
+        name_row.addStretch()
+        layout.addLayout(name_row)
+        self.render_name_hint = QLabel('')
+        self.render_name_hint.setObjectName('hint')
+        self.render_name_hint.setWordWrap(True)
+        self.render_name_hint.setVisible(False)
+        layout.addWidget(self.render_name_hint)
+
         version_row = QHBoxLayout()
         version_row.addWidget(QLabel('Version:'))
         self.version_combo = QComboBox()
@@ -4536,7 +4568,7 @@ class RenderPage(QWidget):
         from settings import get_setting
         self.save_log_cb = QCheckBox('Save render log to the render folder')
         self.save_log_cb.setToolTip(
-            'Writes the Output Log to render/<shot>_vNNN/<shot>_vNNN_render_<time>.log, '
+            'Writes the Output Log to render/<shot>[_<name>]_vNNN/<shot>[_<name>]_vNNN_render_<time>.log, '
             'next to the pass folders. Written as the render runs, so a hung render still leaves a log.')
         self.save_log_cb.setChecked(bool(get_setting('render_save_log', True)))
         self.save_log_cb.toggled.connect(self._on_save_log_toggled)
@@ -4558,6 +4590,15 @@ class RenderPage(QWidget):
         self.deselect_all_btn.setCursor(Qt.PointingHandCursor)
         self.deselect_all_btn.clicked.connect(self._deselect_all_passes)
         passes_toolbar.addWidget(self.deselect_all_btn)
+        self.scan_refs_btn = QPushButton('Scan Referenced Files')
+        self.scan_refs_btn.setMinimumHeight(32)
+        self.scan_refs_btn.setCursor(Qt.PointingHandCursor)
+        self.scan_refs_btn.setToolTip(
+            'Also look for passes in the USD files the selected file references, using husk.\n'
+            'On OneDrive this downloads those files first, which can take a long time.')
+        self.scan_refs_btn.clicked.connect(self._scan_referenced_passes)
+        self.scan_refs_btn.setVisible(False)
+        passes_toolbar.addWidget(self.scan_refs_btn)
         passes_toolbar.addStretch()
         passes_layout.addLayout(passes_toolbar)
 
@@ -4571,6 +4612,7 @@ class RenderPage(QWidget):
         passes_layout.addWidget(self.no_passes_label)
         self._no_passes_text = self.no_passes_label.text()
         self._discover_gen = 0
+        self._pass_scan = None
 
         layout.addWidget(passes_group)
 
@@ -4714,8 +4756,43 @@ class RenderPage(QWidget):
             self.hip_combo.addItems([f.name for f in discover_hip_files(shot_path)])
         self.hip_combo.setCurrentIndex(-1)
         self.hip_combo.blockSignals(False)
+        self._fill_render_names()
         self._refresh_versions()
         self._on_usd_changed('')
+
+    NO_RENDER_NAME = '(none)'
+
+    def _fill_render_names(self):
+        """Existing render names of the selected shot/asset, keeping the typed one."""
+        keep = self.render_name_combo.currentText()
+        self.render_name_combo.blockSignals(True)
+        self.render_name_combo.clear()
+        self.render_name_combo.addItem(self.NO_RENDER_NAME)
+        ctx = self._context()
+        if ctx:
+            self.render_name_combo.addItems(
+                existing_render_names(ctx[2] / 'houdini' / 'render', ctx[1]))
+        self.render_name_combo.setCurrentText('' if keep == self.NO_RENDER_NAME else keep)
+        self.render_name_combo.blockSignals(False)
+
+    def _render_name(self):
+        """(name, error) from the Name field. '(none)' and empty both mean no name."""
+        text = self.render_name_combo.currentText().strip()
+        if text == self.NO_RENDER_NAME:
+            return '', None
+        return clean_render_name(text)
+
+    def _on_render_name_changed(self, _text=''):
+        name, error = self._render_name()
+        typed = self.render_name_combo.currentText().strip()
+        if error:
+            self.render_name_hint.setText(error)
+        elif name and name != typed:
+            self.render_name_hint.setText(f'Saved as: {name}')
+        else:
+            self.render_name_hint.setText('')
+        self.render_name_hint.setVisible(bool(self.render_name_hint.text()))
+        self._refresh_versions()
 
     def _refresh_versions(self):
         self.version_combo.clear()
@@ -4723,17 +4800,10 @@ class RenderPage(QWidget):
         if not ctx:
             return
         _ctx_type, shot_name, shot_path = ctx
-        render_base = shot_path / 'houdini' / 'render'
-        versions = []
-        if render_base.exists():
-            for d in render_base.iterdir():
-                if d.is_dir() and d.name.startswith(f'{shot_name}_v'):
-                    try:
-                        v = int(d.name[len(shot_name) + 2:])
-                        versions.append(v)
-                    except (ValueError, IndexError):
-                        pass
-        versions.sort()
+        name, error = self._render_name()
+        if error:
+            return
+        versions = render_versions(shot_path / 'houdini' / 'render', shot_name, name)
         next_version = (versions[-1] + 1) if versions else 1
         for v in versions:
             self.version_combo.addItem(f'v{v:03d}', v)
@@ -4826,6 +4896,8 @@ class RenderPage(QWidget):
                 w.deleteLater()
         self.no_passes_label.setText(self._no_passes_text)
         self.no_passes_label.setVisible(True)
+        self._pass_scan = None
+        self.scan_refs_btn.setVisible(False)
 
     def _resolve_husk_from_houdini(self, version_key=None):
         """Derive husk.exe path from the Houdini exe path in apps config."""
@@ -4865,29 +4937,123 @@ class RenderPage(QWidget):
             self._log('[info] husk not found — configure in Settings')
             return
 
-        self._log(f'[info] Discovering passes: {husk_path} --list-passes {usd_file.name}')
+        self._pass_scan = {'usd_file': usd_file, 'husk_path': husk_path, 'refs': [], 'full_done': False}
+        self._log(f'[info] Discovering passes in {usd_file.name} (main file only)')
         self.no_passes_label.setText('Discovering passes…')
-        worker = _PassDiscoveryWorker(husk_path, usd_file, self._discover_gen, self)
-        worker.ready.connect(self._on_passes_ready)
+        self._start_pass_worker('main')
+
+    def _start_pass_worker(self, mode):
+        scan = self._pass_scan
+        worker = _PassDiscoveryWorker(scan['husk_path'], scan['usd_file'], self._discover_gen, self, mode=mode)
+        worker.ready.connect(self._on_main_passes_ready if mode == 'main' else self._on_passes_ready)
         worker.failed.connect(self._on_passes_failed)
         worker.finished.connect(worker.deleteLater)
         worker.start()
+
+    def _listed_passes(self):
+        return [w.text() for w in self.passes_container.findChildren(QCheckBox)
+                if not w.property('rop')]
+
+    def _add_pass_checkboxes(self, passes):
+        """Add passes not already listed. Returns the ones added."""
+        listed = set(self._listed_passes())
+        added = [p for p in dict.fromkeys(passes) if p not in listed]
+        for p in added:
+            cb = QCheckBox(p)
+            cb.setChecked(True)
+            self.passes_layout.addWidget(cb)
+        if self._listed_passes() or added:
+            self.no_passes_label.setVisible(False)
+        return added
+
+    def _ask_scan_references(self, usd_file, refs, found):
+        """Ask whether to look for passes in the referenced USD files too. True = scan them."""
+        shown = '\n'.join(f'  {r}' for r in refs[:10])
+        if len(refs) > 10:
+            shown += f'\n  … and {len(refs) - 10} more'
+        passes_line = (f'Found {found} pass{"es" if found != 1 else ""} in {usd_file.name}.' if found
+                       else f'No passes found in {usd_file.name} itself.')
+        box = QMessageBox(self.window())
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle('Scan referenced USD files?')
+        box.setText(f'{passes_line}\n\nIt references {len(refs)} other USD '
+                    f'file{"s" if len(refs) != 1 else ""}:\n{shown}\n\n'
+                    'Look for passes in those as well?')
+        box.setInformativeText('On OneDrive this downloads every referenced file first, '
+                               'which can be very large. You can do it later with '
+                               'Scan Referenced Files.')
+        scan_btn = box.addButton('Scan Referenced Files', QMessageBox.YesRole)
+        box.addButton('Use Main File Passes', QMessageBox.NoRole)
+        box.exec()
+        return box.clickedButton() is scan_btn
+
+    def _ask_full_scan_fallback(self, usd_file, error):
+        reply = QMessageBox.question(
+            self.window(), 'Scan with husk?',
+            f'{error}\n\nScan {usd_file.name} with husk instead? husk opens every file it '
+            'references, so on OneDrive those are downloaded first.',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return reply == QMessageBox.Yes
+
+    def _on_main_passes_ready(self, generation, result, _raw=''):
+        if generation != self._discover_gen or not self._pass_scan:
+            return
+        scan = self._pass_scan
+        usd_file = scan['usd_file']
+        if result.get('error'):
+            self._log(f'[warning] {result["error"]}')
+            if self._ask_full_scan_fallback(usd_file, result['error']) and generation == self._discover_gen:
+                self._scan_referenced_passes()
+            else:
+                self.no_passes_label.setVisible(True)
+            return
+        passes, refs = result.get('passes', []), result.get('layer_refs', [])
+        scan['refs'] = refs
+        self._add_pass_checkboxes(passes)
+        self._log(f'[info] Found {len(passes)} passes in {usd_file.name} ({result.get("method")})'
+                  + (f': {", ".join(passes)}' if passes else ''))
+        if not refs:
+            if not passes:
+                self.no_passes_label.setText(f'No passes found in {usd_file.name}.')
+                self.no_passes_label.setVisible(True)
+            return
+        self._log(f'[info] {usd_file.name} references {len(refs)} other USD files (not scanned)')
+        self.scan_refs_btn.setVisible(True)
+        if not passes:
+            self.no_passes_label.setText(
+                f'No passes in {usd_file.name} itself. Use Scan Referenced Files to look in the '
+                'files it references.')
+            self.no_passes_label.setVisible(True)
+        ask = self._ask_scan_references(usd_file, refs, len(passes))
+        if generation != self._discover_gen:
+            return
+        if ask:
+            self._scan_referenced_passes()
+        else:
+            self._log(f'[info] Using {len(passes)} passes from the main file')
+
+    def _scan_referenced_passes(self):
+        scan = self._pass_scan
+        if not scan or scan['full_done'] or self._render_mode() != 'husk':
+            return
+        scan['full_done'] = True
+        self.scan_refs_btn.setVisible(False)
+        self._log(f'[info] Discovering passes: {scan["husk_path"]} --list-passes '
+                  f'{scan["usd_file"].name} (includes referenced files)')
+        self.no_passes_label.setText('Discovering passes in referenced files…')
+        self._start_pass_worker('full')
 
     def _on_passes_ready(self, generation, passes, raw_output):
         if generation != self._discover_gen:
             return
         if raw_output:
             self._log(f'[husk output]\n{raw_output.strip()}')
-        if not passes:
-            self._log('[info] No passes found')
+        added = self._add_pass_checkboxes(passes)
+        self._log(f'[info] husk found {len(passes)} passes'
+                  + (f', {len(added)} new: {", ".join(added)}' if added else ''))
+        if not self._listed_passes():
+            self.no_passes_label.setText(self._no_passes_text)
             self.no_passes_label.setVisible(True)
-            return
-        self._log(f'[info] Found {len(passes)} passes: {", ".join(passes)}')
-        self.no_passes_label.setVisible(False)
-        for p in passes:
-            cb = QCheckBox(p)
-            cb.setChecked(True)
-            self.passes_layout.addWidget(cb)
 
     def _on_passes_failed(self, generation, message):
         if generation != self._discover_gen:
@@ -5026,9 +5192,15 @@ class RenderPage(QWidget):
             self._status('Select a render engine first', False)
             return
 
+        render_name, name_error = self._render_name()
+        if name_error:
+            self._log(f'[error] {name_error}')
+            self._status(name_error, False)
+            return
+
         commands = []
         render_base = shot_path / 'houdini' / 'render'
-        version_dir_name = f'{shot_name}_v{version:03d}'
+        version_dir = render_version_dir(render_base, shot_name, render_name, version)
         frames = list(range(start, end + 1, max(interval, 1)))
         render_order = self.render_order_combo.currentData()
         if render_order == 'frame_major':
@@ -5036,9 +5208,7 @@ class RenderPage(QWidget):
         else:
             jobs = [(p, frame) for p in passes for frame in frames]
         for p, frame in jobs:
-            pass_safe = p.split('/')[-1]
-            out_file = (render_base / version_dir_name / pass_safe
-                        / f'{shot_name}_{pass_safe}_v{version:03d}_{frame:04d}.exr')
+            out_file = render_output_path(render_base, shot_name, render_name, version, p, frame)
             cmd = [
                 husk_path,
                 '--engine', render_engine,
@@ -5055,8 +5225,9 @@ class RenderPage(QWidget):
             commands.append(cmd)
 
         self.log_output.clear()
-        self._open_render_log(render_base / version_dir_name)
+        self._open_render_log(version_dir)
         self._log(f'Rendering: {usd_name}')
+        self._log(f'Output: {version_dir}')
         self._log(f'Passes: {", ".join(passes)}')
         self._log(f'Frames: {start}-{end} (interval {interval})')
         self._log(f'Engine: Karma {render_engine.upper()}')
@@ -5080,7 +5251,8 @@ class RenderPage(QWidget):
             self._close_render_log()
             return
         for p in passes:
-            (render_base / version_dir_name / p.split('/')[-1]).mkdir(parents=True, exist_ok=True)
+            render_output_path(render_base, shot_name, render_name, version, p, 0).parent.mkdir(
+                parents=True, exist_ok=True)
         if not sync_accepted:
             self._log(
                 f'[warning] USD sync skipped — rendering may fail (sync time {sync_time_str})')
@@ -5093,6 +5265,7 @@ class RenderPage(QWidget):
             'context_type': ctx_type,
             'context_path': str(shot_path),
             'usd_file': usd_name,
+            'render_name': render_name,
             'passes': passes,
             'start_frame': start,
             'end_frame': end,
@@ -5182,19 +5355,25 @@ class RenderPage(QWidget):
             self._log('[error] Select a render version first')
             self._status('Select a render version first', False)
             return
+        render_name, name_error = self._render_name()
+        if name_error:
+            self._log(f'[error] {name_error}')
+            self._status(name_error, False)
+            return
 
         frame_count = len(range(start, end + 1, interval))
-        version_dir = shot_path / 'houdini' / 'render' / f'{shot_name}_v{version:03d}'
+        render_base = shot_path / 'houdini' / 'render'
+        version_dir = render_version_dir(render_base, shot_name, render_name, version)
         commands, job_meta, names, out_dirs = [], [], [], []
         for rop, render_pass, _rop_type in jobs:
             name = (render_pass or rop).rstrip('/').split('/')[-1]
             if name in names:
                 name = f'{rop.rstrip("/").split("/")[-1]}_{name}'
             names.append(name)
-            out_dir = version_dir / name
+            out_file = render_output_path(render_base, shot_name, render_name, version, name, '$F4')
+            out_dir = out_file.parent
             out_dir.mkdir(parents=True, exist_ok=True)
             out_dirs.append(str(out_dir))
-            out_file = out_dir / f'{shot_name}_{name}_v{version:03d}_$F4.exr'
             commands.append(build_rop_render_cmd(
                 hython, hip_file, rop, render_pass, start, end, interval, out_file))
             job_meta.append({'pass': name, 'frames': frame_count})
@@ -5212,6 +5391,7 @@ class RenderPage(QWidget):
             'context_type': ctx_type,
             'context_path': str(shot_path),
             'usd_file': hip_name,
+            'render_name': render_name,
             'passes': names,
             'start_frame': start,
             'end_frame': end,
@@ -5401,11 +5581,10 @@ class RenderPage(QWidget):
             meta['end_time'] = time.strftime('%Y-%m-%d %H:%M:%S')
             first_frame_path = ''
             if meta['passes']:
-                shot_path = Path(meta['context_path'])
-                pass_name = meta['passes'][0].split('/')[-1]
-                version_dir = f'{meta["shot"]}_v{meta["version"]:03d}'
-                first_frame = f'{meta["shot"]}_{pass_name}_v{meta["version"]:03d}_{meta["start_frame"]:04d}.exr'
-                first_frame_path = str(shot_path / 'houdini' / 'render' / version_dir / pass_name / first_frame)
+                first_frame_path = str(render_output_path(
+                    Path(meta['context_path']) / 'houdini' / 'render', meta['shot'],
+                    meta.get('render_name', ''), meta['version'], meta['passes'][0],
+                    meta['start_frame']))
             from settings import get_setting
             from pipeline_app import send_teams_notification
             webhook_url = get_setting('teams_webhook_url', '')

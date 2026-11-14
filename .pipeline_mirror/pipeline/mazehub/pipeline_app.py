@@ -8,7 +8,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.13.6"
+APP_VERSION = "0.13.7"
 
 
 def _get_display_name():
@@ -908,6 +908,237 @@ def discover_husk_passes(husk_path, usd_file):
         return [], f'husk pass discovery timed out: {e}'
     except Exception as e:
         return [], f'husk pass discovery failed: {e}'
+
+
+# ---- Render output naming -------------------------------------------------
+# Like the Maya/Blender USD export: {context}_{name}_v{NNN}, versions counted per name.
+
+def clean_render_name(text):
+    """Return (name, error). Empty text gives ('', None): no name, the old layout."""
+    words = re.findall(r'[A-Za-z0-9-]+', str(text or ''))
+    name = '_'.join(words)
+    if not name:
+        return '', None
+    if any(re.fullmatch(r'[vV]\d+', w) for w in words):
+        return '', 'Name can\'t contain a version like "v003": MazeHub adds the version itself'
+    return name, None
+
+
+def render_base_name(context_name, name=''):
+    return f'{context_name}_{name}' if name else context_name
+
+
+def render_version_dir(render_base, context_name, name, version):
+    return Path(render_base) / f'{render_base_name(context_name, name)}_v{int(version):03d}'
+
+
+def render_output_path(render_base, context_name, name, version, render_pass, frame):
+    """houdini/render/{ctx}[_{name}]_v{NNN}/{pass}/{ctx}[_{name}]_{pass}_v{NNN}_{frame}.exr
+
+    frame is an int (zero-padded to 4) or a frame token such as '$F4'.
+    """
+    pass_name = str(render_pass).rstrip('/').split('/')[-1]
+    base = render_base_name(context_name, name)
+    frame_str = f'{frame:04d}' if isinstance(frame, int) else str(frame)
+    return (render_version_dir(render_base, context_name, name, version) / pass_name
+            / f'{base}_{pass_name}_v{int(version):03d}_{frame_str}.exr')
+
+
+def _render_dirs(render_base):
+    try:
+        return [d.name for d in Path(render_base).iterdir() if d.is_dir()]
+    except OSError:
+        return []
+
+
+def existing_render_names(render_base, context_name):
+    names = set()
+    pattern = re.compile(rf'^{re.escape(context_name)}_(.+)_v(\d{{3,}})$')
+    for d in _render_dirs(render_base):
+        m = pattern.match(d)
+        if m:
+            names.add(m.group(1))
+    return sorted(names, key=str.lower)
+
+
+def render_versions(render_base, context_name, name=''):
+    pattern = re.compile(rf'^{re.escape(render_base_name(context_name, name))}_v(\d+)$')
+    versions = set()
+    for d in _render_dirs(render_base):
+        m = pattern.match(d)
+        if m:
+            versions.add(int(m.group(1)))
+    return sorted(versions)
+
+
+# ---- Pass discovery from the main USD layer only ---------------------------
+# husk --list-passes composes the whole stage, which downloads every referenced
+# layer from OneDrive. These read only the root layer's own specs.
+
+_USDA_WORD_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_:.]*')
+_USDA_REF_KEYS = ('subLayers', 'references', 'payload')
+
+
+def _usda_tokens(text):
+    """(kind, value) tokens of a .usda: word, string, asset, punct. Skips comments and <paths>."""
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif c == '#':
+            j = text.find('\n', i)
+            i = n if j < 0 else j
+        elif c in '"\'':
+            q3 = c * 3
+            if text.startswith(q3, i):
+                j = text.find(q3, i + 3)
+                j = n if j < 0 else j
+                yield 'string', text[i + 3:j]
+                i = j + 3
+            else:
+                j = i + 1
+                while j < n and text[j] != c and text[j] != '\n':
+                    j += 2 if text[j] == '\\' else 1
+                yield 'string', text[i + 1:j]
+                i = j + 1
+        elif c == '@':
+            if text.startswith('@@@', i):
+                j = text.find('@@@', i + 3)
+                j = n if j < 0 else j
+                yield 'asset', text[i + 3:j]
+                i = j + 3
+            else:
+                j = text.find('@', i + 1)
+                j = n if j < 0 else j
+                yield 'asset', text[i + 1:j]
+                i = j + 1
+        elif c == '<':
+            j = text.find('>', i + 1)
+            i = n if j < 0 else j + 1
+        else:
+            m = _USDA_WORD_RE.match(text, i)
+            if m:
+                yield 'word', m.group()
+                i = m.end()
+            else:
+                yield 'punct', c
+                i += 1
+
+
+def parse_usda_layer(text):
+    """RenderPass prim paths and external layer refs (sublayers, references, payloads)
+    defined in one .usda layer's text. Nothing referenced is opened."""
+    toks = list(_usda_tokens(text))
+    stack = []          # '(' / '[' / ('prim', name) / '{'
+    pending = None      # (type, name) of a prim header waiting for its '{'
+    passes, refs = [], []
+    i = 0
+    while i < len(toks):
+        kind, val = toks[i]
+        in_scope = not stack or not isinstance(stack[-1], str) or stack[-1] == '{'
+        if kind == 'word' and val in ('def', 'over', 'class') and in_scope:
+            j, type_name = i + 1, ''
+            if j < len(toks) and toks[j][0] == 'word':
+                type_name = toks[j][1]
+                j += 1
+            if j < len(toks) and toks[j][0] == 'string':
+                pending = (type_name, toks[j][1])
+                i = j + 1
+                continue
+        elif kind == 'word' and val in _USDA_REF_KEYS and i + 1 < len(toks) and toks[i + 1] == ('punct', '='):
+            j = i + 2
+            if j < len(toks) and toks[j] == ('punct', '['):
+                depth, j = 1, j + 1
+                while j < len(toks) and depth:
+                    if toks[j] == ('punct', '['):
+                        depth += 1
+                    elif toks[j] == ('punct', ']'):
+                        depth -= 1
+                    elif toks[j][0] == 'asset' and toks[j][1].strip():
+                        refs.append(toks[j][1].strip())
+                    j += 1
+            elif j < len(toks) and toks[j][0] == 'asset':
+                if toks[j][1].strip():
+                    refs.append(toks[j][1].strip())
+                j += 1
+            i = j
+            continue
+        elif kind == 'punct':
+            if val in '([':
+                stack.append(val)
+            elif val == '{':
+                if pending is not None:
+                    type_name, name = pending
+                    stack.append(('prim', name))
+                    if type_name == 'RenderPass':
+                        passes.append('/' + '/'.join(e[1] for e in stack if not isinstance(e, str)))
+                    pending = None
+                else:
+                    stack.append('{')
+            elif val in ')]}' and stack:
+                stack.pop()
+        i += 1
+    seen = set()
+    refs = [r for r in refs if not (r in seen or seen.add(r))]
+    return {'passes': passes, 'layer_refs': refs}
+
+
+def _layer_info_hython(usd_file, husk_path=None, timeout=180):
+    hython = find_hython(husk_path)
+    if not hython or not USD_DEPS_SCRIPT.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            [hython, str(USD_DEPS_SCRIPT), '--layer-info', str(usd_file)],
+            capture_output=True, text=True, timeout=timeout,
+            **_subprocess_flags(),
+        )
+        body = (result.stdout or '').split('MAZE_LAYER_BEGIN', 1)[1].split('MAZE_LAYER_END', 1)[0]
+        data = json.loads(body)
+    except (subprocess.TimeoutExpired, OSError, IndexError, ValueError):
+        return None
+    return None if data.get('error') else data
+
+
+def scan_main_layer_passes(usd_file, husk_path=None):
+    """Find RenderPass prims in the main USD layer only, and list the USD files it references.
+
+    Returns {'passes', 'layer_refs', 'method', 'error'}. Referenced layers are never
+    opened or synced, so OneDrive doesn't download them.
+    """
+    usd_file = Path(usd_file)
+    out = {'passes': [], 'layer_refs': [], 'method': '', 'error': ''}
+    if not sync_file(usd_file):
+        out['error'] = f'USD file is missing or did not sync: {usd_file}'
+        return out
+    info = None
+    try:
+        import maze_usd_deps  # needs pxr: only inside a USD-enabled Python
+        info, out['method'] = maze_usd_deps.layer_info(str(usd_file)), 'pxr'
+    except Exception:
+        info = None
+    if info is None and (usd_file.suffix.lower() == '.usda' or is_usd_ascii(usd_file)):
+        try:
+            info = parse_usda_layer(usd_file.read_text(errors='ignore'))
+            out['method'] = 'text'
+        except OSError as e:
+            out['error'] = f'Could not read {usd_file}: {e}'
+            return out
+    if info is None:
+        info = _layer_info_hython(usd_file, husk_path)
+        out['method'] = 'hython'
+    if info is None:
+        text = _usdcat_to_text(usd_file, husk_path)
+        if text:
+            info, out['method'] = parse_usda_layer(text), 'usdcat'
+    if info is None:
+        out['method'] = ''
+        out['error'] = f'Could not read {usd_file.name} on its own (no pxr, hython or usdcat)'
+        return out
+    out['passes'] = list(dict.fromkeys(info.get('passes', [])))
+    out['layer_refs'] = list(dict.fromkeys(info.get('layer_refs', [])))
+    return out
 
 
 def is_usd_ascii(usd_file):
