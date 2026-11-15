@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
     QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog, QTabWidget,
     QMenu, QCheckBox, QSpinBox, QProgressBar, QDateEdit,
-    QMessageBox, QProgressDialog, QRadioButton, QToolButton,
+    QMessageBox, QProgressDialog, QRadioButton, QToolButton, QInputDialog,
 )
 
 import updater
@@ -39,7 +39,11 @@ from pipeline_app import (
     discover_usd_files, discover_husk_passes, scan_main_layer_passes,
     classify_render_failure, failed_frames_by_pass, strip_log_time, sync_problem_count,
     list_processes, is_mplay_process, kill_processes, resource_snapshot, format_resources,
-    resource_warnings,
+    resource_warnings, compact_frames, frame_runs, batch_log_path, machine_share,
+    create_render_batch, list_render_batches, load_render_batch, write_machine_status,
+    read_machine_status, slot_state, batch_slots, next_free_machine, batch_failed_frames,
+    retry_batch_settings, delete_render_batch, batch_context_path, describe_share, describe_slot,
+    latest_machine_log, machine_host, BATCH_STATUS_INTERVAL, batch_jobs,
     clean_render_name, existing_render_names, render_versions,
     render_version_dir, render_output_path,
     discover_image_sequences,
@@ -3869,6 +3873,7 @@ class HelpPage(QWidget):
         <p>Before husk renders, MazeHub downloads the files the USD references. If something fails to download or can't be found, choose <b>Render Anyway</b> or <b>Cancel Render</b>. <b>Skip Sync</b> stops a slow sync and renders with what's already on disk.</p>
         <p>You'll see progress for each frame and pass, with time estimates. You can pause or cancel at any time.</p>
         <p><b>Advanced:</b> save the render log, skip the confirmation after the USD sync, override the resolution for quick renders (an exact size or a percentage of the USD's; use a Name such as <code>preview</code> so full-res frames aren't overwritten), and keep the computer awake while rendering, so the YT Screensaver isn't needed. With MPlay on, <b>Restart MPlay every</b> closes the MPlay window every N frames (and before a retry), because MPlay keeps every frame in memory and on long renders that can fill the RAM. Each frame's log ends with a <code>[resources]</code> line (free RAM and GPU memory, MPlay and MazeHub memory) so you can see if something is growing. <b>Frame Range</b> can come from the shot/asset, from the USD file's own start/end, or be typed in (Custom). These settings are saved for you, per project.</p>
+        <p><b>Render batches</b> split one render over several PCs. Set everything up, press <b>Create Batch…</b> and choose how many machines; the frames are shared out in turn (machine 1 gets the 1st, N+1th, … frame). On each other PC open <b>Batches…</b>, pick the batch and press <b>Render Next Free Machine</b>. A batch carries all the settings (including MPlay, keep awake and the render log), and each machine's log is saved with the batch. When every machine is done the batch moves to <b>Finished</b>; frames that failed on any machine can go into a new batch with <b>Re-render Failed Frames…</b>. Batches live in the project's <code>mazehub/render_batches</code> folder, so the PCs need the project synced.</p>
         <p><b>Failed frames:</b> if a frame fails (for example Karma XPU runs out of GPU memory, or the renderer crashes), MazeHub waits a few seconds and renders it once more with the same settings, then moves on. Frames that fail twice are listed at the end of the log with the reason and a list to re-render, and in the Teams notification.</p>
         """)
 
@@ -4143,7 +4148,7 @@ class RenderThread(QThread):
                         state['done'] = 0  # the job reports its frames again
                     continue
                 failure = {'pass': pass_name, 'frame': frame_num, 'code': code,
-                           'reason': '; retry: '.join(reasons)}
+                           'reason': '; retry: '.join(reasons), 'index': i}
                 if meta:
                     failure['job'] = pass_name
                 self.failures.append(failure)
@@ -4558,6 +4563,231 @@ class CollapsibleSection(QWidget):
             self.toggled.emit(expanded)
 
 
+class BatchesDialog(QDialog):
+    """Active render batches: pick one and render a machine's share on this PC."""
+
+    def __init__(self, page, parent=None):
+        super().__init__(parent)
+        self.page = page
+        self.choice = None          # (batch, machine) to render after the dialog closes
+        self._batches = []
+        self._current = None
+        self.setWindowTitle('Render Batches')
+        self.resize(900, 620)
+        layout = QVBoxLayout(self)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel('<b>Active batches</b>'))
+        top.addStretch()
+        self.new_btn = QPushButton('New Batch from Current Settings…')
+        self.new_btn.clicked.connect(self._new_batch)
+        top.addWidget(self.new_btn)
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.clicked.connect(self.refresh)
+        top.addWidget(self.refresh_btn)
+        layout.addLayout(top)
+
+        self.active_table = self._make_table(['Batch', 'Shot / Asset', 'Passes', 'Frames', 'Machines', 'Created'])
+        layout.addWidget(self.active_table, 2)
+        self.empty_label = QLabel('No active batches. Use "New Batch from Current Settings…" or '
+                                  'Create Batch… on the Render tab.')
+        self.empty_label.setObjectName('hint')
+        layout.addWidget(self.empty_label)
+
+        self.finished = CollapsibleSection('Finished')
+        self.finished_table = self._make_table(['Batch', 'Shot / Asset', 'Frames', 'Failed', 'Created'])
+        self.finished.content_layout.addWidget(self.finished_table)
+        layout.addWidget(self.finished)
+
+        layout.addWidget(QLabel('<b>Machines</b>'))
+        self.slots_table = self._make_table(['Machine', 'Frames', 'State', 'Latest log'])
+        layout.addWidget(self.slots_table, 2)
+
+        buttons = QHBoxLayout()
+        self.next_btn = QPushButton('Render Next Free Machine')
+        self.next_btn.setDefault(True)
+        self.next_btn.clicked.connect(self._render_next)
+        buttons.addWidget(self.next_btn)
+        self.machine_btn = QPushButton('Render Machine…')
+        self.machine_btn.clicked.connect(self._render_machine)
+        buttons.addWidget(self.machine_btn)
+        self.retry_btn = QPushButton('Re-render Failed Frames…')
+        self.retry_btn.clicked.connect(self._retry)
+        buttons.addWidget(self.retry_btn)
+        self.logs_btn = QPushButton('Open Logs')
+        self.logs_btn.clicked.connect(self._open_logs)
+        buttons.addWidget(self.logs_btn)
+        buttons.addStretch()
+        self.delete_btn = QPushButton('Delete Batch')
+        self.delete_btn.clicked.connect(self._delete)
+        buttons.addWidget(self.delete_btn)
+        close_btn = QPushButton('Close')
+        close_btn.clicked.connect(self.reject)
+        buttons.addWidget(close_btn)
+        layout.addLayout(buttons)
+
+        self.active_table.itemSelectionChanged.connect(lambda: self._on_select(self.active_table))
+        self.finished_table.itemSelectionChanged.connect(lambda: self._on_select(self.finished_table))
+        self.refresh()
+
+    @staticmethod
+    def _make_table(headers):
+        t = QTableWidget(0, len(headers))
+        t.setHorizontalHeaderLabels(headers)
+        t.setSelectionBehavior(QTableWidget.SelectRows)
+        t.setSelectionMode(QTableWidget.SingleSelection)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
+        t.verticalHeader().setVisible(False)
+        t.horizontalHeader().setStretchLastSection(True)
+        return t
+
+    def _active(self):
+        return [b for b in self._batches if b['_state'] == 'active']
+
+    def _finished(self):
+        return [b for b in self._batches if b['_state'] == 'finished']
+
+    def refresh(self):
+        keep = self._current['id'] if self._current else None
+        self._batches = list_render_batches(self.page.project_root)
+        self._fill(self.active_table, self._active(), active=True)
+        self._fill(self.finished_table, self._finished(), active=False)
+        self.empty_label.setVisible(not self._active())
+        self.finished.set_note(str(len(self._finished())) if self._finished() else '')
+        target = next((b for b in self._batches if b['id'] == keep), None)
+        if target is None and len(self._active()) == 1:
+            target = self._active()[0]
+        self._select(target)
+
+    def _fill(self, table, batches, active):
+        table.blockSignals(True)
+        table.setRowCount(len(batches))
+        for row, b in enumerate(batches):
+            frames = sorted({f for fr in batch_jobs(b).values() for f in fr})
+            passes = ', '.join(k.split('|')[-1].rstrip('/').split('/')[-1] or k for k in batch_jobs(b))
+            states = [s['state'] for s in b['_slots']]
+            if active:
+                summary = ' · '.join(f'{states.count(st)} {st}' for st in ('running', 'done', 'free', 'stale')
+                                     if states.count(st))
+                cells = [b['id'], b['context']['name'], passes, f'{compact_frames(frames)} ({len(frames)})',
+                         f'{b["machine_count"]}: {summary}', f'{b.get("created_by", "")} on '
+                         f'{b.get("created_on", "")}, {b.get("created_at", "")}']
+            else:
+                failed = len({(d['key'], d['frame']) for d in batch_failed_frames(b)[1]})
+                cells = [b['id'], b['context']['name'], f'{len(frames)}', str(failed), b.get('created_at', '')]
+            for col, text in enumerate(cells):
+                table.setItem(row, col, QTableWidgetItem(str(text)))
+        table.resizeColumnsToContents()
+        table.blockSignals(False)
+
+    def _select(self, batch):
+        self._current = batch
+        for table, group in ((self.active_table, self._active()), (self.finished_table, self._finished())):
+            table.blockSignals(True)
+            table.clearSelection()
+            if batch is not None:
+                for row, b in enumerate(group):
+                    if b['id'] == batch['id']:
+                        table.selectRow(row)
+            table.blockSignals(False)
+        self._show_slots()
+
+    def _on_select(self, table):
+        rows = {i.row() for i in table.selectedItems()}
+        group = self._active() if table is self.active_table else self._finished()
+        if rows:
+            self._select(group[min(rows)])
+
+    def _show_slots(self):
+        b = self._current
+        self.slots_table.setRowCount(0 if b is None else int(b['machine_count']))
+        if b is not None:
+            for row, slot in enumerate(b['_slots']):
+                log = latest_machine_log(b, slot['machine'])
+                cells = [str(slot['machine']), describe_share(b, slot['machine']), describe_slot(slot),
+                         log.name if log else '']
+                for col, text in enumerate(cells):
+                    self.slots_table.setItem(row, col, QTableWidgetItem(text))
+            self.slots_table.resizeColumnsToContents()
+        active = b is not None and b['_state'] == 'active'
+        self.next_btn.setEnabled(active and next_free_machine(b) is not None)
+        self.machine_btn.setEnabled(active)
+        self.retry_btn.setEnabled(b is not None and bool(batch_failed_frames(b)[0]))
+        self.logs_btn.setEnabled(b is not None)
+        self.delete_btn.setEnabled(b is not None)
+
+    def _render_next(self):
+        n = next_free_machine(self._current) if self._current else None
+        if n is None:
+            QMessageBox.information(self, 'Render batch', 'Every machine of this batch is taken or done.')
+            self.refresh()
+            return
+        self.choice = (self._current, n)
+        self.accept()
+
+    def _ask_machine_number(self, batch):
+        n, ok = QInputDialog.getInt(self, 'Render Machine', f'Machine (1-{batch["machine_count"]}):',
+                                    1, 1, int(batch['machine_count']))
+        return n if ok else None
+
+    def _render_machine(self):
+        if not self._current:
+            return
+        n = self._ask_machine_number(self._current)
+        if n:
+            self.choice = (self._current, n)
+            self.accept()
+
+    def _new_batch(self):
+        batch = self.page._create_batch()
+        if batch is None:
+            return
+        if self.page._ask_render_first_slot(batch):
+            self.choice = (batch, 1)
+            self.accept()
+            return
+        self._current = batch
+        self.refresh()
+
+    def _retry(self):
+        if not self._current:
+            return
+        batch = self.page._create_retry_batch(self._current)
+        if batch is None:
+            return
+        if self.page._ask_render_first_slot(batch):
+            self.choice = (batch, 1)
+            self.accept()
+            return
+        self._current = batch
+        self.refresh()
+
+    def _open_logs(self):
+        if self._current:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            logs = Path(self._current['_dir']) / 'logs'
+            logs.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs)))
+
+    def _confirm_delete(self, batch):
+        reply = QMessageBox.question(
+            self, 'Delete batch',
+            f'Delete batch {batch["id"]}?\n\nRendered frames are not touched. The batch folder (settings, '
+            'status and logs) is renamed to .deleted-… inside render_batches, not erased.',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return reply == QMessageBox.Yes
+
+    def _delete(self):
+        if self._current and self._confirm_delete(self._current):
+            try:
+                delete_render_batch(self._current)
+            except OSError as e:
+                QMessageBox.warning(self, 'Delete batch', f'Could not delete: {e}')
+            self._current = None
+            self.refresh()
+
+
 class RenderPage(QWidget):
     def __init__(self, project_root, pipeline_dir, apps_config=None, parent=None):
         super().__init__(parent)
@@ -4566,6 +4796,13 @@ class RenderPage(QWidget):
         self.apps_config = apps_config or {}
         self._render_thread = None
         self._render_dialog = None
+        # Render batch this machine is rendering a slot of (None outside a batch).
+        self._batch = None
+        self._batch_machine = None
+        self._batch_share = {}
+        self._batch_snapshot = None
+        self._batch_last_status = 0.0
+        self._batch_frames_done = 0
         self._build()
 
     def _build(self):
@@ -4596,6 +4833,21 @@ class RenderPage(QWidget):
         header.addWidget(self.refresh_btn)
         layout.addLayout(header)
         layout.addSpacing(8)
+
+        self.batch_banner = QFrame()
+        self.batch_banner.setObjectName('batchBanner')
+        self.batch_banner.setStyleSheet(
+            '#batchBanner { border: 1px solid #00c853; border-radius: 6px; padding: 4px; }')
+        banner_row = QHBoxLayout(self.batch_banner)
+        self.batch_banner_label = QLabel('')
+        self.batch_banner_label.setWordWrap(True)
+        banner_row.addWidget(self.batch_banner_label, 1)
+        self.leave_batch_btn = QPushButton('Leave Batch')
+        self.leave_batch_btn.setCursor(Qt.PointingHandCursor)
+        self.leave_batch_btn.clicked.connect(self._leave_batch_clicked)
+        banner_row.addWidget(self.leave_batch_btn)
+        self.batch_banner.setVisible(False)
+        layout.addWidget(self.batch_banner)
 
         # Only the picker lives in the sub-tabs; everything below is shared and
         # always follows the active tab's selection.
@@ -4863,6 +5115,20 @@ class RenderPage(QWidget):
         self.cancel_btn.clicked.connect(self._cancel_render)
         btn_row.addWidget(self.cancel_btn)
         btn_row.addStretch()
+        self.create_batch_btn = QPushButton('Create Batch…')
+        self.create_batch_btn.setMinimumHeight(36)
+        self.create_batch_btn.setCursor(Qt.PointingHandCursor)
+        self.create_batch_btn.setToolTip(
+            'Split this render over several machines: saves these settings as a batch that other\n'
+            'PCs open from Batches… and render their share of the frames.')
+        self.create_batch_btn.clicked.connect(self._create_batch_clicked)
+        btn_row.addWidget(self.create_batch_btn)
+        self.batches_btn = QPushButton('Batches…')
+        self.batches_btn.setMinimumHeight(36)
+        self.batches_btn.setCursor(Qt.PointingHandCursor)
+        self.batches_btn.setToolTip('Active render batches: render this machine\'s share of one.')
+        self.batches_btn.clicked.connect(self._open_batches)
+        btn_row.addWidget(self.batches_btn)
         layout.addLayout(btn_row)
 
         layout.addSpacing(8)
@@ -5077,7 +5343,7 @@ class RenderPage(QWidget):
         self._update_frame_range()
 
     def _on_frame_edited(self, _value):
-        if self._setting_frames or self.frame_source_combo.currentData() == 'custom':
+        if self._batch is not None or self._setting_frames or self.frame_source_combo.currentData() == 'custom':
             return
         self.frame_source_combo.blockSignals(True)
         self.frame_source_combo.setCurrentIndex(self.frame_source_combo.findData('custom'))
@@ -5094,6 +5360,8 @@ class RenderPage(QWidget):
             self._setting_frames = False
 
     def _update_frame_range(self):
+        if self._batch is not None:
+            return
         source = self._frame_source()
         hint = ''
         what = 'Asset' if self._context_type() == 'asset' else 'Shot'
@@ -5131,6 +5399,440 @@ class RenderPage(QWidget):
         if self._keep_awake is not None:
             self._keep_awake.stop()
             self._keep_awake = None
+
+    # ---- Render batches ----------------------------------------------------
+    def _batch_label(self):
+        if self._batch is None:
+            return ''
+        return f'{self._batch["id"]} · machine {self._batch_machine} of {self._batch["machine_count"]}'
+
+    def _collect_render_settings(self):
+        """The current Render tab settings as a batch dict. Raises ValueError with a message."""
+        ctx = self._context()
+        if not ctx:
+            raise ValueError(f'Select {self._context_article()} first')
+        ctx_type, name, path = ctx
+        try:
+            rel_path = Path(path).relative_to(self.project_root).as_posix()
+        except ValueError:
+            raise ValueError(f'{path} is not inside the project')
+        mode = self._render_mode()
+        version = self.version_combo.currentData()
+        if version is None:
+            raise ValueError('Select a render version first')
+        render_name, name_error = self._render_name()
+        if name_error:
+            raise ValueError(name_error)
+        start, end = self.start_frame_spin.value(), self.end_frame_spin.value()
+        interval = max(self.interval_spin.value(), 1)
+        if start > end:
+            raise ValueError('Start frame must be <= end frame')
+        frames = list(range(start, end + 1, interval))
+        settings = {
+            'context': {'type': ctx_type, 'name': name, 'rel_path': rel_path,
+                        'category': self.asset_cat_combo.currentText() if ctx_type == 'asset' else None},
+            'mode': mode,
+            'render_name': render_name,
+            'version': int(version),
+            'houdini_version': self.houdini_version_combo.currentText(),
+            'engine': self.render_engine_combo.currentData(),
+            'render_order': self.render_order_combo.currentData(),
+            'resolution': {'mode': self.res_mode_combo.currentData(), 'width': self.res_w_spin.value(),
+                           'height': self.res_h_spin.value(), 'percent': self.res_pct_spin.value()},
+            'skip_sync_confirm': self.skip_sync_confirm_cb.isChecked(),
+            'mplay': self.mplay_cb.isChecked(),
+            'mplay_restart': self.mplay_restart_spin.value(),
+            'keep_awake': self.keep_awake_cb.isChecked(),
+            'keep_screen_on': self.keep_screen_on_cb.isChecked(),
+            'save_log': self.save_log_cb.isChecked(),
+            'usd_file': None, 'hip_file': None, 'jobs': {}, 'rop_jobs': {},
+        }
+        if mode == 'hrender':
+            if not self.hip_combo.currentText():
+                raise ValueError(f'Select {self._context_article()} and HIP file first')
+            jobs = self._get_selected_rop_jobs()
+            if not jobs:
+                raise ValueError('Select at least one ROP / pass')
+            settings['hip_file'] = self.hip_combo.currentText()
+            settings['rop_jobs'] = {f'{rop}|{rp}': {'rop': rop, 'pass': rp, 'type': rt, 'frames': frames}
+                                    for rop, rp, rt in jobs}
+        else:
+            if not self.usd_combo.currentText():
+                raise ValueError(f'Select {self._context_article()} and USD file first')
+            passes = self._get_selected_passes()
+            if not passes:
+                raise ValueError('Select at least one render pass')
+            settings['usd_file'] = self.usd_combo.currentText()
+            settings['jobs'] = {p: frames for p in passes}
+        return settings
+
+    def _ask_machine_count(self, settings, default=2, maximum=64, title='Create Render Batch'):
+        """Machine count for a new batch, or None if cancelled. Shows the split as you change it."""
+        dlg = QDialog(self.window())
+        dlg.setWindowTitle(title)
+        form = QVBoxLayout(dlg)
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Machines:'))
+        spin = QSpinBox()
+        spin.setRange(1, maximum)
+        spin.setValue(max(1, min(default, maximum)))
+        row.addWidget(spin)
+        row.addStretch()
+        form.addLayout(row)
+        summary = QLabel('')
+        summary.setWordWrap(True)
+        summary.setObjectName('hint')
+        form.addWidget(summary)
+
+        def update(count):
+            preview = dict(settings, machine_count=count)
+            lines = [f'Machine {n}: {describe_share(preview, n)}' for n in range(1, min(count, 6) + 1)]
+            if count > 6:
+                lines.append(f'… and {count - 6} more machines')
+            summary.setText('\n'.join(lines))
+        spin.valueChanged.connect(update)
+        update(spin.value())
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        ok = QPushButton('Create Batch')
+        ok.setDefault(True)
+        ok.clicked.connect(dlg.accept)
+        cancel = QPushButton('Cancel')
+        cancel.clicked.connect(dlg.reject)
+        buttons.addWidget(ok)
+        buttons.addWidget(cancel)
+        form.addLayout(buttons)
+        return spin.value() if dlg.exec() == QDialog.Accepted else None
+
+    def _ask_render_first_slot(self, batch):
+        reply = QMessageBox.question(
+            self.window(), 'Batch created',
+            f'Batch {batch["id"]} is ready for {batch["machine_count"]} machines.\n\n'
+            'Render machine 1 on this PC now? Other PCs open Render > Batches… to take the others.',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        return reply == QMessageBox.Yes
+
+    def _confirm_take_slot(self, batch, n, status):
+        reply = QMessageBox.question(
+            self.window(), 'Machine already running',
+            f'Machine {n} of batch {batch["id"]} is being rendered on {status.get("host", "?")} '
+            f'({status.get("user", "?")}), last update {status.get("updated", "?")}.\n\n'
+            'Render it here as well?',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return reply == QMessageBox.Yes
+
+    def _batch_error(self, message):
+        self._log(f'[error] {message}')
+        self._status(message, False)
+        QMessageBox.warning(self.window(), 'Render batch', message)
+
+    def _create_batch(self, settings=None, retry_of=None, default_count=2):
+        """Create a batch from settings (default: the current Render tab). Returns it or None."""
+        if settings is None:
+            try:
+                settings = self._collect_render_settings()
+            except ValueError as e:
+                self._batch_error(str(e))
+                return None
+        frame_count = len({f for fr in (settings.get('jobs') or {}).values() for f in fr}
+                          | {f for j in (settings.get('rop_jobs') or {}).values() for f in j['frames']})
+        count = self._ask_machine_count(settings, default=default_count,
+                                        maximum=max(1, min(64, frame_count)),
+                                        title='Re-render Failed Frames' if retry_of else 'Create Render Batch')
+        if not count:
+            return None
+        try:
+            batch = create_render_batch(self.project_root, settings, count, retry_of=retry_of)
+        except (ValueError, OSError) as e:
+            self._batch_error(f'Could not create the batch: {e}')
+            return None
+        self._log(f'[info] Created render batch {batch["id"]} for {count} machines')
+        self._status(f'Batch {batch["id"]} created', True)
+        return batch
+
+    def _create_batch_clicked(self):
+        batch = self._create_batch()
+        if batch and self._ask_render_first_slot(batch):
+            self._render_batch_slot(batch, 1)
+
+    def _create_retry_batch(self, batch):
+        settings = retry_batch_settings(batch)
+        if settings is None:
+            QMessageBox.information(self.window(), 'Render batch', 'No frames failed in this batch.')
+            return None
+        failed = len({f for fr in batch_failed_frames(batch)[0].values() for f in fr})
+        return self._create_batch(settings, retry_of=batch['id'],
+                                  default_count=min(int(batch['machine_count']), failed))
+
+    def _open_batches(self):
+        dlg = BatchesDialog(self, self.window())
+        dlg.exec()
+        if dlg.choice:
+            self._render_batch_slot(*dlg.choice)
+
+    # Widgets a batch controls: filled from the batch and locked while it renders.
+    def _batch_locked_widgets(self):
+        return [self.ctx_tabs, self.render_mode_combo, self.usd_combo, self.hip_combo,
+                self.render_name_combo, self.version_combo, self.houdini_version_combo,
+                self.render_engine_combo, self.render_order_combo, self.mplay_cb,
+                self.frame_source_combo, self.start_frame_spin, self.end_frame_spin, self.interval_spin,
+                self.select_all_btn, self.deselect_all_btn, self.scan_refs_btn, self.passes_container,
+                self.save_log_cb, self.skip_sync_confirm_cb, self.mplay_restart_spin, self.res_mode_combo,
+                self.res_w_spin, self.res_h_spin, self.res_pct_spin, *self.res_pct_buttons,
+                self.keep_awake_cb, self.keep_screen_on_cb, self.create_batch_btn, self.batches_btn,
+                self.refresh_btn]
+
+    def _snapshot_settings(self):
+        return {
+            'tab': self.ctx_tabs.currentIndex(), 'shot': self.shot_combo.currentText(),
+            'asset_cat': self.asset_cat_combo.currentText(), 'asset': self.asset_combo.currentText(),
+            'mode': self.render_mode_combo.currentIndex(), 'usd': self.usd_combo.currentText(),
+            'hip': self.hip_combo.currentText(), 'name': self.render_name_combo.currentText(),
+            'version': self.version_combo.currentIndex(),
+            'houdini': self.houdini_version_combo.currentIndex(),
+            'engine': self.render_engine_combo.currentIndex(), 'order': self.render_order_combo.currentIndex(),
+            'mplay': self.mplay_cb.isChecked(), 'mplay_restart': self.mplay_restart_spin.value(),
+            'frame_source': self.frame_source_combo.currentIndex(),
+            'start': self.start_frame_spin.value(), 'end': self.end_frame_spin.value(),
+            'interval': self.interval_spin.value(),
+            'save_log': self.save_log_cb.isChecked(), 'skip_sync': self.skip_sync_confirm_cb.isChecked(),
+            'res_mode': self.res_mode_combo.currentIndex(), 'res_w': self.res_w_spin.value(),
+            'res_h': self.res_h_spin.value(), 'res_pct': self.res_pct_spin.value(),
+            'keep_awake': self.keep_awake_cb.isChecked(), 'keep_screen_on': self.keep_screen_on_cb.isChecked(),
+        }
+
+    def _restore_settings(self, snap):
+        self.ctx_tabs.setCurrentIndex(snap['tab'])
+        self.asset_cat_combo.setCurrentText(snap['asset_cat'])
+        self.asset_combo.setCurrentText(snap['asset'])
+        self.shot_combo.setCurrentText(snap['shot'])
+        self.render_mode_combo.setCurrentIndex(snap['mode'])
+        self.usd_combo.setCurrentText(snap['usd'])
+        self.hip_combo.setCurrentText(snap['hip'])
+        self.render_name_combo.setCurrentText(snap['name'])
+        self.version_combo.setCurrentIndex(min(snap['version'], self.version_combo.count() - 1))
+        for combo, key in ((self.houdini_version_combo, 'houdini'), (self.render_engine_combo, 'engine'),
+                           (self.render_order_combo, 'order'), (self.res_mode_combo, 'res_mode'),
+                           (self.frame_source_combo, 'frame_source')):
+            combo.setCurrentIndex(snap[key])
+        for cb, key in ((self.mplay_cb, 'mplay'), (self.save_log_cb, 'save_log'),
+                        (self.skip_sync_confirm_cb, 'skip_sync'), (self.keep_awake_cb, 'keep_awake'),
+                        (self.keep_screen_on_cb, 'keep_screen_on')):
+            cb.setChecked(snap[key])
+        for spin, key in ((self.mplay_restart_spin, 'mplay_restart'), (self.res_w_spin, 'res_w'),
+                          (self.res_h_spin, 'res_h'), (self.res_pct_spin, 'res_pct'),
+                          (self.interval_spin, 'interval')):
+            spin.setValue(snap[key])
+        self._set_frames(snap['start'], snap['end'])
+
+    def _fill_batch_passes(self):
+        batch = self._batch
+        if batch.get('mode') == 'hrender':
+            for key, job in (batch.get('rop_jobs') or {}).items():
+                if not self._batch_share.get(key):
+                    continue
+                label = f'{job["rop"]} › {job["pass"]}' if job.get('pass') else f'{job["rop"]} ({job.get("type", "")})'
+                cb = QCheckBox(label)
+                cb.setChecked(True)
+                cb.setProperty('rop', job['rop'])
+                cb.setProperty('render_pass', job.get('pass') or '')
+                cb.setProperty('rop_type', job.get('type') or '')
+                self.passes_layout.addWidget(cb)
+        else:
+            for p in batch.get('jobs') or {}:
+                if self._batch_share.get(p):
+                    cb = QCheckBox(p)
+                    cb.setChecked(True)
+                    self.passes_layout.addWidget(cb)
+        self.no_passes_label.setVisible(self.passes_layout.count() == 0)
+
+    def _apply_batch(self, batch):
+        """Fill the Render tab from the batch (signals still run, but nothing is saved or scanned)."""
+        ctx = batch['context']
+        if ctx['type'] == 'asset':
+            self.ctx_tabs.setCurrentIndex(1)
+            if ctx.get('category'):
+                self.asset_cat_combo.setCurrentText(ctx['category'])
+            self.asset_combo.setCurrentText(ctx['name'])
+        else:
+            self.ctx_tabs.setCurrentIndex(0)
+            self.shot_combo.setCurrentText(ctx['name'])
+        self.render_mode_combo.setCurrentIndex(self.render_mode_combo.findData(batch['mode']))
+        if batch['mode'] == 'hrender':
+            self.hip_combo.setCurrentText(batch.get('hip_file') or '')
+        else:
+            self.usd_combo.setCurrentText(batch.get('usd_file') or '')
+        self.render_name_combo.setCurrentText(batch.get('render_name') or '')
+        version = int(batch['version'])
+        idx = self.version_combo.findData(version)
+        if idx < 0:
+            self.version_combo.addItem(f'v{version:03d}', version)
+            idx = self.version_combo.count() - 1
+        self.version_combo.setCurrentIndex(idx)
+        idx = self.houdini_version_combo.findText(str(batch.get('houdini_version') or ''))
+        if idx >= 0:
+            self.houdini_version_combo.setCurrentIndex(idx)
+        for combo, value in ((self.render_engine_combo, batch.get('engine')),
+                             (self.render_order_combo, batch.get('render_order'))):
+            idx = combo.findData(value)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        res = batch.get('resolution') or {}
+        self.res_mode_combo.setCurrentIndex(max(self.res_mode_combo.findData(res.get('mode', 'usd')), 0))
+        self.res_w_spin.setValue(int(res.get('width', 1920)))
+        self.res_h_spin.setValue(int(res.get('height', 1080)))
+        self.res_pct_spin.setValue(int(res.get('percent', 50)))
+        self.mplay_cb.setChecked(bool(batch.get('mplay')))
+        self.mplay_restart_spin.setValue(int(batch.get('mplay_restart', 25)))
+        self.skip_sync_confirm_cb.setChecked(bool(batch.get('skip_sync_confirm')))
+        self.keep_awake_cb.setChecked(bool(batch.get('keep_awake', True)))
+        self.keep_screen_on_cb.setChecked(bool(batch.get('keep_screen_on', True)))
+        self.save_log_cb.setChecked(bool(batch.get('save_log', True)))
+        mine = sorted({f for fr in self._batch_share.values() for f in fr})
+        if mine:
+            self._set_frames(mine[0], mine[-1])
+        self._refresh_passes()
+
+    def _enter_batch(self, batch, n):
+        """Switch the Render tab to rendering machine n of batch. Raises ValueError."""
+        share = machine_share(batch, n)
+        if not any(share.values()):
+            raise ValueError(f'Machine {n} has no frames in this batch')
+        ctx_path = batch_context_path(self.project_root, batch)
+        if not ctx_path.is_dir():
+            raise ValueError(f'{batch["context"]["name"]} is not in this project on this PC ({ctx_path})')
+        if batch['mode'] == 'hrender':
+            needed = ctx_path / 'houdini' / 'hip' / (batch.get('hip_file') or '')
+        else:
+            needed = ctx_path / 'houdini' / 'USD' / (batch.get('usd_file') or '')
+        if not needed.is_file():
+            raise ValueError(f'{needed.name} is not on this PC yet ({needed}). Let OneDrive sync it first.')
+        self._batch_snapshot = self._snapshot_settings()
+        self._batch = batch
+        self._batch_machine = int(n)
+        self._batch_share = share
+        self._batch_frames_done = 0
+        try:
+            self._apply_batch(batch)
+            if self.usd_combo.currentText() != (batch.get('usd_file') or '') and batch['mode'] == 'husk':
+                raise ValueError(f'{batch.get("usd_file")} is not listed for {batch["context"]["name"]}')
+        except Exception:
+            self._leave_batch()
+            raise
+        for w in self._batch_locked_widgets():
+            w.setEnabled(False)
+        frames = sorted({f for fr in share.values() for f in fr})
+        self.batch_banner_label.setText(
+            f'<b>Batch</b> {batch["id"]} · <b>Machine {n} of {batch["machine_count"]}</b> · '
+            f'frames {compact_frames(frames)} ({len(frames)})')
+        self.batch_banner.setVisible(True)
+        self.leave_batch_btn.setEnabled(False)
+        self.render_btn.setText(f'Render Machine {n} of {batch["machine_count"]}')
+
+    def _leave_batch(self):
+        snap = self._batch_snapshot
+        self._batch = None
+        self._batch_machine = None
+        self._batch_share = {}
+        self._batch_snapshot = None
+        self.batch_banner.setVisible(False)
+        self.render_btn.setText('Render Selected Passes')
+        for w in self._batch_locked_widgets():
+            w.setEnabled(True)
+        if snap:
+            self._restore_settings(snap)
+        self._on_mode_changed()
+        self.keep_screen_on_cb.setEnabled(self.keep_awake_cb.isChecked())
+        self._update_advanced_note()
+
+    def _leave_batch_clicked(self):
+        if self._render_launched:
+            return
+        if self._batch is not None:
+            self._write_batch_status('cancelled')
+        self._leave_batch()
+
+    def _write_batch_status(self, state, failures=None):
+        batch, n = self._batch, self._batch_machine
+        if batch is None:
+            return
+        fields = {'state': state, 'frames_done': self._batch_frames_done,
+                  'frames_total': sum(len(fr) for fr in self._batch_share.values())}
+        if failures is not None:
+            fields['failed'] = failures
+        try:
+            write_machine_status(batch, n, **fields)
+            self._batch_last_status = time.monotonic()
+        except OSError as e:
+            self._log(f'[warning] Could not update the batch status: {e}')
+
+    def _on_batch_frame_finished(self):
+        if self._batch is None:
+            return
+        self._batch_frames_done += 1
+        if time.monotonic() - self._batch_last_status >= BATCH_STATUS_INTERVAL:
+            self._write_batch_status('running')
+
+    def _batch_failures(self, failures):
+        """RenderThread failures as batch status entries ({key, frame|frames, reason})."""
+        out = []
+        job_meta = (getattr(self, '_render_meta', None) or {}).get('job_meta') or []
+        for f in failures:
+            if f.get('frame') is not None:
+                out.append({'key': f['pass'], 'frame': f['frame'], 'reason': f.get('reason', '')})
+            elif f.get('index') is not None and f['index'] < len(job_meta):
+                meta = job_meta[f['index']]
+                out.append({'key': meta['key'], 'frames': meta['job_frames'], 'reason': f.get('reason', '')})
+        return out
+
+    def _render_batch_slot(self, batch, n):
+        """Take machine n of batch on this PC and start rendering it."""
+        if self._render_launched:
+            self._batch_error('A render is already running on this PC')
+            return
+        try:
+            batch = load_render_batch(batch['_dir'])  # latest copy from disk
+        except ValueError as e:
+            self._batch_error(str(e))
+            return
+        status = read_machine_status(batch, n) or {}
+        state = slot_state(status)
+        if state == 'running' and status.get('host') != machine_host():
+            if not self._confirm_take_slot(batch, n, status):
+                return
+        try:
+            self._enter_batch(batch, n)
+        except ValueError as e:
+            self._batch_error(str(e))
+            return
+        self._write_batch_status('running')
+        self._start_render()
+        if not self._render_launched and self._batch is not None:
+            # Validation failed or the sync was cancelled: give the slot back.
+            self._write_batch_status('cancelled')
+            self._leave_batch()
+
+    def _finish_batch_slot(self, failures, cancelled):
+        batch, n = self._batch, self._batch_machine
+        entries = self._batch_failures(failures)
+        self._write_batch_status('cancelled' if cancelled else 'done', failures=entries)
+        try:
+            slots = batch_slots(batch)
+        except Exception:
+            slots = []
+        self._leave_batch()
+        if cancelled:
+            self._status(f'Machine {n} cancelled · it can be taken again from Batches…', False)
+            return
+        done = sum(1 for s in slots if s['state'] == 'done')
+        if slots and done == len(slots):
+            failed = len({(d['key'], d['frame']) for d in batch_failed_frames(batch)[1]})
+            msg = (f'Batch finished: {failed} failed frame{"s" if failed != 1 else ""} '
+                   '(Batches… > Re-render Failed Frames)' if failed else 'Batch finished')
+            self._log(f'[info] {msg}')
+            self._status(msg, not failed)
+        else:
+            self._status(f'Machine {n} done · batch {done}/{len(slots)} machines done', True)
 
     def _refresh_all(self):
         self._refresh_contexts()
@@ -5383,6 +6085,9 @@ class RenderPage(QWidget):
         self._discover_gen += 1
         self._clear_passes()
         self._usd_range = None
+        if self._batch is not None:
+            self._fill_batch_passes()
+            return
         if self._render_mode() == 'hrender':
             self._refresh_rops()
             return
@@ -5553,6 +6258,8 @@ class RenderPage(QWidget):
                 item.widget().setChecked(False)
 
     def _save(self, key, value):
+        if getattr(self, '_batch', None) is not None:
+            return  # batch settings never overwrite this person's own settings
         from settings import set_render_setting
         set_render_setting(key, value)
 
@@ -5583,9 +6290,13 @@ class RenderPage(QWidget):
         if not self.save_log_cb.isChecked():
             return
         version_dir = Path(version_dir)
-        path = version_dir / f'{version_dir.name}_render_{time.strftime("%Y%m%d_%H%M%S")}.log'
+        if self._batch is not None:
+            # Batch renders log with the batch, one file per machine run.
+            path = batch_log_path(self._batch, self._batch_machine)
+        else:
+            path = version_dir / f'{version_dir.name}_render_{time.strftime("%Y%m%d_%H%M%S")}.log'
         try:
-            version_dir.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             self._log_fh = open(path, 'a', encoding='utf-8')
         except OSError as e:
             self._log(f'[warning] Could not open render log file {path}: {e}')
@@ -5682,12 +6393,20 @@ class RenderPage(QWidget):
         res_args = self._resolution_args()
         render_base = shot_path / 'houdini' / 'render'
         version_dir = render_version_dir(render_base, shot_name, render_name, version)
-        frames = list(range(start, end + 1, max(interval, 1)))
         render_order = self.render_order_combo.currentData()
-        if render_order == 'frame_major':
-            jobs = [(p, frame) for frame in frames for p in passes]
+        if self._batch is not None:
+            share = self._batch_share
+            frames = sorted({f for p in passes for f in share.get(p, [])})
+            if render_order == 'frame_major':
+                jobs = [(p, f) for f in frames for p in passes if f in share.get(p, [])]
+            else:
+                jobs = [(p, f) for p in passes for f in share.get(p, [])]
         else:
-            jobs = [(p, frame) for p in passes for frame in frames]
+            frames = list(range(start, end + 1, max(interval, 1)))
+            if render_order == 'frame_major':
+                jobs = [(p, frame) for frame in frames for p in passes]
+            else:
+                jobs = [(p, frame) for p in passes for frame in frames]
         for p, frame in jobs:
             out_file = render_output_path(render_base, shot_name, render_name, version, p, frame)
             cmd = [husk_path]
@@ -5712,7 +6431,11 @@ class RenderPage(QWidget):
         self._log(f'Rendering: {usd_name}')
         self._log(f'Output: {version_dir}')
         self._log(f'Passes: {", ".join(passes)}')
-        self._log(f'Frames: {start}-{end} (interval {interval})')
+        if self._batch is not None:
+            self._log(f'Batch: {self._batch["id"]} · machine {self._batch_machine} of '
+                      f'{self._batch["machine_count"]} · frames {compact_frames(frames)}')
+        else:
+            self._log(f'Frames: {start}-{end} (interval {interval})')
         self._log("Engine: from the USD's render settings" if render_engine == 'usd'
                   else f'Engine: Karma {render_engine.upper()}')
         self._log(f'Order: {self.render_order_combo.currentText()}')
@@ -5766,6 +6489,8 @@ class RenderPage(QWidget):
             'version': version,
             'render_engine': render_engine,
             'render_order': render_order,
+            'total_frames': len(jobs),
+            'batch': self._batch_label(),
             'start_time': time.strftime('%Y-%m-%d %H:%M:%S'),
             'end_time': '',
             'sync_seconds': round(sync_seconds, 1),
@@ -5867,15 +6592,27 @@ class RenderPage(QWidget):
             out_dir = out_file.parent
             out_dir.mkdir(parents=True, exist_ok=True)
             out_dirs.append(str(out_dir))
-            commands.append(build_rop_render_cmd(
-                hython, hip_file, rop, render_pass, start, end, interval, out_file))
-            job_meta.append({'pass': name, 'frames': frame_count})
+            key = f'{rop}|{render_pass}'
+            if self._batch is not None:
+                runs = frame_runs(self._batch_share.get(key, []))
+            else:
+                runs = [(start, end, interval)]
+            for run_start, run_end, run_inc in runs:
+                run_frames = list(range(run_start, run_end + 1, run_inc))
+                commands.append(build_rop_render_cmd(
+                    hython, hip_file, rop, render_pass, run_start, run_end, run_inc, out_file))
+                job_meta.append({'pass': name, 'frames': len(run_frames), 'key': key,
+                                 'job_frames': run_frames})
 
         self.log_output.clear()
         self._open_render_log(version_dir)
         self._log(f'Rendering (hrender): {hip_name}')
         self._log(f'Jobs: {", ".join(names)}')
-        self._log(f'Frames: {start}-{end} (interval {interval})')
+        if self._batch is not None:
+            self._log(f'Batch: {self._batch["id"]} · machine {self._batch_machine} of '
+                      f'{self._batch["machine_count"]} · {len(commands)} ROP runs')
+        else:
+            self._log(f'Frames: {start}-{end} (interval {interval})')
         self._log('')
         self._start_keep_awake()
 
@@ -5892,6 +6629,9 @@ class RenderPage(QWidget):
             'interval': interval,
             'version': version,
             'render_engine': ', '.join(sorted({t for _r, _p, t in jobs if t})) or 'rop',
+            'total_frames': sum(m['frames'] for m in job_meta),
+            'batch': self._batch_label(),
+            'job_meta': job_meta,
             'start_time': time.strftime('%Y-%m-%d %H:%M:%S'),
             'start_ts': time.time(),
             'out_dirs': out_dirs,
@@ -5934,6 +6674,7 @@ class RenderPage(QWidget):
             self._keep_awake is not None and self._keep_awake.active)
 
         self._render_thread.output.connect(self._on_render_output)
+        self._render_thread.frame_finished.connect(self._on_batch_frame_finished)
         self._render_thread.finished.connect(self._on_render_finished)
         self._render_thread.progress.connect(self._render_dialog.set_total)
         self._render_thread.pass_changed.connect(self._render_dialog.set_pass)
@@ -6031,6 +6772,14 @@ class RenderPage(QWidget):
     def _on_render_finished(self, exit_code):
         self._render_launched = False
         self._stop_keep_awake()
+        try:
+            self._finish_render(exit_code)
+        finally:
+            if self._batch is not None:
+                self._finish_batch_slot(failures=list(getattr(self._render_thread, 'failures', []) or []),
+                                        cancelled=bool((getattr(self, '_render_meta', None) or {}).get('cancelled')))
+
+    def _finish_render(self, exit_code):
         if hasattr(self, '_stall_timer'):
             self._stall_timer.stop()
         self.render_btn.setEnabled(True)
@@ -6121,6 +6870,8 @@ class RenderPage(QWidget):
                     skipped=skipped,
                     total_jobs=total_jobs,
                     resolution=meta.get('resolution', ''),
+                    batch=meta.get('batch', ''),
+                    total_frames=meta.get('total_frames'),
                     first_frame_path=first_frame_path,
                 )
         self._close_render_log()

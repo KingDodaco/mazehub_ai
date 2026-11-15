@@ -8,7 +8,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.14.1"
+APP_VERSION = "0.15.0"
 
 
 def _get_display_name():
@@ -2096,6 +2096,346 @@ def build_rop_render_cmd(hython, hip, rop, render_pass, start, end, inc, out_fil
 
 
 # ---------------------------------------------------------------------------
+# Render batches: one render split over several machines
+# ---------------------------------------------------------------------------
+# <project>/mazehub/render_batches/<id>/batch.json             written once by the creator
+#                                     /status/machine_<n>.json   written only by machine n
+#                                     /logs/machine_<n>_<host>_<time>.log
+# One writer per file, so OneDrive never has to merge two machines' edits.
+
+BATCH_SCHEMA = 1
+BATCH_STALE_SECONDS = 600
+BATCH_STATUS_INTERVAL = 30
+BATCH_KEEP_FINISHED_DAYS = 14
+BATCH_REQUIRED = ('schema', 'id', 'context', 'mode', 'version', 'machine_count')
+
+
+def machine_host():
+    return platform.node() or os.environ.get('COMPUTERNAME', '') or 'unknown'
+
+
+def machine_user():
+    return os.environ.get('USERNAME') or os.environ.get('USER') or 'unknown'
+
+
+def render_batches_dir(project_root):
+    return Path(project_root) / 'mazehub' / 'render_batches'
+
+
+def _batch_write_json(path, data, attempts=5, delay=0.3):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f'{path.name}.{os.getpid()}.tmp')
+    last = None
+    for _ in range(attempts):
+        try:
+            tmp.write_text(json.dumps(data, indent=2), encoding='utf-8')
+            os.replace(tmp, path)
+            return
+        except OSError as e:  # briefly locked by OneDrive or a virus scanner
+            last = e
+            time.sleep(delay)
+    raise last
+
+
+def _batch_read_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+
+
+def _now_ts(now=None):
+    return time.time() if now is None else now
+
+
+def _stamp(now=None, fmt='%Y-%m-%d %H:%M:%S'):
+    return time.strftime(fmt, time.localtime(_now_ts(now)))
+
+
+def _safe_id_part(text):
+    return re.sub(r'[^A-Za-z0-9_-]+', '_', str(text or '')).strip('_') or 'render'
+
+
+def new_batch_id(context_name, render_name, version, retry_of=None, now=None):
+    if retry_of:
+        m = re.search(r'_retry(\d+)$', retry_of)
+        base = retry_of[:m.start()] if m else retry_of
+        return f'{base}_retry{int(m.group(1)) + 1 if m else 1}'
+    return (f'{_safe_id_part(context_name)}_{_safe_id_part(render_name or "render")}'
+            f'_v{int(version):03d}_{_stamp(now, "%Y%m%d-%H%M%S")}')
+
+
+def batch_jobs(batch):
+    """{job key: sorted frames}. husk keys are pass paths, hrender keys are 'rop|pass'."""
+    if batch.get('mode') == 'hrender':
+        return {k: sorted(int(f) for f in v.get('frames', []))
+                for k, v in (batch.get('rop_jobs') or {}).items()}
+    return {k: sorted(int(f) for f in v) for k, v in (batch.get('jobs') or {}).items()}
+
+
+def batch_frame_list(batch):
+    frames = set()
+    for fr in batch_jobs(batch).values():
+        frames.update(fr)
+    return sorted(frames)
+
+
+def machine_share(batch, n):
+    """This machine's frames per job. Frame k of the sorted frame list goes to machine
+    (k mod N) + 1, so the split is interleaved and all passes of a frame go to one machine."""
+    count = int(batch['machine_count'])
+    if not 1 <= int(n) <= count:
+        raise ValueError(f'machine must be 1-{count}, not {n}')
+    mine = set(batch_frame_list(batch)[int(n) - 1::count])
+    return {k: [f for f in fr if f in mine] for k, fr in batch_jobs(batch).items()}
+
+
+def frame_runs(frames):
+    """Sorted frames as (start, end, step) runs for hrender: [1, 5, 9, 10] -> [(1, 9, 4), (10, 10, 1)]."""
+    frames = sorted(set(int(f) for f in frames))
+    runs, i = [], 0
+    while i < len(frames):
+        if i + 1 == len(frames):
+            runs.append((frames[i], frames[i], 1))
+            break
+        step = frames[i + 1] - frames[i]
+        j = i + 1
+        while j + 1 < len(frames) and frames[j + 1] - frames[j] == step:
+            j += 1
+        runs.append((frames[i], frames[j], step))
+        i = j + 1
+    return runs
+
+
+def validate_batch(data):
+    if not isinstance(data, dict):
+        raise ValueError('batch.json is not a JSON object')
+    missing = [k for k in BATCH_REQUIRED if k not in data]
+    if missing:
+        raise ValueError(f'batch.json is missing {", ".join(missing)}')
+    if data['schema'] != BATCH_SCHEMA:
+        raise ValueError(f'batch schema {data["schema"]} is not supported (expected {BATCH_SCHEMA}); '
+                         'update MazeHub on this machine')
+    if data['mode'] not in ('husk', 'hrender'):
+        raise ValueError(f'unknown render mode {data["mode"]!r}')
+    if isinstance(data['machine_count'], bool) or not isinstance(data['machine_count'], int) \
+            or data['machine_count'] < 1:
+        raise ValueError('the machine count must be a whole number of at least 1')
+    ctx = data.get('context') or {}
+    if not ctx.get('rel_path') or not ctx.get('name'):
+        raise ValueError('the batch has no shot or asset')
+    if not batch_frame_list(data):
+        raise ValueError('the batch has no frames to render')
+    return data
+
+
+def load_render_batch(batch_dir):
+    batch_dir = Path(batch_dir)
+    data = _batch_read_json(batch_dir / 'batch.json')
+    if data is None:
+        raise ValueError(f'could not read {batch_dir / "batch.json"}')
+    validate_batch(data)
+    data['_dir'] = str(batch_dir)
+    return data
+
+
+def create_render_batch(project_root, settings, machine_count, retry_of=None, now=None):
+    """Write a new batch from render settings (as collected by the Render tab)."""
+    batch = {k: v for k, v in dict(settings).items() if not k.startswith('_')}
+    batch.update({
+        'schema': BATCH_SCHEMA,
+        'machine_count': int(machine_count),
+        'retry_of': retry_of,
+        'created_by': machine_user(),
+        'created_on': machine_host(),
+        'created_at': _stamp(now),
+    })
+    batch['id'] = new_batch_id(batch['context']['name'], batch.get('render_name'), batch['version'],
+                               retry_of=retry_of, now=now)
+    validate_batch(batch)
+    root = render_batches_dir(project_root)
+    batch_dir = root / batch['id']
+    while batch_dir.exists() or (root / f'.deleted-{batch["id"]}').exists():
+        batch['id'] += 'b'
+        batch_dir = root / batch['id']
+    (batch_dir / 'status').mkdir(parents=True, exist_ok=True)
+    (batch_dir / 'logs').mkdir(parents=True, exist_ok=True)
+    _batch_write_json(batch_dir / 'batch.json', batch)
+    batch['_dir'] = str(batch_dir)
+    return batch
+
+
+def batch_context_path(project_root, batch):
+    return Path(project_root).joinpath(*[p for p in re.split(r'[\\/]+', batch['context']['rel_path']) if p])
+
+
+def _status_path(batch, n):
+    return Path(batch['_dir']) / 'status' / f'machine_{int(n)}.json'
+
+
+def read_machine_status(batch, n):
+    return _batch_read_json(_status_path(batch, n))
+
+
+def write_machine_status(batch, n, now=None, **fields):
+    """Machine n's status; only the PC rendering slot n writes this file."""
+    status = read_machine_status(batch, n) or {}
+    if fields.get('state') == 'running' and fields.get('frames_done') == 0:
+        status = {}  # a new run of this slot (first take, or taken over)
+    status.update(fields)
+    status.update({'machine': int(n), 'host': machine_host(), 'user': machine_user(),
+                   'updated': _stamp(now), 'updated_ts': _now_ts(now)})
+    status.setdefault('started', _stamp(now))
+    _batch_write_json(_status_path(batch, n), status)
+    return status
+
+
+def slot_state(status, now=None):
+    """free (never taken or cancelled), running, stale (running but silent), or done."""
+    if not status or status.get('state') == 'cancelled':
+        return 'free'
+    if status.get('state') == 'done':
+        return 'done'
+    if _now_ts(now) - float(status.get('updated_ts') or 0) > BATCH_STALE_SECONDS:
+        return 'stale'
+    return 'running'
+
+
+def batch_slots(batch, now=None):
+    return [{'machine': n, 'state': slot_state(st, now), 'status': st or {}}
+            for n in range(1, int(batch['machine_count']) + 1)
+            for st in [read_machine_status(batch, n)]]
+
+
+def batch_state(batch, now=None):
+    return 'finished' if all(s['state'] == 'done' for s in batch_slots(batch, now)) else 'active'
+
+
+def next_free_machine(batch, now=None):
+    slots = batch_slots(batch, now)
+    for wanted in ('free', 'stale'):
+        for s in slots:
+            if s['state'] == wanted:
+                return s['machine']
+    return None
+
+
+def batch_failed_frames(batch):
+    """({job key: sorted failed frames}, [{key, frame, machine, reason}]) from every machine."""
+    by_key, details = {}, []
+    for n in range(1, int(batch['machine_count']) + 1):
+        for f in (read_machine_status(batch, n) or {}).get('failed') or []:
+            frames = f.get('frames') or ([f['frame']] if f.get('frame') is not None else [])
+            for frame in frames:
+                by_key.setdefault(f['key'], set()).add(int(frame))
+                details.append({'key': f['key'], 'frame': int(frame), 'machine': n,
+                                'reason': f.get('reason', '')})
+    return {k: sorted(v) for k, v in by_key.items()}, details
+
+
+def retry_batch_settings(batch):
+    """Settings for a new batch that renders only the failed frames, or None if none failed."""
+    failed, _ = batch_failed_frames(batch)
+    if not failed:
+        return None
+    skip = ('id', 'created_by', 'created_on', 'created_at', 'retry_of', 'machine_count', 'schema')
+    settings = {k: v for k, v in batch.items() if not k.startswith('_') and k not in skip}
+    if batch.get('mode') == 'hrender':
+        settings['rop_jobs'] = {k: dict(v, frames=failed[k])
+                                for k, v in (batch.get('rop_jobs') or {}).items() if k in failed}
+        settings['jobs'] = {}
+    else:
+        settings['jobs'] = {k: failed[k] for k in (batch.get('jobs') or {}) if k in failed}
+    return settings
+
+
+def _batch_last_activity(batch, slots=None):
+    times = [float(s['status'].get('updated_ts') or 0) for s in (slots or batch_slots(batch))]
+    try:
+        times.append((Path(batch['_dir']) / 'batch.json').stat().st_mtime)
+    except OSError:
+        pass
+    return max(times) if times else 0
+
+
+def delete_render_batch(batch):
+    """Soft delete: the folder is renamed to .deleted-<id>, never removed."""
+    src = Path(batch['_dir'])
+    dest = src.with_name(f'.deleted-{src.name}')
+    k = 1
+    while dest.exists():
+        dest = src.with_name(f'.deleted-{src.name}-{k}')
+        k += 1
+    src.rename(dest)
+    return dest
+
+
+def list_render_batches(project_root, now=None, cleanup=True):
+    """Batches newest first, each with '_state' (active/finished) and '_slots'. With cleanup,
+    finished batches idle for BATCH_KEEP_FINISHED_DAYS are soft-deleted."""
+    try:
+        dirs = [d for d in render_batches_dir(project_root).iterdir()
+                if d.is_dir() and not d.name.startswith('.')]
+    except OSError:
+        return []
+    batches = []
+    for d in dirs:
+        try:
+            batch = load_render_batch(d)
+        except ValueError:
+            continue
+        batch['_slots'] = batch_slots(batch, now)
+        batch['_state'] = 'finished' if all(s['state'] == 'done' for s in batch['_slots']) else 'active'
+        if (cleanup and batch['_state'] == 'finished'
+                and _now_ts(now) - _batch_last_activity(batch, batch['_slots'])
+                > BATCH_KEEP_FINISHED_DAYS * 86400):
+            try:
+                delete_render_batch(batch)
+            except OSError:
+                pass
+            continue
+        batches.append(batch)
+    batches.sort(key=lambda b: b.get('created_at', ''), reverse=True)
+    return batches
+
+
+def batch_log_path(batch, n, now=None):
+    host = _safe_id_part(machine_host())
+    return Path(batch['_dir']) / 'logs' / f'machine_{int(n)}_{host}_{_stamp(now, "%Y%m%d-%H%M%S")}.log'
+
+
+def latest_machine_log(batch, n):
+    logs = sorted((Path(batch['_dir']) / 'logs').glob(f'machine_{int(n)}_*.log'),
+                  key=lambda p: p.stat().st_mtime)
+    return logs[-1] if logs else None
+
+
+def describe_share(batch, n, limit=4):
+    frames = sorted({f for fr in machine_share(batch, n).values() for f in fr})
+    shown = ', '.join(str(f) for f in frames[:limit]) + (' …' if len(frames) > limit else '')
+    return f'{shown} ({len(frames)} frame{"s" if len(frames) != 1 else ""})'
+
+
+def describe_slot(slot, now=None):
+    st = slot['status']
+    state = slot['state']
+    done, total = st.get('frames_done'), st.get('frames_total')
+    progress = f'· {done}/{total} renders' if done is not None and total else ''
+    failed = len({(f.get('key'), f.get('frame')) for f in st.get('failed') or []})
+    if state == 'free':
+        text = 'free'
+    elif state == 'done':
+        text = f'done on {st.get("host", "?")}' + (f', {failed} failed' if failed else '')
+    elif state == 'stale':
+        text = f'no news from {st.get("host", "?")} since {st.get("updated", "?")} (can be retaken)'
+    else:
+        ago = int((_now_ts(now) - float(st.get('updated_ts') or 0)) // 60)
+        text = f'running on {st.get("host", "?")} ({st.get("user", "?")}), updated {ago} min ago'
+    return f'{text} {progress}'.strip()
+
+
+# ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
 
@@ -2684,13 +3024,15 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
                             exit_code, render_time, project_root='',
                             cancelled=False, start_time='', end_time='',
                             first_frame_path='', context_type='shot',
-                            failures=None, skipped=None, total_jobs=None, resolution=''):
+                            failures=None, skipped=None, total_jobs=None, resolution='',
+                            batch='', total_frames=None):
     if not webhook_url:
         return False
     card = build_render_card(
         shot, usd_file, passes, start_frame, end_frame, interval, version, render_engine,
         exit_code, render_time, project_root, cancelled, start_time, end_time,
-        first_frame_path, context_type, failures, skipped, total_jobs, resolution)
+        first_frame_path, context_type, failures, skipped, total_jobs, resolution,
+        batch, total_frames)
     data = json.dumps(card).encode('utf-8')
     req = urllib.request.Request(
         webhook_url,
@@ -2719,7 +3061,8 @@ def _engine_label(render_engine):
 def build_render_card(shot, usd_file, passes, start_frame, end_frame, interval, version,
                       render_engine, exit_code, render_time, project_root='', cancelled=False,
                       start_time='', end_time='', first_frame_path='', context_type='shot',
-                      failures=None, skipped=None, total_jobs=None, resolution=''):
+                      failures=None, skipped=None, total_jobs=None, resolution='',
+                      batch='', total_frames=None):
     """The Teams MessageCard for a finished render."""
     failures = list(failures or [])
     skipped = list(skipped or [])
@@ -2739,7 +3082,8 @@ def build_render_card(shot, usd_file, passes, start_frame, end_frame, interval, 
         color = 'E74C3C'
 
     frames = list(range(start_frame, end_frame + 1, max(interval, 1)))
-    total_frames = len(frames) * len(passes)
+    if total_frames is None:
+        total_frames = len(frames) * len(passes)
 
     summary_facts = [
         {'name': 'Asset' if context_type == 'asset' else 'Shot', 'value': shot},
@@ -2749,6 +3093,11 @@ def build_render_card(shot, usd_file, passes, start_frame, end_frame, interval, 
         {'name': 'Version', 'value': f'v{version:03d}'},
         {'name': 'Started By', 'value': _get_display_name()},
     ]
+    if batch:
+        batch_id, _, machine = str(batch).partition(' · ')
+        summary_facts.insert(1, {'name': 'Batch', 'value': batch_id})
+        if machine:
+            summary_facts.insert(2, {'name': 'Machine', 'value': machine[0].upper() + machine[1:]})
     if failures:
         summary_facts.insert(2, {'name': 'Failed Frames', 'value': failed_frames_by_pass(failures)})
     if skipped:

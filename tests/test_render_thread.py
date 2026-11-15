@@ -215,7 +215,7 @@ class RetryRule(unittest.TestCase):
         self.assertEqual(counts, {'56': 2, '57': 1})
         self.assertEqual(thread.failures, [{
             'pass': '/Render/Passes/Lightning', 'frame': 56, 'code': 139,
-            'reason': 'GPU out of memory; retry: Renderer crashed (access violation)'}])
+            'reason': 'GPU out of memory; retry: Renderer crashed (access violation)', 'index': 0}])
         self.assertEqual(finished, [139])
         self.assertIn('[summary] 1 frame failed after a retry:', out)
         self.assertIn('[summary] Frames to re-render: Lightning 56', out)
