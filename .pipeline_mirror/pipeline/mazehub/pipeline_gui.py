@@ -38,6 +38,8 @@ from pipeline_app import (
     build_context_env, _app_dir, APP_VERSION,
     discover_usd_files, discover_husk_passes, scan_main_layer_passes,
     classify_render_failure, failed_frames_by_pass, strip_log_time, sync_problem_count,
+    list_processes, is_mplay_process, kill_processes, resource_snapshot, format_resources,
+    resource_warnings,
     clean_render_name, existing_render_names, render_versions,
     render_version_dir, render_output_path,
     discover_image_sequences,
@@ -3866,7 +3868,7 @@ class HelpPage(QWidget):
         <p><b>Passes:</b> MazeHub looks for passes in the selected USD file only. If that file references other USD files, it asks before scanning them too, because on OneDrive that downloads them. Say no to use the passes from the main file; <b>Scan Referenced Files</b> does it later.</p>
         <p>Before husk renders, MazeHub downloads the files the USD references. If something fails to download or can't be found, choose <b>Render Anyway</b> or <b>Cancel Render</b>. <b>Skip Sync</b> stops a slow sync and renders with what's already on disk.</p>
         <p>You'll see progress for each frame and pass, with time estimates. You can pause or cancel at any time.</p>
-        <p><b>Advanced:</b> save the render log, skip the confirmation after the USD sync, override the resolution for quick renders (an exact size or a percentage of the USD's; use a Name such as <code>preview</code> so full-res frames aren't overwritten), and keep the computer awake while rendering, so the YT Screensaver isn't needed. <b>Frame Range</b> can come from the shot/asset, from the USD file's own start/end, or be typed in (Custom). These settings are saved for you, per project.</p>
+        <p><b>Advanced:</b> save the render log, skip the confirmation after the USD sync, override the resolution for quick renders (an exact size or a percentage of the USD's; use a Name such as <code>preview</code> so full-res frames aren't overwritten), and keep the computer awake while rendering, so the YT Screensaver isn't needed. With MPlay on, <b>Restart MPlay every</b> closes the MPlay window every N frames (and before a retry), because MPlay keeps every frame in memory and on long renders that can fill the RAM. Each frame's log ends with a <code>[resources]</code> line (free RAM and GPU memory, MPlay and MazeHub memory) so you can see if something is growing. <b>Frame Range</b> can come from the shot/asset, from the USD file's own start/end, or be typed in (Custom). These settings are saved for you, per project.</p>
         <p><b>Failed frames:</b> if a frame fails (for example Karma XPU runs out of GPU memory, or the renderer crashes), MazeHub waits a few seconds and renders it once more with the same settings, then moves on. Frames that fail twice are listed at the end of the log with the reason and a list to re-render, and in the Teams notification.</p>
         """)
 
@@ -3920,8 +3922,14 @@ class RenderThread(QThread):
     frame_finished = Signal()
     bucket_progress = Signal(int)
 
-    def __init__(self, commands, working_dir=None, env=None, job_meta=None):
+    def __init__(self, commands, working_dir=None, env=None, job_meta=None,
+                 mplay_restart_every=0, log_resources=True):
         super().__init__()
+        # Close the MPlay windows this render opened every N frames (0 = never), so MPlay
+        # doesn't hold every rendered frame in memory for the whole render.
+        self.mplay_restart_every = int(mplay_restart_every or 0)
+        self.log_resources = log_resources
+        self._baseline_mplay = set()
         self.commands = commands
         # Optional per-command {'pass', 'frames'}: each command renders a whole
         # frame range and reports frames via MAZE_FRAME lines (hrender mode).
@@ -4017,11 +4025,38 @@ class RenderThread(QThread):
         skipped, self._skip = self._skip, False
         return code, skipped, list(tail)
 
+    def _render_mplay_pids(self):
+        """MPlay processes started since this render began (never the user's own windows)."""
+        return [pid for pid, name, _rss in list_processes()
+                if is_mplay_process(name) and pid not in self._baseline_mplay]
+
+    def _close_render_mplay(self, why):
+        pids = self._render_mplay_pids()
+        if pids:
+            kill_processes(pids)
+            self.output.emit(f'[info] Closed MPlay ({len(pids)} window{"s" if len(pids) != 1 else ""}) '
+                             f'{why}; it reopens with the next frame')
+
+    def _emit_resources(self):
+        if not self.log_resources:
+            return
+        try:
+            snap = resource_snapshot()
+        except Exception as e:  # diagnostics must never break a render
+            self.output.emit(f'[resources] unavailable: {e}')
+            return
+        self.output.emit(format_resources(snap))
+        for warning in resource_warnings(snap):
+            self.output.emit(warning)
+
     def run(self):
         exit_code = 0
         total = len(self.commands)
         self.failures = []
         self.skipped = []
+        if self.mplay_restart_every or self.log_resources:
+            self._baseline_mplay = {pid for pid, name, _rss in list_processes() if is_mplay_process(name)}
+        frames_since_restart = 0
         # Per-pass totals/progress, so frame-major order (passes interleaved) counts correctly.
         frames_per_pass = {}
         if not self.job_meta:
@@ -4097,6 +4132,9 @@ class RenderThread(QThread):
                     reasons.append(reason)
                 if attempt == 1:
                     self.output.emit(f'[warning] {label} failed ({reason}), retrying once')
+                    self._close_render_mplay('to free memory before the retry')
+                    frames_since_restart = 0
+                    self._emit_resources()
                     self._wait_retry_delay()
                     if self._cancel:
                         break
@@ -4113,6 +4151,14 @@ class RenderThread(QThread):
             if state['frame_open']:
                 self.frame_finished.emit()
             self.progress.emit(i + 1, total)
+            if self._cancel:
+                continue
+            self._emit_resources()
+            frames_since_restart += 1
+            if (self.mplay_restart_every and frames_since_restart >= self.mplay_restart_every
+                    and i + 1 < total):
+                self._close_render_mplay(f'after {frames_since_restart} frames to free memory')
+                frames_since_restart = 0
         self._emit_summary()
         self.finished.emit(exit_code)
 
@@ -4703,7 +4749,8 @@ class RenderPage(QWidget):
             'husk mode only: opens one MPlay window that updates as each frame renders. '
             'Closing MPlay stops the current frame.')
         self.mplay_cb.setChecked(bool(get_render_setting('render_mplay', False)))
-        self.mplay_cb.toggled.connect(lambda on: self._save('render_mplay', bool(on)))
+        self.mplay_cb.toggled.connect(
+            lambda on: (self._save('render_mplay', bool(on)), self._update_advanced_note()))
         layout.addWidget(self.mplay_cb)
 
         self._build_advanced(layout, get_render_setting)
@@ -4824,6 +4871,8 @@ class RenderPage(QWidget):
         log_layout = QVBoxLayout(log_group)
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
+        # Keep the widget small on long renders; the saved render log file has everything.
+        self.log_output.document().setMaximumBlockCount(self.LOG_MAX_LINES)
         self.log_output.setObjectName('renderLog')
         self.log_output.setMinimumHeight(150)
         log_layout.addWidget(self.log_output)
@@ -4870,6 +4919,28 @@ class RenderPage(QWidget):
         self.skip_sync_confirm_cb.toggled.connect(
             lambda on: (self._save('render_skip_sync_confirm', bool(on)), self._update_advanced_note()))
         adv.addWidget(self.skip_sync_confirm_cb)
+
+        mplay_restart_row = QHBoxLayout()
+        mplay_restart_row.setContentsMargins(0, 0, 0, 0)
+        self.mplay_restart_label = QLabel('Restart MPlay every')
+        mplay_restart_row.addWidget(self.mplay_restart_label)
+        self.mplay_restart_spin = QSpinBox()
+        self.mplay_restart_spin.setRange(0, 9999)
+        self.mplay_restart_spin.setSpecialValueText('never')
+        self.mplay_restart_spin.setSuffix(' frames')
+        self.mplay_restart_spin.setValue(int(get_render_setting('render_mplay_restart', 25)))
+        self.mplay_restart_spin.setToolTip(
+            'MPlay keeps every frame it is sent in memory. On long renders that can fill the RAM and\n'
+            'make frames fail. MazeHub closes the MPlay window this render opened every N frames\n'
+            '(and before retrying a failed frame); the next frame opens a fresh one.')
+        self.mplay_restart_spin.valueChanged.connect(
+            lambda v: (self._save('render_mplay_restart', int(v)), self._update_advanced_note()))
+        mplay_restart_row.addWidget(self.mplay_restart_spin)
+        self.mplay_restart_hint = QLabel('(when MPlay is on)')
+        self.mplay_restart_hint.setObjectName('hint')
+        mplay_restart_row.addWidget(self.mplay_restart_hint)
+        mplay_restart_row.addStretch()
+        adv.addLayout(mplay_restart_row)
 
         # Resolution override (husk only)
         self.res_widget = QWidget()
@@ -4988,6 +5059,8 @@ class RenderPage(QWidget):
             notes.append('no sync confirmation')
         if not self.keep_awake_cb.isChecked():
             notes.append('may sleep')
+        if self.mplay_cb.isChecked() and self.mplay_restart_spin.value() == 0:
+            notes.append('MPlay never restarted')
         self.advanced.set_note(', '.join(notes))
         res = self._resolution_text() if self._render_mode() == 'husk' else ''
         self.render_btn.setToolTip(f'Resolution override: {res}' if res else '')
@@ -5139,6 +5212,7 @@ class RenderPage(QWidget):
         self._update_frame_range()
 
     NO_RENDER_NAME = '(none)'
+    LOG_MAX_LINES = 20000
 
     def _fill_render_names(self):
         """Existing render names of the selected shot/asset, keeping the typed one."""
@@ -5838,8 +5912,10 @@ class RenderPage(QWidget):
             'JOB': str(shot_path),
         }
 
+        mplay_on = job_meta is None and any('--mplay-monitor' in c for c in commands)
         self._render_thread = RenderThread(
-            commands, working_dir=str(shot_path), env=render_env, job_meta=job_meta)
+            commands, working_dir=str(shot_path), env=render_env, job_meta=job_meta,
+            mplay_restart_every=self.mplay_restart_spin.value() if mplay_on else 0)
 
         self._render_dialog = RenderProgressDialog(self.window())
         self._render_dialog.set_render_thread(self._render_thread)

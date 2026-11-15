@@ -8,7 +8,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.14.0"
+APP_VERSION = "0.14.1"
 
 
 def _get_display_name():
@@ -1154,6 +1154,177 @@ def scan_main_layer_passes(usd_file, husk_path=None):
         value = info.get(key)
         out[key] = None if value is None else int(round(float(value)))
     return out
+
+
+# ---- Memory diagnostics during long renders ---------------------------------
+# One line per frame so a slow build-up (e.g. MPlay holding every frame) shows in the log.
+# No extra dependencies: ctypes / tasklist / nvidia-smi on Windows, /proc on Linux.
+
+GB = 1024 ** 3
+
+
+def _parse_meminfo(text):
+    vals = {}
+    for line in text.splitlines():
+        m = re.match(r'(\w+):\s+(\d+)\s*kB', line)
+        if m:
+            vals[m.group(1)] = int(m.group(2)) * 1024
+    if 'MemTotal' not in vals:
+        return None
+    return vals.get('MemAvailable', vals.get('MemFree', 0)), vals['MemTotal']
+
+
+def system_memory():
+    """(free bytes, total bytes) of physical RAM, or None."""
+    try:
+        if os.name == 'nt':
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong),
+                            ('ullTotalPhys', ctypes.c_ulonglong), ('ullAvailPhys', ctypes.c_ulonglong),
+                            ('ullTotalPageFile', ctypes.c_ulonglong), ('ullAvailPageFile', ctypes.c_ulonglong),
+                            ('ullTotalVirtual', ctypes.c_ulonglong), ('ullAvailVirtual', ctypes.c_ulonglong),
+                            ('ullAvailExtendedVirtual', ctypes.c_ulonglong)]
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return stat.ullAvailPhys, stat.ullTotalPhys
+            return None
+        return _parse_meminfo(Path('/proc/meminfo').read_text())
+    except Exception:
+        return None
+
+
+def _parse_nvidia_smi(text):
+    """'used, total' MiB per GPU -> (free bytes, total bytes) of the first GPU."""
+    for line in text.splitlines():
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            used, total = int(parts[0]) * 1024 ** 2, int(parts[1]) * 1024 ** 2
+            return total - used, total
+    return None
+
+
+def gpu_memory():
+    import shutil
+    exe = shutil.which('nvidia-smi')
+    if not exe and os.name == 'nt':
+        candidate = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'nvidia-smi.exe'
+        exe = str(candidate) if candidate.exists() else None
+    if not exe:
+        return None
+    try:
+        result = subprocess.run(
+            [exe, '--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5, **_subprocess_flags())
+        return _parse_nvidia_smi(result.stdout or '')
+    except Exception:
+        return None
+
+
+def _parse_tasklist_csv(text):
+    """tasklist /FO CSV /NH -> [(pid, name, working set bytes)]."""
+    import csv
+    import io
+    procs = []
+    for row in csv.reader(io.StringIO(text)):
+        if len(row) < 5 or not row[1].strip().isdigit():
+            continue
+        digits = re.sub(r'\D', '', row[4])
+        procs.append((int(row[1]), row[0], int(digits) * 1024 if digits else 0))
+    return procs
+
+
+def list_processes():
+    """[(pid, name, resident bytes)] of every process, or [] if it can't be listed."""
+    try:
+        if os.name == 'nt':
+            result = subprocess.run(['tasklist', '/FO', 'CSV', '/NH'], capture_output=True,
+                                    text=True, timeout=10, **_subprocess_flags())
+            return _parse_tasklist_csv(result.stdout or '')
+        procs = []
+        for d in Path('/proc').iterdir():
+            if not d.name.isdigit():
+                continue
+            try:
+                status = (d / 'status').read_text()
+            except OSError:
+                continue
+            name = re.search(r'^Name:\s*(.+)$', status, re.M)
+            rss = re.search(r'^VmRSS:\s*(\d+)\s*kB', status, re.M)
+            procs.append((int(d.name), name.group(1).strip() if name else '',
+                          int(rss.group(1)) * 1024 if rss else 0))
+        return procs
+    except Exception:
+        return []
+
+
+def is_mplay_process(name):
+    return str(name).lower().startswith('mplay')
+
+
+def kill_processes(pids):
+    """Close processes by pid. Returns the pids that were asked to close."""
+    closed = []
+    for pid in pids:
+        try:
+            if os.name == 'nt':
+                subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], capture_output=True,
+                               timeout=10, **_subprocess_flags())
+            else:
+                import signal
+                os.kill(pid, signal.SIGTERM)
+            closed.append(pid)
+        except Exception:
+            pass
+    return closed
+
+
+def resource_snapshot(own_pid=None, procs=None, ram=None, gpu=None):
+    """RAM / GPU / MPlay / MazeHub memory now. Missing parts are None."""
+    own_pid = os.getpid() if own_pid is None else own_pid
+    procs = list_processes() if procs is None else procs
+    ram = system_memory() if ram is None else ram
+    gpu = gpu_memory() if gpu is None else gpu
+    mplay = [(pid, rss) for pid, name, rss in procs if is_mplay_process(name)]
+    own = [rss for pid, _name, rss in procs if pid == own_pid]
+    return {
+        'ram_free': ram[0] if ram else None, 'ram_total': ram[1] if ram else None,
+        'gpu_free': gpu[0] if gpu else None, 'gpu_total': gpu[1] if gpu else None,
+        'mplay_bytes': sum(r for _p, r in mplay) if procs else None,
+        'mplay_pids': [p for p, _r in mplay],
+        'own_bytes': own[0] if own else None,
+    }
+
+
+def _gb(value):
+    return f'{value / GB:.1f}'
+
+
+def format_resources(snap):
+    parts = []
+    if snap.get('ram_free') is not None:
+        parts.append(f'RAM free {_gb(snap["ram_free"])} / {_gb(snap["ram_total"])} GB')
+    if snap.get('gpu_free') is not None:
+        parts.append(f'GPU free {_gb(snap["gpu_free"])} / {_gb(snap["gpu_total"])} GB')
+    if snap.get('mplay_bytes') is not None:
+        parts.append(f'MPlay {_gb(snap["mplay_bytes"])} GB')
+    if snap.get('own_bytes') is not None:
+        parts.append(f'MazeHub {_gb(snap["own_bytes"])} GB')
+    return '[resources] ' + (' · '.join(parts) if parts else 'not available on this system')
+
+
+def resource_warnings(snap):
+    warnings = []
+    total = snap.get('ram_total')
+    if total and snap.get('ram_free') is not None and snap['ram_free'] < 0.10 * total:
+        warnings.append(f'[warning] Only {_gb(snap["ram_free"])} GB of {_gb(total)} GB RAM is free; '
+                        'renders may fail with out-of-memory errors')
+    if total and snap.get('mplay_bytes') and snap['mplay_bytes'] > 0.5 * total:
+        warnings.append(f'[warning] MPlay is holding {_gb(snap["mplay_bytes"])} GB; consider turning MPlay '
+                        'off or lowering "Restart MPlay every"')
+    return warnings
 
 
 # ---- Keep the computer awake while rendering -------------------------------
