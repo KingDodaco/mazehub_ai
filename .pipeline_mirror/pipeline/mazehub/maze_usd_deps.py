@@ -95,7 +95,12 @@ def layer_info(path):
             refs.extend(_list_op_assets(prim.payloadList))
 
     layer.Traverse(Sdf.Path.absoluteRootPath, visit)
-    return {'passes': sorted(passes), 'layer_refs': list(dict.fromkeys(r for r in refs if r))}
+    return {
+        'passes': sorted(passes),
+        'layer_refs': list(dict.fromkeys(r for r in refs if r)),
+        'start': layer.startTimeCode if layer.HasStartTimeCode() else None,
+        'end': layer.endTimeCode if layer.HasEndTimeCode() else None,
+    }
 
 
 def main(argv):

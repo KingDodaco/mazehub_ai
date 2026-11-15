@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QTreeWidget, QTreeWidgetItem, QStatusBar, QGroupBox,
     QFormLayout, QGridLayout, QScrollArea, QSplitter, QDialog, QTabWidget,
     QMenu, QCheckBox, QSpinBox, QProgressBar, QDateEdit,
-    QMessageBox, QProgressDialog, QRadioButton,
+    QMessageBox, QProgressDialog, QRadioButton, QToolButton,
 )
 
 import updater
@@ -37,7 +37,7 @@ from pipeline_app import (
     APP_FILE_EXTENSIONS,
     build_context_env, _app_dir, APP_VERSION,
     discover_usd_files, discover_husk_passes, scan_main_layer_passes,
-    classify_render_failure, failed_frames_by_pass, strip_log_time,
+    classify_render_failure, failed_frames_by_pass, strip_log_time, sync_problem_count,
     clean_render_name, existing_render_names, render_versions,
     render_version_dir, render_output_path,
     discover_image_sequences,
@@ -3866,6 +3866,7 @@ class HelpPage(QWidget):
         <p><b>Passes:</b> MazeHub looks for passes in the selected USD file only. If that file references other USD files, it asks before scanning them too, because on OneDrive that downloads them. Say no to use the passes from the main file; <b>Scan Referenced Files</b> does it later.</p>
         <p>Before husk renders, MazeHub downloads the files the USD references. If something fails to download or can't be found, choose <b>Render Anyway</b> or <b>Cancel Render</b>. <b>Skip Sync</b> stops a slow sync and renders with what's already on disk.</p>
         <p>You'll see progress for each frame and pass, with time estimates. You can pause or cancel at any time.</p>
+        <p><b>Advanced:</b> save the render log, skip the confirmation after the USD sync, override the resolution for quick renders (an exact size or a percentage of the USD's; use a Name such as <code>preview</code> so full-res frames aren't overwritten), and keep the computer awake while rendering, so the YT Screensaver isn't needed. <b>Frame Range</b> can come from the shot/asset, from the USD file's own start/end, or be typed in (Custom). These settings are saved for you, per project.</p>
         <p><b>Failed frames:</b> if a frame fails (for example Karma XPU runs out of GPU memory, or the renderer crashes), MazeHub waits a few seconds and renders it once more with the same settings, then moves on. Frames that fail twice are listed at the end of the log with the reason and a list to re-render, and in the Teams notification.</p>
         """)
 
@@ -4298,6 +4299,13 @@ class RenderProgressDialog(QDialog):
         self.yt_screensaver_btn.setCursor(Qt.PointingHandCursor)
         self.yt_screensaver_btn.clicked.connect(self._open_yt_screensaver)
         btn_row.addWidget(self.yt_screensaver_btn)
+        self.keep_awake_label = QLabel('Keeping this PC awake')
+        self.keep_awake_label.setObjectName('hint')
+        self.keep_awake_label.setToolTip(
+            'MazeHub stops this computer sleeping while the render runs '
+            '(Render tab > Advanced). The YT Screensaver is not needed for that.')
+        self.keep_awake_label.setVisible(False)
+        btn_row.addWidget(self.keep_awake_label)
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
@@ -4458,6 +4466,52 @@ class _RopDiscoveryWorker(QThread):
         self.ready.emit(self.generation, rops, raw_output or '')
 
 
+class CollapsibleSection(QWidget):
+    """A header button with an arrow that shows or hides its content widget."""
+    toggled = Signal(bool)
+
+    def __init__(self, title, parent=None, expanded=False):
+        super().__init__(parent)
+        self._title = title
+        self._note = ''
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+        self.header = QToolButton()
+        self.header.setCheckable(True)
+        self.header.setChecked(expanded)
+        self.header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.header.setAutoRaise(True)
+        self.header.setCursor(Qt.PointingHandCursor)
+        self.header.toggled.connect(self._on_toggled)
+        outer.addWidget(self.header)
+        self.content = QWidget()
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(18, 0, 0, 0)
+        outer.addWidget(self.content)
+        self._on_toggled(expanded, emit=False)
+
+    def set_note(self, note):
+        self._note = note
+        self._update_header()
+
+    def is_expanded(self):
+        return self.header.isChecked()
+
+    def set_expanded(self, expanded):
+        self.header.setChecked(expanded)
+
+    def _update_header(self):
+        self.header.setText(f'{self._title} ({self._note})' if self._note else self._title)
+
+    def _on_toggled(self, expanded, emit=True):
+        self.header.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.content.setVisible(expanded)
+        self._update_header()
+        if emit:
+            self.toggled.emit(expanded)
+
+
 class RenderPage(QWidget):
     def __init__(self, project_root, pipeline_dir, apps_config=None, parent=None):
         super().__init__(parent)
@@ -4524,8 +4578,8 @@ class RenderPage(QWidget):
         asset_row.addWidget(self.asset_combo, 1)
         self.ctx_tabs.addTab(assets_tab, 'Assets')
 
-        from settings import get_setting
-        if get_setting('render_context_type', 'shot') == 'asset':
+        from settings import get_render_setting
+        if get_render_setting('render_context_type', 'shot') == 'asset':
             self.ctx_tabs.setCurrentIndex(1)
         self.ctx_tabs.currentChanged.connect(self._on_context_tab_changed)
         layout.addWidget(self.ctx_tabs)
@@ -4597,6 +4651,10 @@ class RenderPage(QWidget):
         self.houdini_version_combo = QComboBox()
         self.houdini_version_combo.setMinimumWidth(260)
         self.houdini_version_combo.addItems(['22.0', '21.0'])
+        idx = self.houdini_version_combo.findText(str(get_render_setting('render_houdini_version', '22.0')))
+        self.houdini_version_combo.setCurrentIndex(max(idx, 0))
+        self.houdini_version_combo.currentTextChanged.connect(
+            lambda v: self._save('render_houdini_version', v))
         houdini_version_row.addWidget(self.houdini_version_combo, 1)
         houdini_version_row.addStretch()
         layout.addLayout(houdini_version_row)
@@ -4616,15 +4674,13 @@ class RenderPage(QWidget):
         self.render_engine_combo.setToolTip(
             'Karma XPU / Karma CPU override the engine for this render.\n'
             "From USD render settings uses whatever the USD's render settings choose.")
-        from settings import get_setting
-        idx = self.render_engine_combo.findData(get_setting('render_engine', 'xpu'))
+        idx = self.render_engine_combo.findData(get_render_setting('render_engine', 'xpu'))
         self.render_engine_combo.setCurrentIndex(max(idx, 0))
         self.render_engine_combo.currentIndexChanged.connect(self._on_render_engine_changed)
         render_engine_row.addWidget(self.render_engine_combo, 1)
         render_engine_row.addStretch()
         layout.addWidget(self.engine_row_widget)
 
-        from settings import get_setting
         order_row = QHBoxLayout()
         order_row.addWidget(QLabel('Render Order:'))
         self.render_order_combo = QComboBox()
@@ -4635,7 +4691,7 @@ class RenderPage(QWidget):
             'Frame by frame, per pass: every frame of the first pass, then the next pass.\n'
             'Pass by pass, per frame: every pass of frame 1, then frame 2, …\n'
             'husk mode only.')
-        idx = self.render_order_combo.findData(get_setting('render_order', 'pass_major'))
+        idx = self.render_order_combo.findData(get_render_setting('render_order', 'pass_major'))
         self.render_order_combo.setCurrentIndex(max(idx, 0))
         self.render_order_combo.currentIndexChanged.connect(self._on_render_order_changed)
         order_row.addWidget(self.render_order_combo, 1)
@@ -4646,16 +4702,11 @@ class RenderPage(QWidget):
         self.mplay_cb.setToolTip(
             'husk mode only: opens one MPlay window that updates as each frame renders. '
             'Closing MPlay stops the current frame.')
+        self.mplay_cb.setChecked(bool(get_render_setting('render_mplay', False)))
+        self.mplay_cb.toggled.connect(lambda on: self._save('render_mplay', bool(on)))
         layout.addWidget(self.mplay_cb)
 
-        from settings import get_setting
-        self.save_log_cb = QCheckBox('Save render log to the render folder')
-        self.save_log_cb.setToolTip(
-            'Writes the Output Log to render/<shot>[_<name>]_vNNN/<shot>[_<name>]_vNNN_render_<time>.log, '
-            'next to the pass folders. Written as the render runs, so a hung render still leaves a log.')
-        self.save_log_cb.setChecked(bool(get_setting('render_save_log', True)))
-        self.save_log_cb.toggled.connect(self._on_save_log_toggled)
-        layout.addWidget(self.save_log_cb)
+        self._build_advanced(layout, get_render_setting)
 
         layout.addSpacing(8)
 
@@ -4702,7 +4753,25 @@ class RenderPage(QWidget):
         layout.addSpacing(8)
 
         frame_group = QGroupBox('Frame Range')
-        frame_layout = QHBoxLayout(frame_group)
+        frame_outer = QVBoxLayout(frame_group)
+        frame_layout = QHBoxLayout()
+        frame_outer.addLayout(frame_layout)
+
+        self.frame_source_combo = QComboBox()
+        self.frame_source_combo.addItem('From shot', 'shot')
+        self.frame_source_combo.addItem('From USD file', 'usd')
+        self.frame_source_combo.addItem('Custom', 'custom')
+        self.frame_source_combo.setToolTip(
+            "From shot / asset: the frame range in the shot's or asset's info.\n"
+            "From USD file: the start/end time codes saved in the selected USD file.\n"
+            'Custom: type your own; typing in Start or End switches to Custom.')
+        idx = self.frame_source_combo.findData(get_render_setting('render_frame_source', 'shot'))
+        self.frame_source_combo.setCurrentIndex(max(idx, 0))
+        self.frame_source_combo.currentIndexChanged.connect(self._on_frame_source_changed)
+        frame_layout.addWidget(self.frame_source_combo)
+        self._shot_range = None
+        self._usd_range = None       # (start, end), 'none' or None while not read yet
+        self._setting_frames = False
 
         frame_layout.addWidget(QLabel('Start:'))
         self.start_frame_spin = QSpinBox()
@@ -4724,6 +4793,12 @@ class RenderPage(QWidget):
         frame_layout.addWidget(self.interval_spin)
 
         frame_layout.addStretch()
+        self.frame_source_hint = QLabel('')
+        self.frame_source_hint.setObjectName('hint')
+        self.frame_source_hint.setVisible(False)
+        frame_outer.addWidget(self.frame_source_hint)
+        self.start_frame_spin.valueChanged.connect(self._on_frame_edited)
+        self.end_frame_spin.valueChanged.connect(self._on_frame_edited)
         layout.addWidget(frame_group)
 
         layout.addSpacing(8)
@@ -4761,7 +4836,228 @@ class RenderPage(QWidget):
         layout.addStretch()
 
         scroll.setWidget(container)
+        self._keep_awake = None
+        self._render_launched = False
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._stop_keep_awake)
+        idx = self.render_mode_combo.findData(get_render_setting('render_mode', 'husk'))
+        if idx > 0:
+            self.render_mode_combo.setCurrentIndex(idx)  # runs _on_mode_changed
+        self._update_advanced_note()
         self._refresh_contexts()
+
+    # ---- Advanced section -------------------------------------------------
+    def _build_advanced(self, layout, get_render_setting):
+        self.advanced = CollapsibleSection(
+            'Advanced', expanded=bool(get_render_setting('render_advanced_expanded', False)))
+        self.advanced.toggled.connect(lambda on: self._save('render_advanced_expanded', bool(on)))
+        adv = self.advanced.content_layout
+
+        self.save_log_cb = QCheckBox('Save render log to the render folder')
+        self.save_log_cb.setToolTip(
+            'Writes the Output Log to render/<shot>[_<name>]_vNNN/<shot>[_<name>]_vNNN_render_<time>.log, '
+            'next to the pass folders. Written as the render runs, so a hung render still leaves a log.')
+        self.save_log_cb.setChecked(bool(get_render_setting('render_save_log', True)))
+        self.save_log_cb.toggled.connect(self._on_save_log_toggled)
+        adv.addWidget(self.save_log_cb)
+
+        self.skip_sync_confirm_cb = QCheckBox(
+            'Skip the confirmation after USD sync and render straight away')
+        self.skip_sync_confirm_cb.setToolTip(
+            'If the sync finds missing or failed files, MazeHub renders anyway and lists them in the log.')
+        self.skip_sync_confirm_cb.setChecked(bool(get_render_setting('render_skip_sync_confirm', False)))
+        self.skip_sync_confirm_cb.toggled.connect(
+            lambda on: (self._save('render_skip_sync_confirm', bool(on)), self._update_advanced_note()))
+        adv.addWidget(self.skip_sync_confirm_cb)
+
+        # Resolution override (husk only)
+        self.res_widget = QWidget()
+        res_row = QHBoxLayout(self.res_widget)
+        res_row.setContentsMargins(0, 0, 0, 0)
+        res_row.addWidget(QLabel('Resolution:'))
+        self.res_mode_combo = QComboBox()
+        self.res_mode_combo.addItem('From USD', 'usd')
+        self.res_mode_combo.addItem('Custom size', 'size')
+        self.res_mode_combo.addItem('Percentage', 'percent')
+        self.res_mode_combo.setToolTip(
+            'Override the resolution for quick renders (husk mode only).\n'
+            'Output file names stay the same, so use a Name like "preview" to keep full-res frames.')
+        res_row.addWidget(self.res_mode_combo)
+        self.res_w_spin = QSpinBox()
+        self.res_w_spin.setRange(16, 16384)
+        self.res_w_spin.setValue(int(get_render_setting('render_res_width', 1920)))
+        self.res_x_label = QLabel('×')
+        self.res_h_spin = QSpinBox()
+        self.res_h_spin.setRange(16, 16384)
+        self.res_h_spin.setValue(int(get_render_setting('render_res_height', 1080)))
+        self.res_pct_spin = QSpinBox()
+        self.res_pct_spin.setRange(1, 400)
+        self.res_pct_spin.setSuffix(' %')
+        self.res_pct_spin.setValue(int(get_render_setting('render_res_percent', 50)))
+        self.res_pct_buttons = []
+        for w in (self.res_w_spin, self.res_x_label, self.res_h_spin, self.res_pct_spin):
+            res_row.addWidget(w)
+        for pct in (25, 50, 75):
+            b = QPushButton(f'{pct}%')
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, v=pct: self.res_pct_spin.setValue(v))
+            self.res_pct_buttons.append(b)
+            res_row.addWidget(b)
+        self.res_hint = QLabel('husk mode only')
+        self.res_hint.setObjectName('hint')
+        self.res_hint.setVisible(False)
+        res_row.addWidget(self.res_hint)
+        res_row.addStretch()
+        idx = self.res_mode_combo.findData(get_render_setting('render_res_mode', 'usd'))
+        self.res_mode_combo.setCurrentIndex(max(idx, 0))
+        self.res_mode_combo.currentIndexChanged.connect(self._on_resolution_changed)
+        self.res_w_spin.valueChanged.connect(self._on_resolution_changed)
+        self.res_h_spin.valueChanged.connect(self._on_resolution_changed)
+        self.res_pct_spin.valueChanged.connect(self._on_resolution_changed)
+        adv.addWidget(self.res_widget)
+        self._show_resolution_fields()
+
+        self.keep_awake_cb = QCheckBox('Keep this computer awake while rendering')
+        self.keep_awake_cb.setToolTip(
+            'Stops the computer sleeping during the USD sync and the render, '
+            'so you don\'t need the YT Screensaver for that.')
+        self.keep_awake_cb.setChecked(bool(get_render_setting('render_keep_awake', True)))
+        self.keep_screen_on_cb = QCheckBox('Keep the screen on too')
+        self.keep_screen_on_cb.setToolTip('Also stops the screen turning off and the screensaver starting.')
+        self.keep_screen_on_cb.setChecked(bool(get_render_setting('render_keep_screen_on', True)))
+        self.keep_awake_cb.toggled.connect(self._on_keep_awake_toggled)
+        self.keep_screen_on_cb.toggled.connect(lambda on: self._save('render_keep_screen_on', bool(on)))
+        adv.addWidget(self.keep_awake_cb)
+        screen_row = QHBoxLayout()
+        screen_row.setContentsMargins(22, 0, 0, 0)
+        screen_row.addWidget(self.keep_screen_on_cb)
+        screen_row.addStretch()
+        adv.addLayout(screen_row)
+        self.keep_screen_on_cb.setEnabled(self.keep_awake_cb.isChecked())
+
+        layout.addWidget(self.advanced)
+
+    def _on_keep_awake_toggled(self, on):
+        self._save('render_keep_awake', bool(on))
+        self.keep_screen_on_cb.setEnabled(bool(on))
+        self._update_advanced_note()
+
+    def _show_resolution_fields(self):
+        mode = self.res_mode_combo.currentData()
+        for w in (self.res_w_spin, self.res_x_label, self.res_h_spin):
+            w.setVisible(mode == 'size')
+        for w in [self.res_pct_spin] + self.res_pct_buttons:
+            w.setVisible(mode == 'percent')
+
+    def _on_resolution_changed(self, *_):
+        self._show_resolution_fields()
+        self._save('render_res_mode', self.res_mode_combo.currentData())
+        self._save('render_res_width', self.res_w_spin.value())
+        self._save('render_res_height', self.res_h_spin.value())
+        self._save('render_res_percent', self.res_pct_spin.value())
+        self._update_advanced_note()
+
+    def _resolution_args(self):
+        """husk arguments for the resolution override, [] for none."""
+        mode = self.res_mode_combo.currentData()
+        if mode == 'size':
+            return ['--res', str(self.res_w_spin.value()), str(self.res_h_spin.value())]
+        if mode == 'percent':
+            return ['--res-scale', str(self.res_pct_spin.value())]
+        return []
+
+    def _resolution_text(self):
+        mode = self.res_mode_combo.currentData()
+        if mode == 'size':
+            return f'{self.res_w_spin.value()} x {self.res_h_spin.value()} (override)'
+        if mode == 'percent':
+            return f"{self.res_pct_spin.value()}% of the USD's resolution"
+        return ''
+
+    def _update_advanced_note(self):
+        if not hasattr(self, 'advanced'):
+            return
+        notes = []
+        mode = self.res_mode_combo.currentData()
+        if mode == 'size':
+            notes.append(f'resolution {self.res_w_spin.value()}x{self.res_h_spin.value()}')
+        elif mode == 'percent':
+            notes.append(f'resolution {self.res_pct_spin.value()}%')
+        if self.skip_sync_confirm_cb.isChecked():
+            notes.append('no sync confirmation')
+        if not self.keep_awake_cb.isChecked():
+            notes.append('may sleep')
+        self.advanced.set_note(', '.join(notes))
+        res = self._resolution_text() if self._render_mode() == 'husk' else ''
+        self.render_btn.setToolTip(f'Resolution override: {res}' if res else '')
+
+    # ---- Frame range source ------------------------------------------------
+    def _frame_source(self):
+        source = self.frame_source_combo.currentData()
+        if source == 'usd' and self._render_mode() == 'hrender':
+            return 'shot'
+        return source
+
+    def _on_frame_source_changed(self, _index):
+        self._save('render_frame_source', self.frame_source_combo.currentData())
+        self._update_frame_range()
+
+    def _on_frame_edited(self, _value):
+        if self._setting_frames or self.frame_source_combo.currentData() == 'custom':
+            return
+        self.frame_source_combo.blockSignals(True)
+        self.frame_source_combo.setCurrentIndex(self.frame_source_combo.findData('custom'))
+        self.frame_source_combo.blockSignals(False)
+        self._save('render_frame_source', 'custom')
+        self.frame_source_hint.setVisible(False)
+
+    def _set_frames(self, start, end):
+        self._setting_frames = True
+        try:
+            self.start_frame_spin.setValue(int(start))
+            self.end_frame_spin.setValue(int(end))
+        finally:
+            self._setting_frames = False
+
+    def _update_frame_range(self):
+        source = self._frame_source()
+        hint = ''
+        what = 'Asset' if self._context_type() == 'asset' else 'Shot'
+        if source == 'shot':
+            if self._shot_range:
+                self._set_frames(*self._shot_range)
+            elif self._context():
+                hint = f'{what} has no frame range'
+        elif source == 'usd':
+            if isinstance(self._usd_range, tuple):
+                self._set_frames(*self._usd_range)
+            elif self._usd_range == 'none':
+                hint = 'USD file has no frame range'
+            elif self.usd_combo.currentText():
+                hint = "Reading the USD file's frame range…"
+        self.frame_source_hint.setText(hint)
+        self.frame_source_hint.setVisible(bool(hint))
+
+    # ---- Keep awake --------------------------------------------------------
+    def _start_keep_awake(self):
+        if not self.keep_awake_cb.isChecked():
+            return
+        from pipeline_app import KeepAwake
+        if self._keep_awake is None or not self._keep_awake.active:
+            self._keep_awake = KeepAwake(screen_on=self.keep_screen_on_cb.isChecked())
+            error = self._keep_awake.start()
+            if error:
+                self._log(f'[warning] Could not keep the computer awake: {error}')
+                self._keep_awake = None
+                return
+            self._log('[info] Keeping this computer awake while rendering'
+                      + (' (screen on)' if self._keep_awake.screen_on else ''))
+
+    def _stop_keep_awake(self):
+        if self._keep_awake is not None:
+            self._keep_awake.stop()
+            self._keep_awake = None
 
     def _refresh_all(self):
         self._refresh_contexts()
@@ -4792,8 +5088,8 @@ class RenderPage(QWidget):
         self._on_context_changed()
 
     def _on_context_tab_changed(self, _index):
-        from settings import set_setting
-        set_setting('render_context_type', self._context_type())
+        from settings import set_render_setting
+        set_render_setting('render_context_type', self._context_type())
         self._on_context_changed()
 
     def _context_type(self):
@@ -4819,16 +5115,14 @@ class RenderPage(QWidget):
         shot_path = ctx[2] if ctx else None
         self.usd_combo.blockSignals(True)
         self.usd_combo.clear()
+        self._shot_range = None
+        self.frame_source_combo.setItemText(0, 'From asset' if self._context_type() == 'asset' else 'From shot')
         if ctx:
             meta = read_shot_meta(shot_path)
-            fr = meta.get('frame_range', '')
-            if fr and '-' in fr:
-                parts = fr.split('-')
-                try:
-                    self.start_frame_spin.setValue(int(parts[0]))
-                    self.end_frame_spin.setValue(int(parts[1]))
-                except ValueError:
-                    pass
+            fr = str(meta.get('frame_range', '') or '')
+            m = re.match(r'^\s*(-?\d+)\s*-\s*(-?\d+)\s*$', fr)
+            if m:
+                self._shot_range = (int(m.group(1)), int(m.group(2)))
             usd_files = discover_usd_files(shot_path)
             self.usd_combo.addItems([f.name for f in usd_files])
         self.usd_combo.setCurrentIndex(-1)
@@ -4842,6 +5136,7 @@ class RenderPage(QWidget):
         self._fill_render_names()
         self._refresh_versions()
         self._on_usd_changed('')
+        self._update_frame_range()
 
     NO_RENDER_NAME = '(none)'
 
@@ -4906,10 +5201,21 @@ class RenderPage(QWidget):
         self.engine_row_widget.setVisible(not hrender)
         self.mplay_cb.setEnabled(not hrender)
         self.render_order_combo.setEnabled(not hrender)
+        self.res_mode_combo.setEnabled(not hrender)
+        for w in (self.res_w_spin, self.res_h_spin, self.res_pct_spin, *self.res_pct_buttons):
+            w.setEnabled(not hrender)
+        self.res_hint.setVisible(hrender)
+        item = self.frame_source_combo.model().item(1)
+        if item is not None:
+            item.setEnabled(not hrender)
+        if _index is not None and hasattr(self, '_keep_awake'):
+            self._save('render_mode', self._render_mode())
+        self._update_advanced_note()
         self._no_passes_text = (
             'No passes found. Select a HIP file to discover ROPs and passes.' if hrender
             else 'No passes found. Select a USD file to discover passes.')
         self._refresh_passes()
+        self._update_frame_range()
 
     def _resolve_husk(self):
         husk_path = self._resolve_husk_from_houdini(self.houdini_version_combo.currentText())
@@ -5002,6 +5308,7 @@ class RenderPage(QWidget):
     def _refresh_passes(self):
         self._discover_gen += 1
         self._clear_passes()
+        self._usd_range = None
         if self._render_mode() == 'hrender':
             self._refresh_rops()
             return
@@ -5083,6 +5390,12 @@ class RenderPage(QWidget):
             return
         scan = self._pass_scan
         usd_file = scan['usd_file']
+        if result.get('start') is not None and result.get('end') is not None:
+            self._usd_range = (result['start'], result['end'])
+            self._log(f'[info] {usd_file.name} frame range: {result["start"]}-{result["end"]}')
+        else:
+            self._usd_range = 'none'
+        self._update_frame_range()
         if result.get('error'):
             self._log(f'[warning] {result["error"]}')
             if self._ask_full_scan_fallback(usd_file, result['error']) and generation == self._discover_gen:
@@ -5165,17 +5478,18 @@ class RenderPage(QWidget):
             if item and item.widget() and isinstance(item.widget(), QCheckBox):
                 item.widget().setChecked(False)
 
+    def _save(self, key, value):
+        from settings import set_render_setting
+        set_render_setting(key, value)
+
     def _on_render_engine_changed(self, _index):
-        from settings import set_setting
-        set_setting('render_engine', self.render_engine_combo.currentData())
+        self._save('render_engine', self.render_engine_combo.currentData())
 
     def _on_render_order_changed(self, _index):
-        from settings import set_setting
-        set_setting('render_order', self.render_order_combo.currentData())
+        self._save('render_order', self.render_order_combo.currentData())
 
     def _on_save_log_toggled(self, checked):
-        from settings import set_setting
-        set_setting('render_save_log', bool(checked))
+        self._save('render_save_log', bool(checked))
 
     def _log(self, text):
         """Append to the Output Log and, during a render, to the log file."""
@@ -5214,6 +5528,7 @@ class RenderPage(QWidget):
                 pass
 
     def _start_render(self):
+        self._render_launched = False
         try:
             self._do_render()
         except Exception as e:
@@ -5224,6 +5539,10 @@ class RenderPage(QWidget):
             self.render_btn.setEnabled(True)
             self.cancel_btn.setEnabled(False)
             self._close_render_log()
+            self._render_launched = False
+        if not self._render_launched:
+            # Validation failed, the sync was cancelled, or an error: nothing is rendering.
+            self._stop_keep_awake()
 
     def _do_render(self):
         if self._render_mode() == 'hrender':
@@ -5286,6 +5605,7 @@ class RenderPage(QWidget):
             return
 
         commands = []
+        res_args = self._resolution_args()
         render_base = shot_path / 'houdini' / 'render'
         version_dir = render_version_dir(render_base, shot_name, render_name, version)
         frames = list(range(start, end + 1, max(interval, 1)))
@@ -5299,6 +5619,7 @@ class RenderPage(QWidget):
             cmd = [husk_path]
             if render_engine != 'usd':
                 cmd += ['--engine', render_engine]
+            cmd += res_args
             cmd += [
                 '--pass', p,
                 '-f', str(frame),
@@ -5321,12 +5642,16 @@ class RenderPage(QWidget):
         self._log("Engine: from the USD's render settings" if render_engine == 'usd'
                   else f'Engine: Karma {render_engine.upper()}')
         self._log(f'Order: {self.render_order_combo.currentText()}')
+        if res_args:
+            self._log(f'Resolution: {self._resolution_text()}')
         self._log(f'Commands: {len(commands)}')
         self._log('')
+        self._start_keep_awake()
 
+        auto_continue = self.skip_sync_confirm_cb.isChecked()
         self._log(f'[info] Syncing USD references for {usd_name}...')
         sync_dlg = SyncProgressDialog(usd_file, self.window(), husk_path=husk_path,
-                                      project_root=self.project_root)
+                                      project_root=self.project_root, auto_continue=auto_continue)
         sync_dlg.start()
         sync_accepted = sync_dlg.exec() == QDialog.Accepted
         sync_seconds = sync_dlg.elapsed()
@@ -5347,9 +5672,14 @@ class RenderPage(QWidget):
                 f'[warning] USD sync skipped — rendering may fail (sync time {sync_time_str})')
         else:
             self._log_sync_report(sync_dlg.report, sync_time_str, len(frames) > 1)
+            problems = sync_problem_count(sync_dlg.report)
+            if auto_continue and problems:
+                self._log(f'[warning] Rendering without confirmation: {problems} sync '
+                          f'problem{"s" if problems != 1 else ""}, see above')
 
         self._render_meta = {
             'render_mode': 'husk',
+            'resolution': self._resolution_text() if res_args else '',
             'shot': shot_name,
             'context_type': ctx_type,
             'context_path': str(shot_path),
@@ -5473,6 +5803,7 @@ class RenderPage(QWidget):
         self._log(f'Jobs: {", ".join(names)}')
         self._log(f'Frames: {start}-{end} (interval {interval})')
         self._log('')
+        self._start_keep_awake()
 
         self._render_meta = {
             'render_mode': 'hrender',
@@ -5497,6 +5828,7 @@ class RenderPage(QWidget):
         self._launch_render(commands, ctx_type, shot_name, shot_path, names, 0, job_meta=job_meta)
 
     def _launch_render(self, commands, ctx_type, shot_name, shot_path, passes, sync_seconds, job_meta=None):
+        self._render_launched = True
         self.render_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
 
@@ -5522,6 +5854,8 @@ class RenderPage(QWidget):
         self._render_dialog.set_shot(shot_name, 'Asset' if ctx_type == 'asset' else 'Shot')
         self._render_dialog.init_passes(passes)
         self._render_dialog.set_sync_time(sync_seconds)
+        self._render_dialog.keep_awake_label.setVisible(
+            self._keep_awake is not None and self._keep_awake.active)
 
         self._render_thread.output.connect(self._on_render_output)
         self._render_thread.finished.connect(self._on_render_finished)
@@ -5619,6 +5953,8 @@ class RenderPage(QWidget):
         sb.setValue(sb.maximum())
 
     def _on_render_finished(self, exit_code):
+        self._render_launched = False
+        self._stop_keep_awake()
         if hasattr(self, '_stall_timer'):
             self._stall_timer.stop()
         self.render_btn.setEnabled(True)
@@ -5708,6 +6044,7 @@ class RenderPage(QWidget):
                     failures=failures,
                     skipped=skipped,
                     total_jobs=total_jobs,
+                    resolution=meta.get('resolution', ''),
                     first_frame_path=first_frame_path,
                 )
         self._close_render_log()
@@ -5825,8 +6162,10 @@ class VersionDialog(QDialog):
 
 
 class SyncProgressDialog(QDialog):
-    def __init__(self, usd_file, parent=None, husk_path=None, project_root=None):
+    def __init__(self, usd_file, parent=None, husk_path=None, project_root=None, auto_continue=False):
         super().__init__(parent)
+        # Render straight away after the sync, even with problems (Render tab > Advanced).
+        self.auto_continue = auto_continue
         self.husk_path = husk_path
         self.project_root = project_root
         self.report = {}
@@ -5994,6 +6333,9 @@ class SyncProgressDialog(QDialog):
         self.status_label.setText(summary)
         self.detail_label.setText('\n'.join(problems) if problems else 'All dependencies are on disk.')
         self.detail_label.setStyleSheet('color: #ffa726;' if problems else 'color: #00c853;')
+        if self.auto_continue and not self.cancel_render:
+            self.accept()
+            return
         if problems:
             self.continue_btn.setVisible(True)
             self.continue_btn.setDefault(True)

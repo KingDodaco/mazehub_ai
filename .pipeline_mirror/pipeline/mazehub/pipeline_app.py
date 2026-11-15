@@ -8,7 +8,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.13.9"
+APP_VERSION = "0.14.0"
 
 
 def _get_display_name():
@@ -1081,7 +1081,19 @@ def parse_usda_layer(text):
         i += 1
     seen = set()
     refs = [r for r in refs if not (r in seen or seen.add(r))]
-    return {'passes': passes, 'layer_refs': refs}
+    return {'passes': passes, 'layer_refs': refs, **_usda_time_codes(text)}
+
+
+_USDA_TIME_CODE_RE = re.compile(r'\b(start|end)TimeCode\s*=\s*(-?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?)')
+
+
+def _usda_time_codes(text):
+    """start/end frame from a .usda layer header (startTimeCode / endTimeCode), or None."""
+    out = {'start': None, 'end': None}
+    for name, value in _USDA_TIME_CODE_RE.findall(text):
+        if out[name] is None:
+            out[name] = int(round(float(value)))
+    return out
 
 
 def _layer_info_hython(usd_file, husk_path=None, timeout=180):
@@ -1108,7 +1120,7 @@ def scan_main_layer_passes(usd_file, husk_path=None):
     opened or synced, so OneDrive doesn't download them.
     """
     usd_file = Path(usd_file)
-    out = {'passes': [], 'layer_refs': [], 'method': '', 'error': ''}
+    out = {'passes': [], 'layer_refs': [], 'start': None, 'end': None, 'method': '', 'error': ''}
     if not sync_file(usd_file):
         out['error'] = f'USD file is missing or did not sync: {usd_file}'
         return out
@@ -1138,7 +1150,86 @@ def scan_main_layer_passes(usd_file, husk_path=None):
         return out
     out['passes'] = list(dict.fromkeys(info.get('passes', [])))
     out['layer_refs'] = list(dict.fromkeys(info.get('layer_refs', [])))
+    for key in ('start', 'end'):
+        value = info.get(key)
+        out[key] = None if value is None else int(round(float(value)))
     return out
+
+
+# ---- Keep the computer awake while rendering -------------------------------
+
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+ES_DISPLAY_REQUIRED = 0x00000002
+
+
+class KeepAwake:
+    """Stop the computer sleeping (and optionally the screen turning off) while active.
+
+    Windows: SetThreadExecutionState on the calling thread (call start/stop from the GUI
+    thread), the same request a playing video makes. macOS: caffeinate. Linux:
+    systemd-inhibit. Best effort: start() returns an error string instead of raising.
+    """
+
+    def __init__(self, screen_on=True):
+        self.screen_on = screen_on
+        self.active = False
+        self._proc = None
+
+    def _windows_call(self, flags):
+        import ctypes
+        result = ctypes.windll.kernel32.SetThreadExecutionState(flags)
+        if not result:
+            raise OSError('SetThreadExecutionState failed')
+
+    def _command(self):
+        import shutil
+        if sys.platform == 'darwin' and shutil.which('caffeinate'):
+            return ['caffeinate', '-i'] + (['-d'] if self.screen_on else []) + ['-w', str(os.getpid())]
+        if shutil.which('systemd-inhibit'):
+            what = 'sleep:idle' if self.screen_on else 'sleep'
+            return ['systemd-inhibit', f'--what={what}', '--who=MazeHub', '--why=Rendering',
+                    '--mode=block', 'sleep', 'infinity']
+        return None
+
+    def start(self):
+        """Returns '' on success, otherwise why it couldn't keep the computer awake."""
+        if self.active:
+            return ''
+        try:
+            if os.name == 'nt':
+                flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+                if self.screen_on:
+                    flags |= ES_DISPLAY_REQUIRED
+                self._windows_call(flags)
+            else:
+                cmd = self._command()
+                if not cmd:
+                    return 'no caffeinate or systemd-inhibit on this system'
+                self._proc = subprocess.Popen(
+                    cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, **_subprocess_flags())
+        except Exception as e:
+            return f'{type(e).__name__}: {e}'
+        self.active = True
+        return ''
+
+    def stop(self):
+        if not self.active:
+            return
+        self.active = False
+        try:
+            if os.name == 'nt':
+                self._windows_call(ES_CONTINUOUS)
+            elif self._proc is not None:
+                self._proc.terminate()
+                try:
+                    self._proc.wait(timeout=3)
+                except Exception:
+                    self._proc.kill()
+        except Exception:
+            pass
+        self._proc = None
 
 
 # ---- Render failures ------------------------------------------------------
@@ -1185,6 +1276,14 @@ def classify_render_failure(code, lines):
         if _ERRORISH_RE.search(l) and not _NOISE_RE.search(l) and not l.startswith('['):
             return f'exit code {code}: {_short(l)}'
     return f'exit code {code}'
+
+
+def sync_problem_count(report):
+    """Number of problems a USD sync report lists (error, unreadable layers, failed, missing)."""
+    report = report or {}
+    if report.get('error'):
+        return 1
+    return sum(len(report.get(k) or []) for k in ('unreadable_layers', 'failed', 'missing'))
 
 
 def compact_frames(frames):
@@ -2414,13 +2513,13 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
                             exit_code, render_time, project_root='',
                             cancelled=False, start_time='', end_time='',
                             first_frame_path='', context_type='shot',
-                            failures=None, skipped=None, total_jobs=None):
+                            failures=None, skipped=None, total_jobs=None, resolution=''):
     if not webhook_url:
         return False
     card = build_render_card(
         shot, usd_file, passes, start_frame, end_frame, interval, version, render_engine,
         exit_code, render_time, project_root, cancelled, start_time, end_time,
-        first_frame_path, context_type, failures, skipped, total_jobs)
+        first_frame_path, context_type, failures, skipped, total_jobs, resolution)
     data = json.dumps(card).encode('utf-8')
     req = urllib.request.Request(
         webhook_url,
@@ -2449,7 +2548,7 @@ def _engine_label(render_engine):
 def build_render_card(shot, usd_file, passes, start_frame, end_frame, interval, version,
                       render_engine, exit_code, render_time, project_root='', cancelled=False,
                       start_time='', end_time='', first_frame_path='', context_type='shot',
-                      failures=None, skipped=None, total_jobs=None):
+                      failures=None, skipped=None, total_jobs=None, resolution=''):
     """The Teams MessageCard for a finished render."""
     failures = list(failures or [])
     skipped = list(skipped or [])
@@ -2490,6 +2589,7 @@ def build_render_card(shot, usd_file, passes, start_frame, end_frame, interval, 
         {'name': 'Interval', 'value': str(interval)},
         {'name': 'Total Frames', 'value': str(total_frames)},
         {'name': 'Engine', 'value': _engine_label(render_engine)},
+        *([{'name': 'Resolution', 'value': resolution}] if resolution else []),
         {'name': 'Render Time', 'value': render_time},
     ]
     if start_time:

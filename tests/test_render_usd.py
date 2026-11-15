@@ -133,7 +133,18 @@ class MainLayerPasses(unittest.TestCase):
 
     def test_no_refs(self):
         info = pa.parse_usda_layer('#usda 1.0\ndef RenderPass "only" {}\n')
-        self.assertEqual(info, {'passes': ['/only'], 'layer_refs': []})
+        self.assertEqual(info, {'passes': ['/only'], 'layer_refs': [], 'start': None, 'end': None})
+
+    def test_time_codes(self):
+        text = '#usda 1.0\n(\n    endTimeCode = 1240\n    startTimeCode = 1001.0\n    timeCodesPerSecond = 24\n)\n'
+        info = pa.parse_usda_layer(text)
+        self.assertEqual((info['start'], info['end']), (1001, 1240))
+        with tempfile.TemporaryDirectory() as tmp:
+            main = Path(tmp) / 'shot.usda'
+            main.write_text(text + MAIN_USDA.split('\n', 1)[1])
+            result = pa.scan_main_layer_passes(main)
+            self.assertEqual((result['start'], result['end']), (1001, 1240))
+            self.assertEqual(len(result['passes']), 2)
 
     def test_scan_reads_only_main_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -168,9 +179,58 @@ class MainLayerPasses(unittest.TestCase):
             main = Path(tmp) / 'main.usda'
             main.write_text(MAIN_USDA)
             info = maze_usd_deps.layer_info(str(main))
+            self.assertEqual((info['start'], info['end']), (None, None))
+            timed = Path(tmp) / 'timed.usda'
+            timed.write_text('#usda 1.0\n(\n    startTimeCode = 1001\n    endTimeCode = 1100\n)\n')
+            t = maze_usd_deps.layer_info(str(timed))
+            self.assertEqual((t['start'], t['end']), (1001, 1100))
             self.assertEqual(info['passes'], ['/Render/passes/beauty', '/Render/passes/utility'])
             self.assertEqual(set(info['layer_refs']),
                              {'./lighting.usda', '../env/set.usdc', './char.usd', 'big payload.usdc'})
+
+
+class FakeKeepAwake:
+    instances = []
+
+    def __init__(self, screen_on=True):
+        self.screen_on = screen_on
+        self.active = False
+        self.events = []
+        FakeKeepAwake.instances.append(self)
+
+    def start(self):
+        self.active = True
+        self.events.append('start')
+        return ''
+
+    def stop(self):
+        self.active = False
+        self.events.append('stop')
+
+
+class FakeSync:
+    """Stands in for SyncProgressDialog: accepts at once, or cancels the render."""
+    cancel = False
+    report = {}
+    created = []
+
+    def __init__(self, *a, auto_continue=False, **k):
+        self.auto_continue = auto_continue
+        self.cancel_render = FakeSync.cancel
+        FakeSync.created.append(self)
+
+    def start(self):
+        pass
+
+    def exec(self):
+        from PySide6.QtWidgets import QDialog
+        return QDialog.Rejected if self.cancel_render else QDialog.Accepted
+
+    def elapsed(self):
+        return 0.0
+
+    def _format_duration(self, s):
+        return '0s'
 
 
 @unittest.skipUnless(HAVE_QT, 'PySide6 not installed')
@@ -200,14 +260,21 @@ class RenderPageGui(unittest.TestCase):
             mock.patch('settings.find_husk', return_value=str(self.husk)),
             mock.patch.object(self.gui, 'discover_husk_passes',
                               side_effect=self._fake_husk_passes),
+            mock.patch('pipeline_app.KeepAwake', FakeKeepAwake),
         ]
+        FakeKeepAwake.instances = []
+        FakeSync.cancel = False
+        FakeSync.created = []
         for p in self.patches:
             p.start()
         self.husk_calls = []
+        self.root = root
+        os.environ['MAZE_PROJECT_ROOT'] = str(root)
         self.page = self.gui.RenderPage(root, root / 'pipeline')
         self.page._ask_full_scan_fallback = lambda *a: False
 
     def tearDown(self):
+        os.environ.pop('MAZE_PROJECT_ROOT', None)
         self.page.deleteLater()
         for p in self.patches:
             p.stop()
@@ -285,34 +352,19 @@ class RenderPageGui(unittest.TestCase):
         self.assertTrue(self.page.render_name_hint.text())
 
     def _render_commands(self, name, engine='xpu', full=False):
-        class FakeSync:
-            report = {}
-            cancel_render = False
-
-            def __init__(self, *a, **k):
-                pass
-
-            def start(self):
-                pass
-
-            def exec(self):
-                return self_gui.QDialog.Accepted
-
-            def elapsed(self):
-                return 0.0
-
-            def _format_duration(self, s):
-                return '0s'
-        self_gui = self.gui
         launched = []
-        self.page._launch_render = lambda commands, *a, **k: launched.append(commands)
+
+        def fake_launch(commands, *a, **k):
+            launched.append(commands)
+            self.page._render_launched = True  # what the real _launch_render does
+        self.page._launch_render = fake_launch
         self.page.render_name_combo.setCurrentText(name)
         self.page.version_combo.setCurrentIndex(self.page.version_combo.count() - 1)
         self.page.render_engine_combo.setCurrentIndex(self.page.render_engine_combo.findData(engine))
         self.page.start_frame_spin.setValue(1001)
         self.page.end_frame_spin.setValue(1001)
         with mock.patch.object(self.gui, 'SyncProgressDialog', FakeSync):
-            self.page._do_render()
+            self.page._start_render()
         self.assertEqual(len(launched), 1)
         if full:
             return launched[0]
@@ -363,6 +415,167 @@ class RenderPageGui(unittest.TestCase):
         page = self.gui.RenderPage(self.page.project_root, self.page.pipeline_dir)
         self.assertEqual(page.render_engine_combo.currentData(), 'xpu')
         page.deleteLater()
+
+    # ---- v0.14.0: Advanced section, resolution, keep awake, frame source, per-project ----
+    def _new_page(self, root=None):
+        page = self.gui.RenderPage(root or self.root, (root or self.root) / 'pipeline')
+        self.addCleanup(page.deleteLater)
+        return page
+
+    def test_advanced_section(self):
+        adv = self.page.advanced
+        self.assertFalse(adv.is_expanded())
+        self.assertTrue(adv.content.isHidden())
+        adv.set_expanded(True)
+        self.assertFalse(adv.content.isHidden())
+        self.assertTrue(self._new_page().advanced.is_expanded())
+        self.assertEqual(adv.header.text(), 'Advanced')
+        self.page.res_mode_combo.setCurrentIndex(self.page.res_mode_combo.findData('percent'))
+        self.page.res_pct_spin.setValue(50)
+        self.assertEqual(adv.header.text(), 'Advanced (resolution 50%)')
+        self.page.keep_awake_cb.setChecked(False)
+        self.assertIn('may sleep', adv.header.text())
+        self.assertFalse(self.page.keep_screen_on_cb.isEnabled())
+
+    def test_resolution_args(self):
+        asked = self._pick_shot(False)
+        self.assertTrue(self._wait(lambda: asked))
+        cmd = self._render_commands('', full=True)[0]
+        self.assertNotIn('--res', cmd)
+        self.assertNotIn('--res-scale', cmd)
+        combo = self.page.res_mode_combo
+        combo.setCurrentIndex(combo.findData('size'))
+        self.page.res_w_spin.setValue(1280)
+        self.page.res_h_spin.setValue(720)
+        cmd = self._render_commands('', full=True)[0]
+        self.assertEqual(cmd[cmd.index('--res') + 1:cmd.index('--res') + 3], ['1280', '720'])
+        self.assertEqual(self.page._render_meta['resolution'], '1280 x 720 (override)')
+        combo.setCurrentIndex(combo.findData('percent'))
+        self.page.res_pct_buttons[0].click()
+        cmd = self._render_commands('', full=True)[0]
+        self.assertEqual(cmd[cmd.index('--res-scale') + 1], '25')
+        self.assertNotIn('--res', cmd)
+        page = self._new_page()
+        self.assertEqual(page.res_mode_combo.currentData(), 'percent')
+        self.assertEqual(page.res_pct_spin.value(), 25)
+        self.assertEqual(page.res_w_spin.value(), 1280)
+
+    def test_keep_awake_lifecycle(self):
+        asked = self._pick_shot(False)
+        self.assertTrue(self._wait(lambda: asked))
+        self.page.keep_screen_on_cb.setChecked(False)
+        self._render_commands('')
+        ka = FakeKeepAwake.instances[-1]
+        self.assertEqual(ka.events, ['start'])  # still rendering (launch is stubbed)
+        self.assertFalse(ka.screen_on)
+        self.page._render_thread = None
+        self.page._render_dialog = None
+        self.page._on_render_finished(0)
+        self.assertEqual(ka.events, ['start', 'stop'])
+        # Sync cancelled: started before the sync, stopped right after.
+        FakeSync.cancel = True
+        launched = []
+        self.page._launch_render = lambda commands, *a, **k: launched.append(commands)
+        with mock.patch.object(self.gui, 'SyncProgressDialog', FakeSync):
+            self.page._start_render()
+        self.assertEqual(launched, [])
+        self.assertEqual(FakeKeepAwake.instances[-1].events, ['start', 'stop'])
+        # Error during the render setup.
+        FakeSync.cancel = False
+        with mock.patch.object(self.gui, 'SyncProgressDialog', side_effect=RuntimeError('boom')):
+            self.page._start_render()
+        self.assertEqual(FakeKeepAwake.instances[-1].events, ['start', 'stop'])
+        # Option off: never started.
+        count = len(FakeKeepAwake.instances)
+        self.page.keep_awake_cb.setChecked(False)
+        self._render_commands('')
+        self.assertEqual(len(FakeKeepAwake.instances), count)
+
+    def test_skip_sync_confirmation_passed(self):
+        asked = self._pick_shot(False)
+        self.assertTrue(self._wait(lambda: asked))
+        self._render_commands('')
+        self.assertFalse(FakeSync.created[-1].auto_continue)
+        self.page.skip_sync_confirm_cb.setChecked(True)
+        self._render_commands('')
+        self.assertTrue(FakeSync.created[-1].auto_continue)
+        self.assertTrue(self._new_page().skip_sync_confirm_cb.isChecked())
+
+    def test_sync_dialog_auto_continue(self):
+        from PySide6.QtWidgets import QDialog
+        report = {'refs': 3, 'synced': 1, 'total': 3, 'missing': ['/a.vdb'], 'missing_groups': []}
+        dlg = self.gui.SyncProgressDialog(Path('/x.usd'), None, auto_continue=True)
+        dlg._on_finished(dict(report))
+        self.assertEqual(dlg.result(), QDialog.Accepted)
+        self.assertFalse(dlg.cancel_render)
+        dlg = self.gui.SyncProgressDialog(Path('/x.usd'), None)
+        dlg._on_finished(dict(report))
+        self.assertNotEqual(dlg.result(), QDialog.Accepted)
+        self.assertFalse(dlg.continue_btn.isHidden())
+        dlg = self.gui.SyncProgressDialog(Path('/x.usd'), None, auto_continue=True)
+        dlg._on_finished({'cancelled': True})
+        self.assertNotEqual(dlg.result(), QDialog.Accepted)
+        self.assertEqual(pa.sync_problem_count(report), 1)
+        self.assertEqual(pa.sync_problem_count({'error': 'x'}), 1)
+
+    def test_frame_source(self):
+        pa.write_shot_meta(self.shot, {**pa.read_shot_meta(self.shot), 'frame_range': '1001-1050'})
+        usd = self.shot / 'houdini' / 'USD' / 'SH010_v002.usda'
+        usd.write_text('#usda 1.0\n(\n    startTimeCode = 1\n    endTimeCode = 24\n)\n'
+                       'def RenderPass "beauty" {}\n')
+        page = self.page
+        page._ask_scan_references = lambda *a: False
+        page.ctx_tabs.setCurrentIndex(0)
+        page.shot_combo.setCurrentText('SH010')
+        spins = lambda: (page.start_frame_spin.value(), page.end_frame_spin.value())
+        self.assertEqual(page.frame_source_combo.currentData(), 'shot')
+        self.assertEqual(spins(), (1001, 1050))
+        src = page.frame_source_combo
+        src.setCurrentIndex(src.findData('usd'))
+        page.usd_combo.setCurrentText('SH010_v002.usda')
+        self.assertTrue(self._wait(lambda: spins() == (1, 24)))
+        page.usd_combo.setCurrentText('SH010_v001.usda')  # no time codes
+        self.assertTrue(self._wait(lambda: page.frame_source_hint.text() == 'USD file has no frame range'))
+        self.assertEqual(spins(), (1, 24))
+        # Typing switches to Custom; Custom survives a context change.
+        page.start_frame_spin.setValue(5)
+        self.assertEqual(src.currentData(), 'custom')
+        page._on_context_changed()
+        self.assertEqual(spins(), (5, 24))
+        self.assertEqual(self._new_page().frame_source_combo.currentData(), 'custom')
+        # hrender: USD source disabled, shot range used, choice kept.
+        src.setCurrentIndex(src.findData('usd'))
+        page.render_mode_combo.setCurrentIndex(page.render_mode_combo.findData('hrender'))
+        self.assertFalse(src.model().item(1).isEnabled())
+        self.assertEqual(spins(), (1001, 1050))
+        self.assertEqual(src.currentData(), 'usd')
+        self.assertEqual(self._new_page().render_mode_combo.currentData(), 'hrender')
+        # Asset label.
+        page.render_mode_combo.setCurrentIndex(0)
+        page.ctx_tabs.setCurrentIndex(1)
+        self.assertEqual(src.itemText(0), 'From asset')
+
+    def test_settings_per_project(self):
+        page = self.page
+        page.render_engine_combo.setCurrentIndex(page.render_engine_combo.findData('cpu'))
+        page.mplay_cb.setChecked(True)
+        page.houdini_version_combo.setCurrentText('21.0')
+        page.render_order_combo.setCurrentIndex(1)
+        page.save_log_cb.setChecked(False)
+        restored = self._new_page()
+        self.assertEqual(restored.render_engine_combo.currentData(), 'cpu')
+        self.assertTrue(restored.mplay_cb.isChecked())
+        self.assertEqual(restored.houdini_version_combo.currentText(), '21.0')
+        self.assertEqual(restored.render_order_combo.currentData(), 'frame_major')
+        self.assertFalse(restored.save_log_cb.isChecked())
+        self.assertTrue(list((self.root / 'mazehub' / 'users').glob('*.json')))
+        other = Path(self.tmp.name) / 'other_proj'
+        other.mkdir()
+        os.environ['MAZE_PROJECT_ROOT'] = str(other)
+        fresh = self._new_page(other)
+        self.assertNotEqual(fresh.render_engine_combo.currentData(), 'cpu')
+        self.assertFalse(fresh.mplay_cb.isChecked())
+        os.environ['MAZE_PROJECT_ROOT'] = str(self.root)
 
 
 if __name__ == '__main__':

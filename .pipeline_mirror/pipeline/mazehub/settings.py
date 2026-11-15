@@ -796,6 +796,44 @@ def set_setting(key, value, root=None):
     save_settings(settings, root)
 
 
+# ---- Per-person, per-project settings (Render tab) -------------------------
+# Stored inside the project (<project>/mazehub/users/<user>.json), so they follow
+# the person to every machine the project syncs to, and each person has their own.
+
+def _user_file_name(user=None):
+    user = user or os.environ.get('USERNAME') or os.environ.get('USER') or 'user'
+    return re.sub(r'[^A-Za-z0-9._-]+', '_', user).strip('._') or 'user'
+
+
+def user_settings_path(root=None, user=None):
+    root = Path(root) if root else _get_project_root()
+    if not root:
+        return None
+    return root / 'mazehub' / 'users' / f'{_user_file_name(user)}.json'
+
+
+def get_render_setting(key, default=None, root=None, user=None):
+    path = user_settings_path(root, user)
+    if path is not None:
+        data = _load_json(path)
+        if key in data:
+            return data[key]
+    # Not saved for this project yet: start from the old global value.
+    return get_setting(key, default, root)
+
+
+def set_render_setting(key, value, root=None, user=None):
+    path = user_settings_path(root, user)
+    if path is None:
+        set_setting(key, value, root)
+        return
+    data = _load_json(path)
+    if data.get(key) == value and key in data:
+        return
+    data[key] = value
+    _save_json(path, data)
+
+
 def _default_husk_candidates():
     system = platform.system()
     candidates = []
