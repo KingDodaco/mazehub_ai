@@ -6,6 +6,7 @@ import platform
 import time
 import threading
 import queue
+import collections
 import webbrowser
 import shutil
 from pathlib import Path
@@ -36,6 +37,7 @@ from pipeline_app import (
     APP_FILE_EXTENSIONS,
     build_context_env, _app_dir, APP_VERSION,
     discover_usd_files, discover_husk_passes, scan_main_layer_passes,
+    classify_render_failure, failed_frames_by_pass, strip_log_time,
     clean_render_name, existing_render_names, render_versions,
     render_version_dir, render_output_path,
     discover_image_sequences,
@@ -3864,6 +3866,7 @@ class HelpPage(QWidget):
         <p><b>Passes:</b> MazeHub looks for passes in the selected USD file only. If that file references other USD files, it asks before scanning them too, because on OneDrive that downloads them. Say no to use the passes from the main file; <b>Scan Referenced Files</b> does it later.</p>
         <p>Before husk renders, MazeHub downloads the files the USD references. If something fails to download or can't be found, choose <b>Render Anyway</b> or <b>Cancel Render</b>. <b>Skip Sync</b> stops a slow sync and renders with what's already on disk.</p>
         <p>You'll see progress for each frame and pass, with time estimates. You can pause or cancel at any time.</p>
+        <p><b>Failed frames:</b> if a frame fails (for example Karma XPU runs out of GPU memory, or the renderer crashes), MazeHub waits a few seconds and renders it once more with the same settings, then moves on. Frames that fail twice are listed at the end of the log with the reason and a list to re-render, and in the Teams notification.</p>
         """)
 
         self._add_section(layout, '9 — Preview', """
@@ -3927,6 +3930,9 @@ class RenderThread(QThread):
         self._process = None
         self._cancel = False
         self._skip = False
+        # Filled by run(): frames that failed twice, and frames the user skipped.
+        self.failures = []
+        self.skipped = []
         self._pause_event = threading.Event()
         self._pause_event.set()
         self._paused = False
@@ -3942,11 +3948,79 @@ class RenderThread(QThread):
         except (ValueError, IndexError):
             return ''
 
+    # Seconds to wait before retrying a failed command, so the OS/driver frees its memory.
+    RETRY_DELAY = 3.0
+    # Identical messages shown per attempt before the rest are counted and hidden.
+    MAX_REPEATS = 3
+    TAIL_LINES = 200
+
+    def _wait_retry_delay(self):
+        deadline = time.monotonic() + self.RETRY_DELAY
+        while time.monotonic() < deadline and not self._cancel:
+            time.sleep(0.05)
+
+    def _run_attempt(self, cmd, cmd_env, meta, state):
+        """Run one command to completion. Returns (code, skipped, tail lines).
+
+        state carries frame bookkeeping for hrender jobs (MAZE_FRAME lines) between attempts.
+        """
+        tail = collections.deque(maxlen=self.TAIL_LINES)
+        repeats = {}
+        self._process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=self.working_dir,
+            env=cmd_env,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+        )
+        for line in self._iter_output(self._process):
+            if self._cancel:
+                self._process.terminate()
+                break
+            self._pause_event.wait()
+            if self._cancel:
+                self._process.terminate()
+                break
+            stripped = line.rstrip('\n')
+            self.last_output_time = time.monotonic()
+            self.last_line = stripped
+            tail.append(stripped)
+            key = strip_log_time(stripped).strip()
+            if key:
+                seen = repeats.get(key, 0) + 1
+                repeats[key] = seen
+                if seen <= self.MAX_REPEATS:
+                    self.output.emit(stripped)
+            else:
+                self.output.emit(stripped)
+            if meta and stripped.startswith('MAZE_FRAME'):
+                m = re.match(r'MAZE_FRAME\s+(-?\d+)', stripped)
+                if m:
+                    if state['frame_open']:
+                        self.frame_finished.emit()
+                    state['done'] += 1
+                    self.frame_started.emit(int(m.group(1)), state['count'], state['done'])
+                    state['frame_open'] = True
+            if 'ALF_PROGRESS' in stripped:
+                m = re.search(r'ALF_PROGRESS\s+(\d+)', stripped)
+                if m:
+                    self.bucket_progress.emit(int(m.group(1)))
+        self._process.wait()
+        code = self._process.returncode
+        self._process = None
+        for key, seen in repeats.items():
+            if seen > self.MAX_REPEATS:
+                self.output.emit(f'[info] Hid {seen - self.MAX_REPEATS} more repeats of: {key[:200]}')
+        skipped, self._skip = self._skip, False
+        return code, skipped, list(tail)
+
     def run(self):
         exit_code = 0
         total = len(self.commands)
-        pass_frame_count = 0
-        pass_frames_done = 0
+        self.failures = []
+        self.skipped = []
         # Per-pass totals/progress, so frame-major order (passes interleaved) counts correctly.
         frames_per_pass = {}
         if not self.job_meta:
@@ -3964,98 +4038,96 @@ class RenderThread(QThread):
                 break
             meta = self.job_meta[i] if self.job_meta else None
             pass_name = ''
-            frame_num = 0
+            frame_num = None
+            state = {'frame_open': False, 'count': 0, 'done': 0}
             if meta:
                 pass_name = meta['pass']
-                pass_frame_count = meta['frames']
-                pass_frames_done = 0
+                state['count'] = meta['frames']
             else:
+                pass_name = self._cmd_pass(cmd)
                 try:
-                    idx = cmd.index('--pass')
-                    pass_name = cmd[idx + 1]
+                    frame_num = int(cmd[cmd.index('-f') + 1])
                 except (ValueError, IndexError):
-                    pass
-                try:
-                    idx = cmd.index('-f')
-                    frame_num = int(cmd[idx + 1])
-                except (ValueError, IndexError):
-                    pass
-            if not meta:
-                pass_frame_count = frames_per_pass.get(pass_name, 0) if pass_name else 0
-                pass_frames_done = done_per_pass.get(pass_name, 0)
+                    frame_num = None
+                state['count'] = frames_per_pass.get(pass_name, 0) if pass_name else 0
+                state['done'] = done_per_pass.get(pass_name, 0) + 1
+                done_per_pass[pass_name] = state['done']
             self.pass_changed.emit(pass_name)
-            frame_open = False
             if meta:
                 self.output.emit(f'[rendering job {i + 1}/{total}: {pass_name}]')
+                label = pass_name
             else:
-                pass_frames_done += 1
-                done_per_pass[pass_name] = pass_frames_done
-                self.frame_started.emit(frame_num, pass_frame_count, pass_frames_done)
-                frame_open = True
+                self.frame_started.emit(frame_num or 0, state['count'], state['done'])
+                state['frame_open'] = True
                 self.output.emit(f'[rendering pass {i + 1}/{total}: {pass_name} frame {frame_num}]')
+                label = f'{pass_name} frame {frame_num}'
             self.output.emit(f'  cmd: {" ".join(cmd)}')
-            self.current_label = pass_name if meta else f'{pass_name} frame {frame_num}'
-            self.last_line = ''
-            self.last_output_time = time.monotonic()
-            try:
-                cmd_env = os.environ.copy()
-                if self._env:
-                    cmd_env.update(self._env)
-                if pass_name:
-                    cmd_env['RENDERPASS'] = pass_name
-                creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                self._process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    cwd=self.working_dir,
-                    env=cmd_env,
-                    creationflags=creation_flags,
-                )
-                for line in self._iter_output(self._process):
-                    if self._cancel:
-                        self._process.terminate()
-                        break
-                    self._pause_event.wait()
-                    if self._cancel:
-                        self._process.terminate()
-                        break
-                    stripped = line.rstrip('\n')
-                    self.last_output_time = time.monotonic()
-                    self.last_line = stripped
-                    self.output.emit(stripped)
-                    if meta and stripped.startswith('MAZE_FRAME'):
-                        m = re.match(r'MAZE_FRAME\s+(-?\d+)', stripped)
-                        if m:
-                            if frame_open:
-                                self.frame_finished.emit()
-                            pass_frames_done += 1
-                            self.frame_started.emit(int(m.group(1)), pass_frame_count, pass_frames_done)
-                            frame_open = True
-                    if 'ALF_PROGRESS' in stripped:
-                        m = re.search(r'ALF_PROGRESS\s+(\d+)', stripped)
-                        if m:
-                            self.bucket_progress.emit(int(m.group(1)))
-                self._process.wait()
-                if frame_open:
-                    self.frame_finished.emit()
-                code = self._process.returncode
-                skipped, self._skip = self._skip, False
+            self.current_label = label
+            cmd_env = os.environ.copy()
+            if self._env:
+                cmd_env.update(self._env)
+            if pass_name:
+                cmd_env['RENDERPASS'] = pass_name
+            reasons = []
+            for attempt in (1, 2):
+                self.last_line = ''
+                self.last_output_time = time.monotonic()
+                try:
+                    code, skipped, tail = self._run_attempt(cmd, cmd_env, meta, state)
+                except Exception as e:
+                    self._process = None
+                    code, skipped, tail = 1, False, [f'error: {e}']
+                    self.output.emit(f'[error: {e}]')
                 if skipped:
                     exit_code = 1
-                    self.output.emit(f'[skipped {self.current_label}]')
-                elif code != 0:
-                    exit_code = code
-                    self.output.emit(f'[warning: husk exited with code {code}]')
-                self._process = None
-            except Exception as e:
-                if frame_open:
-                    self.frame_finished.emit()
-                self.output.emit(f'[error: {e}]')
-                exit_code = 1
+                    self.output.emit(f'[skipped {label}]')
+                    self.skipped.append({'pass': pass_name, 'frame': frame_num})
+                    break
+                if code == 0:
+                    if attempt == 2:
+                        self.output.emit(f'[info] {label} rendered on the retry')
+                    break
+                exit_code = code or 1
+                self.output.emit(f'[warning: husk exited with code {code}]')
+                if self._cancel:
+                    break
+                reason = classify_render_failure(code, tail)
+                if not reasons or reasons[-1] != reason:
+                    reasons.append(reason)
+                if attempt == 1:
+                    self.output.emit(f'[warning] {label} failed ({reason}), retrying once')
+                    self._wait_retry_delay()
+                    if self._cancel:
+                        break
+                    self.output.emit(f'[retrying {label}]')
+                    if meta:
+                        state['done'] = 0  # the job reports its frames again
+                    continue
+                failure = {'pass': pass_name, 'frame': frame_num, 'code': code,
+                           'reason': '; retry: '.join(reasons)}
+                if meta:
+                    failure['job'] = pass_name
+                self.failures.append(failure)
+                self.output.emit(f'[error] {label} failed twice ({failure["reason"]}), moving on')
+            if state['frame_open']:
+                self.frame_finished.emit()
             self.progress.emit(i + 1, total)
+        self._emit_summary()
         self.finished.emit(exit_code)
+
+    def _emit_summary(self):
+        if not self.failures and not self.skipped:
+            return
+        self.output.emit('')
+        if self.failures:
+            n = len(self.failures)
+            self.output.emit(f'[summary] {n} frame{"s" if n != 1 else ""} failed after a retry:')
+            for f in self.failures:
+                where = f['pass'] if f['frame'] is None else f'{f["pass"]} frame {f["frame"]}'
+                self.output.emit(f'  {where}: {f["reason"]}')
+            self.output.emit(f'[summary] Frames to re-render: {failed_frames_by_pass(self.failures)}')
+        if self.skipped:
+            self.output.emit(f'[summary] Skipped: {failed_frames_by_pass(self.skipped)}')
 
     def cancel(self):
         self._cancel = True
@@ -5535,6 +5607,12 @@ class RenderPage(QWidget):
         self.render_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         meta = getattr(self, '_render_meta', None)
+        thread = self._render_thread
+        failures = list(getattr(thread, 'failures', []) or [])
+        skipped = list(getattr(thread, 'skipped', []) or [])
+        total_jobs = len(getattr(thread, 'commands', []) or [])
+        if meta is not None:
+            meta['failures'], meta['skipped'], meta['total_jobs'] = failures, skipped, total_jobs
 
         render_time = ''
         if self._render_dialog:
@@ -5564,7 +5642,11 @@ class RenderPage(QWidget):
         else:
             self._log('')
             self._log(f'[render finished with errors (exit code {exit_code})]')
-            self._status(f'Render finished with errors', False)
+            if failures:
+                n = len(failures)
+                self._status(f'Render finished: {n} frame{"s" if n != 1 else ""} failed (see log)', False)
+            else:
+                self._status('Render finished with errors', False)
 
         if meta and meta.get('render_mode') == 'hrender' and not meta.get('cancelled'):
             for out_dir in meta.get('out_dirs', []):
@@ -5606,6 +5688,9 @@ class RenderPage(QWidget):
                     cancelled=meta.get('cancelled', False),
                     start_time=meta.get('start_time', ''),
                     end_time=meta.get('end_time', ''),
+                    failures=failures,
+                    skipped=skipped,
+                    total_jobs=total_jobs,
                     first_frame_path=first_frame_path,
                 )
         self._close_render_log()

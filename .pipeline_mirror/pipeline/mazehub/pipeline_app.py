@@ -8,7 +8,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.13.7"
+APP_VERSION = "0.13.8"
 
 
 def _get_display_name():
@@ -1139,6 +1139,86 @@ def scan_main_layer_passes(usd_file, husk_path=None):
     out['passes'] = list(dict.fromkeys(info.get('passes', [])))
     out['layer_refs'] = list(dict.fromkeys(info.get('layer_refs', [])))
     return out
+
+
+# ---- Render failures ------------------------------------------------------
+
+_GPU_OOM_RE = re.compile(
+    r'cudaErrorMemoryAllocation|cudaErrorOutOfMemory|CUDA_ERROR_OUT_OF_MEMORY'
+    r'|OPTIX_ERROR_\w*MEMORY|out of (?:gpu|device|video) memory', re.IGNORECASE)
+_RAM_OOM_RE = re.compile(r'std::bad_alloc|out of memory|unable to allocate', re.IGNORECASE)
+_CRASH_RE = re.compile(r'segmentation fault|access violation|\bCRASHED\b', re.IGNORECASE)
+_LICENSE_RE = re.compile(r'licen[cs]e.*(?:fail|unavailable|denied|expired|\bno\b)'
+                         r'|(?:fail|unable|no)\w*.*licen[cs]e', re.IGNORECASE)
+_MISSING_RE = re.compile(r'unable to open|could not open|no such file|failed to load', re.IGNORECASE)
+_ERRORISH_RE = re.compile(r'\b(?:error|fatal|failed)\b', re.IGNORECASE)
+_NOISE_RE = re.compile(r'invalid shader wire|error wiring nodes', re.IGNORECASE)
+_TIME_PREFIX_RE = re.compile(r'^\s*\[\d{2}:\d{2}:\d{2}\]\s*')
+# Exit codes of a crashed process: 139 (128+SIGSEGV), -11, and Windows STATUS_ACCESS_VIOLATION.
+_CRASH_CODES = {139, -11, 3221225477, -1073741819}
+
+
+def strip_log_time(line):
+    return _TIME_PREFIX_RE.sub('', str(line))
+
+
+def _short(text, limit=160):
+    text = ' '.join(str(text).split())
+    return text if len(text) <= limit else text[:limit - 1] + '…'
+
+
+def classify_render_failure(code, lines):
+    """Short, human reason a render command failed, from its exit code and last output lines."""
+    lines = [strip_log_time(l).strip() for l in lines if l and str(l).strip()]
+    if any(_GPU_OOM_RE.search(l) for l in lines):
+        return 'GPU out of memory'
+    if any(_RAM_OOM_RE.search(l) for l in lines):
+        return 'Out of memory'
+    if code in _CRASH_CODES or any(_CRASH_RE.search(l) for l in lines):
+        return 'Renderer crashed (access violation)'
+    if any(_LICENSE_RE.search(l) for l in lines):
+        return 'Licence error'
+    for l in reversed(lines):
+        if _MISSING_RE.search(l):
+            return f'Missing file: {_short(l)}'
+    for l in reversed(lines):
+        if _ERRORISH_RE.search(l) and not _NOISE_RE.search(l) and not l.startswith('['):
+            return f'exit code {code}: {_short(l)}'
+    return f'exit code {code}'
+
+
+def compact_frames(frames):
+    """[56, 58, 70, 71, 72] -> '56, 58, 70-72'."""
+    nums = sorted({int(f) for f in frames if f is not None})
+    parts, i = [], 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        parts.append(str(nums[i]) if i == j else f'{nums[i]}-{nums[j]}')
+        i = j + 1
+    return ', '.join(parts)
+
+
+def _pass_label(render_pass):
+    return str(render_pass or '').rstrip('/').split('/')[-1] or str(render_pass or '')
+
+
+def failed_frames_by_pass(failures):
+    """'Lightning 56, 58  |  Beauty 70-72' (jobs without a frame are listed by name)."""
+    order, frames, whole = [], {}, []
+    for f in failures:
+        label = _pass_label(f.get('pass'))
+        if f.get('frame') is None:
+            whole.append(label)
+            continue
+        if label not in frames:
+            order.append(label)
+            frames[label] = []
+        frames[label].append(f['frame'])
+    parts = [f'{label} {compact_frames(frames[label])}' for label in order]
+    parts += [f'{label} (whole job)' for label in dict.fromkeys(whole)]
+    return '  |  '.join(parts)
 
 
 def is_usd_ascii(usd_file):
@@ -2333,12 +2413,45 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
                             end_frame, interval, version, render_engine,
                             exit_code, render_time, project_root='',
                             cancelled=False, start_time='', end_time='',
-                            first_frame_path='', context_type='shot'):
+                            first_frame_path='', context_type='shot',
+                            failures=None, skipped=None, total_jobs=None):
     if not webhook_url:
         return False
+    card = build_render_card(
+        shot, usd_file, passes, start_frame, end_frame, interval, version, render_engine,
+        exit_code, render_time, project_root, cancelled, start_time, end_time,
+        first_frame_path, context_type, failures, skipped, total_jobs)
+    data = json.dumps(card).encode('utf-8')
+    req = urllib.request.Request(
+        webhook_url,
+        data=data,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception:
+        return False
 
+
+TEAMS_MAX_FAILURE_ROWS = 15
+
+
+def build_render_card(shot, usd_file, passes, start_frame, end_frame, interval, version,
+                      render_engine, exit_code, render_time, project_root='', cancelled=False,
+                      start_time='', end_time='', first_frame_path='', context_type='shot',
+                      failures=None, skipped=None, total_jobs=None):
+    """The Teams MessageCard for a finished render."""
+    failures = list(failures or [])
+    skipped = list(skipped or [])
+    all_failed = bool(failures) and bool(total_jobs) and len(failures) >= total_jobs
     if cancelled:
         status = 'Cancelled'
+        color = 'F39C12'
+    elif failures and not all_failed:
+        n = len(failures)
+        status = f'Finished with {n} failed frame{"s" if n != 1 else ""}'
         color = 'F39C12'
     elif exit_code == 0:
         status = 'Succeeded'
@@ -2358,6 +2471,11 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
         {'name': 'Version', 'value': f'v{version:03d}'},
         {'name': 'Started By', 'value': _get_display_name()},
     ]
+    if failures:
+        summary_facts.insert(2, {'name': 'Failed Frames', 'value': failed_frames_by_pass(failures)})
+    if skipped:
+        summary_facts.insert(3 if failures else 2,
+                             {'name': 'Skipped Frames', 'value': failed_frames_by_pass(skipped)})
 
     detail_facts = [
         {'name': 'USD File', 'value': usd_file},
@@ -2389,6 +2507,21 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
             'markdown': True,
         }],
     }
+    if failures:
+        rows = []
+        for f in failures[:TEAMS_MAX_FAILURE_ROWS]:
+            where = _pass_label(f.get('pass'))
+            if f.get('frame') is not None:
+                where = f'{where} {f["frame"]}'
+            rows.append({'name': where, 'value': f.get('reason') or f'exit code {f.get("code")}'})
+        if len(failures) > TEAMS_MAX_FAILURE_ROWS:
+            rows.append({'name': '…',
+                         'value': f'and {len(failures) - TEAMS_MAX_FAILURE_ROWS} more (see render log)'})
+        card['sections'].append({
+            'title': 'Failed Frames (each retried once)',
+            'facts': rows,
+            'markdown': True,
+        })
 
     if project_root:
         card['potentialAction'] = [{
@@ -2396,19 +2529,7 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
             'name': 'Open in MazeHub',
             'targets': [{'os': 'default', 'uri': str(project_root)}],
         }]
-
-    data = json.dumps(card).encode('utf-8')
-    req = urllib.request.Request(
-        webhook_url,
-        data=data,
-        headers={'Content-Type': 'application/json'},
-        method='POST',
-    )
-    try:
-        urllib.request.urlopen(req, timeout=10)
-        return True
-    except Exception:
-        return False
+    return card
 
 
 def send_dailies_notification(webhook_url, shot, artist, file_path,
