@@ -141,6 +141,12 @@ class TeamsCard(unittest.TestCase):
         self.assertEqual(facts['Status'], 'Succeeded')
         self.assertNotIn('Failed Frames', facts)
 
+    def test_engine_labels(self):
+        for engine, label in (('usd', 'From USD render settings'), ('xpu', 'Karma XPU'),
+                              ('cpu', 'Karma CPU'), ('karma', 'karma')):
+            facts = {f['name']: f['value'] for f in self._card(render_engine=engine)['sections'][1]['facts']}
+            self.assertEqual(facts['Engine'], label)
+
     def test_send_posts_card(self):
         sent = []
         with mock.patch.object(pa.urllib.request, 'urlopen', side_effect=lambda req, timeout: sent.append(req)):

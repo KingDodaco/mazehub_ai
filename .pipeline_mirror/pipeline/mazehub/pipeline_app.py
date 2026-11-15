@@ -8,7 +8,7 @@ import platform
 import urllib.request
 from pathlib import Path
 
-APP_VERSION = "0.13.8"
+APP_VERSION = "0.13.9"
 
 
 def _get_display_name():
@@ -2438,6 +2438,14 @@ def send_teams_notification(webhook_url, shot, usd_file, passes, start_frame,
 TEAMS_MAX_FAILURE_ROWS = 15
 
 
+def _engine_label(render_engine):
+    if render_engine in ('xpu', 'cpu'):
+        return f'Karma {render_engine.upper()}'
+    if render_engine == 'usd':
+        return 'From USD render settings'
+    return render_engine
+
+
 def build_render_card(shot, usd_file, passes, start_frame, end_frame, interval, version,
                       render_engine, exit_code, render_time, project_root='', cancelled=False,
                       start_time='', end_time='', first_frame_path='', context_type='shot',
@@ -2481,7 +2489,7 @@ def build_render_card(shot, usd_file, passes, start_frame, end_frame, interval, 
         {'name': 'USD File', 'value': usd_file},
         {'name': 'Interval', 'value': str(interval)},
         {'name': 'Total Frames', 'value': str(total_frames)},
-        {'name': 'Engine', 'value': f'Karma {render_engine.upper()}' if render_engine in ('xpu', 'cpu') else render_engine},
+        {'name': 'Engine', 'value': _engine_label(render_engine)},
         {'name': 'Render Time', 'value': render_time},
     ]
     if start_time:

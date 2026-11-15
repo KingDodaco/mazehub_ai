@@ -284,7 +284,7 @@ class RenderPageGui(unittest.TestCase):
         self.assertEqual(versions(), [])
         self.assertTrue(self.page.render_name_hint.text())
 
-    def _render_commands(self, name):
+    def _render_commands(self, name, engine='xpu', full=False):
         class FakeSync:
             report = {}
             cancel_render = False
@@ -308,12 +308,14 @@ class RenderPageGui(unittest.TestCase):
         self.page._launch_render = lambda commands, *a, **k: launched.append(commands)
         self.page.render_name_combo.setCurrentText(name)
         self.page.version_combo.setCurrentIndex(self.page.version_combo.count() - 1)
-        self.page.render_engine_combo.setCurrentIndex(0)
+        self.page.render_engine_combo.setCurrentIndex(self.page.render_engine_combo.findData(engine))
         self.page.start_frame_spin.setValue(1001)
         self.page.end_frame_spin.setValue(1001)
         with mock.patch.object(self.gui, 'SyncProgressDialog', FakeSync):
             self.page._do_render()
         self.assertEqual(len(launched), 1)
+        if full:
+            return launched[0]
         return [Path(c[c.index('-o') + 1]) for c in launched[0]]
 
     def test_render_paths_shot(self):
@@ -337,6 +339,30 @@ class RenderPageGui(unittest.TestCase):
         render = self.asset / 'houdini' / 'render'
         self.assertEqual(self._render_commands('fx'),
                          [render / 'Chair_fx_v001' / 'beauty' / 'Chair_fx_beauty_v001_1001.exr'])
+
+    def test_engine_from_usd_render_settings(self):
+        asked = self._pick_shot(False)
+        self.assertTrue(self._wait(lambda: asked))
+        usd = str(self.shot / 'houdini' / 'USD' / 'SH010_v001.usda')
+        for cmd in self._render_commands('', engine='usd', full=True):
+            self.assertNotIn('--engine', cmd)
+            self.assertEqual(cmd[0], str(self.husk))
+            self.assertEqual(cmd[-1], usd)
+            self.assertIn('--pass', cmd)
+            self.assertIn('-o', cmd)
+        cpu = self._render_commands('', engine='cpu', full=True)[0]
+        self.assertEqual(cpu[1:3], ['--engine', 'cpu'])
+
+    def test_engine_choice_remembered(self):
+        combo = self.page.render_engine_combo
+        combo.setCurrentIndex(combo.findData('usd'))
+        page = self.gui.RenderPage(self.page.project_root, self.page.pipeline_dir)
+        self.assertEqual(page.render_engine_combo.currentData(), 'usd')
+        combo.setCurrentIndex(combo.findData('xpu'))
+        page.deleteLater()
+        page = self.gui.RenderPage(self.page.project_root, self.page.pipeline_dir)
+        self.assertEqual(page.render_engine_combo.currentData(), 'xpu')
+        page.deleteLater()
 
 
 if __name__ == '__main__':

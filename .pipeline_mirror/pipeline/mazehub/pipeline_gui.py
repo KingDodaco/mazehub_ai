@@ -3861,7 +3861,7 @@ class HelpPage(QWidget):
 
         self._add_section(layout, '8 — Rendering', """
         <p>Render your USD scenes without opening Houdini.</p>
-        <p><b>How to:</b> pick a Shot or Asset on the <b>Shots</b> / <b>Assets</b> tabs, pick the USD file, choose a version (it suggests the next one), select the Houdini version (22.0 or 21.0), choose Karma XPU or CPU, tick the passes you need, set the frame range and press <b>Render Selected Passes</b>.</p>
+        <p><b>How to:</b> pick a Shot or Asset on the <b>Shots</b> / <b>Assets</b> tabs, pick the USD file, choose a version (it suggests the next one), select the Houdini version (22.0 or 21.0), choose Karma XPU or CPU (or <b>From USD render settings</b> to keep the delegate and engine saved in the USD), tick the passes you need, set the frame range and press <b>Render Selected Passes</b>.</p>
         <p><b>Name:</b> optional, like the descriptor in the Maya/Blender USD export. With a name, renders go to <code>render/&lt;shot&gt;_&lt;name&gt;_v001</code> and the files are called <code>&lt;shot&gt;_&lt;name&gt;_&lt;pass&gt;_v001_1001.exr</code>. Each name counts its own versions, so renders of different USD files don't overwrite each other. Leave it empty for <code>&lt;shot&gt;_v001</code>.</p>
         <p><b>Passes:</b> MazeHub looks for passes in the selected USD file only. If that file references other USD files, it asks before scanning them too, because on OneDrive that downloads them. Say no to use the passes from the main file; <b>Scan Referenced Files</b> does it later.</p>
         <p>Before husk renders, MazeHub downloads the files the USD references. If something fails to download or can't be found, choose <b>Render Anyway</b> or <b>Cancel Render</b>. <b>Skip Sync</b> stops a slow sync and renders with what's already on disk.</p>
@@ -4609,6 +4609,17 @@ class RenderPage(QWidget):
         self.render_engine_combo.setMinimumWidth(260)
         self.render_engine_combo.addItem('Karma XPU', 'xpu')
         self.render_engine_combo.addItem('Karma CPU', 'cpu')
+        self.render_engine_combo.addItem('From USD render settings', 'usd')
+        self.render_engine_combo.setItemData(
+            2, "Don't override the engine: husk uses the render delegate and settings saved in "
+               "the USD's render settings.", Qt.ToolTipRole)
+        self.render_engine_combo.setToolTip(
+            'Karma XPU / Karma CPU override the engine for this render.\n'
+            "From USD render settings uses whatever the USD's render settings choose.")
+        from settings import get_setting
+        idx = self.render_engine_combo.findData(get_setting('render_engine', 'xpu'))
+        self.render_engine_combo.setCurrentIndex(max(idx, 0))
+        self.render_engine_combo.currentIndexChanged.connect(self._on_render_engine_changed)
         render_engine_row.addWidget(self.render_engine_combo, 1)
         render_engine_row.addStretch()
         layout.addWidget(self.engine_row_widget)
@@ -5154,6 +5165,10 @@ class RenderPage(QWidget):
             if item and item.widget() and isinstance(item.widget(), QCheckBox):
                 item.widget().setChecked(False)
 
+    def _on_render_engine_changed(self, _index):
+        from settings import set_setting
+        set_setting('render_engine', self.render_engine_combo.currentData())
+
     def _on_render_order_changed(self, _index):
         from settings import set_setting
         set_setting('render_order', self.render_order_combo.currentData())
@@ -5281,9 +5296,10 @@ class RenderPage(QWidget):
             jobs = [(p, frame) for p in passes for frame in frames]
         for p, frame in jobs:
             out_file = render_output_path(render_base, shot_name, render_name, version, p, frame)
-            cmd = [
-                husk_path,
-                '--engine', render_engine,
+            cmd = [husk_path]
+            if render_engine != 'usd':
+                cmd += ['--engine', render_engine]
+            cmd += [
                 '--pass', p,
                 '-f', str(frame),
                 '-n', '1',
@@ -5302,7 +5318,8 @@ class RenderPage(QWidget):
         self._log(f'Output: {version_dir}')
         self._log(f'Passes: {", ".join(passes)}')
         self._log(f'Frames: {start}-{end} (interval {interval})')
-        self._log(f'Engine: Karma {render_engine.upper()}')
+        self._log("Engine: from the USD's render settings" if render_engine == 'usd'
+                  else f'Engine: Karma {render_engine.upper()}')
         self._log(f'Order: {self.render_order_combo.currentText()}')
         self._log(f'Commands: {len(commands)}')
         self._log('')
